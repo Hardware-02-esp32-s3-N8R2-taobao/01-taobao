@@ -6,6 +6,7 @@ __pycache__/
 **/build/
 **/managed_components/
 **/sdkconfig
+**/sdkconfig.old
 **/config.env
 **/compile_commands.json
 **/flasher_args.json
