@@ -7,11 +7,18 @@
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "esp_check.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
+#include "esp_wifi.h"
+#include "mqtt_client.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "led_strip.h"
+#include "cJSON.h"
 
 #define TAG "env_pages"
 
@@ -30,6 +37,23 @@
 #define DS18B20_FILTER_ALPHA    0.25f
 #define DHT11_FILTER_ALPHA      0.35f
 #define BH1750_FILTER_ALPHA     0.20f
+
+#define WIFI_SSID               "Ermao"
+#define WIFI_PASSWORD           "gf666666"
+#define MQTT_BROKER_URI         "mqtt://192.168.1.226:1883"
+#define MQTT_TOPIC_DHT11        "garden/flower/dht11"
+#define MQTT_TOPIC_DS18B20      "garden/fish/ds18b20"
+#define MQTT_TOPIC_BMP280       "garden/climate/bmp280"
+#define MQTT_TOPIC_BH1750       "garden/light/bh1750"
+#define MQTT_DEVICE_ID          "yard-node-1"
+#define MQTT_DEVICE_ALIAS       "YD-ESP32-S3"
+#define MQTT_CLIENT_ID          "yd-esp32s3-garden-01"
+#define MQTT_GATEWAY_DEVICE     MQTT_DEVICE_ID
+#define MQTT_TOPIC_GATEWAY_PING "garden/gateway/ping"
+#define MQTT_TOPIC_GATEWAY_STATUS "garden/gateway/status/" MQTT_GATEWAY_DEVICE
+#define MQTT_TOPIC_GATEWAY_BROADCAST "garden/gateway/broadcast"
+#define GATEWAY_PING_INTERVAL_US (25LL * 1000 * 1000)
+#define GATEWAY_STATUS_TIMEOUT_US (60LL * 1000 * 1000)
 
 #define OLED_I2C_ADDR_PRIMARY   0x3C
 #define OLED_I2C_ADDR_SECONDARY 0x3D
@@ -112,6 +136,16 @@ typedef struct {
     float lux;
 } bh1750_sample_t;
 
+typedef struct {
+    bool valid;
+    bool server_online;
+    bool mqtt_online;
+    bool http_online;
+    bool public_url_available;
+    float cpu_temperature_c;
+    int64_t updated_at_us;
+} gateway_status_t;
+
 static uint8_t s_oled_buffer[OLED_H_RES * OLED_V_RES / 8];
 static bool s_oled_ready;
 static uint8_t s_oled_addr = OLED_I2C_ADDR_PRIMARY;
@@ -135,6 +169,13 @@ static pressure_sample_t s_filtered_pressure_sample;
 static ds18b20_sample_t s_filtered_ds18b20_sample;
 static dht11_sample_t s_filtered_dht11_sample;
 static bh1750_sample_t s_filtered_bh1750_sample;
+static esp_mqtt_client_handle_t s_mqtt_client;
+static bool s_wifi_connected;
+static bool s_mqtt_connected;
+static int s_wifi_rssi_dbm = -127;
+static int64_t s_last_gateway_ping_us;
+static gateway_status_t s_gateway_status;
+static char s_gateway_payload_buffer[768];
 
 static void board_rgb_off(void)
 {
@@ -149,6 +190,352 @@ static void board_rgb_off(void)
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_rgb_led));
     ESP_ERROR_CHECK(led_strip_clear(s_rgb_led));
     ESP_LOGI(TAG, "Board RGB LED turned off on GPIO%d", RGB_LED_GPIO);
+}
+
+static bool network_configured(void)
+{
+    return strcmp(WIFI_SSID, "YOUR_WIFI_NAME") != 0 && strcmp(WIFI_PASSWORD, "YOUR_WIFI_PASSWORD") != 0;
+}
+
+static bool mqtt_topic_matches(const char *topic, int topic_len, const char *expected)
+{
+    size_t expected_len = strlen(expected);
+
+    return topic != NULL && topic_len == (int)expected_len && strncmp(topic, expected, expected_len) == 0;
+}
+
+static void mqtt_publish_gateway_ping(void)
+{
+    char payload[96];
+
+    if (!s_mqtt_connected || s_mqtt_client == NULL) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\"}",
+        MQTT_GATEWAY_DEVICE,
+        MQTT_DEVICE_ALIAS
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_GATEWAY_PING, payload, 0, 0, 0);
+    s_last_gateway_ping_us = esp_timer_get_time();
+}
+
+static void maybe_publish_gateway_ping(void)
+{
+    int64_t now_us = esp_timer_get_time();
+
+    if (!s_mqtt_connected || s_mqtt_client == NULL) {
+        return;
+    }
+
+    if (now_us - s_last_gateway_ping_us < GATEWAY_PING_INTERVAL_US) {
+        return;
+    }
+
+    mqtt_publish_gateway_ping();
+}
+
+static void gateway_status_update_from_json(const char *json_text)
+{
+    cJSON *root = cJSON_Parse(json_text);
+    cJSON *server_online = NULL;
+    cJSON *mqtt_online = NULL;
+    cJSON *http_online = NULL;
+    cJSON *public_url_available = NULL;
+    cJSON *cpu_temperature = NULL;
+
+    if (root == NULL) {
+        ESP_LOGW(TAG, "Gateway heartbeat JSON parse failed");
+        return;
+    }
+
+    server_online = cJSON_GetObjectItemCaseSensitive(root, "serverOnline");
+    mqtt_online = cJSON_GetObjectItemCaseSensitive(root, "mqttOnline");
+    http_online = cJSON_GetObjectItemCaseSensitive(root, "httpOnline");
+    public_url_available = cJSON_GetObjectItemCaseSensitive(root, "publicUrlAvailable");
+    cpu_temperature = cJSON_GetObjectItemCaseSensitive(root, "cpuTemperatureC");
+
+    s_gateway_status.valid = true;
+    s_gateway_status.server_online = cJSON_IsTrue(server_online);
+    s_gateway_status.mqtt_online = cJSON_IsTrue(mqtt_online);
+    s_gateway_status.http_online = cJSON_IsTrue(http_online);
+    s_gateway_status.public_url_available = cJSON_IsTrue(public_url_available);
+    s_gateway_status.cpu_temperature_c = cJSON_IsNumber(cpu_temperature) ? (float)cpu_temperature->valuedouble : 0.0f;
+    s_gateway_status.updated_at_us = esp_timer_get_time();
+
+    ESP_LOGI(
+        TAG,
+        "Gateway heartbeat: server=%d mqtt=%d http=%d public=%d",
+        s_gateway_status.server_online ? 1 : 0,
+        s_gateway_status.mqtt_online ? 1 : 0,
+        s_gateway_status.http_online ? 1 : 0,
+        s_gateway_status.public_url_available ? 1 : 0
+    );
+
+    cJSON_Delete(root);
+}
+
+static bool gateway_status_is_fresh(void)
+{
+    return s_gateway_status.valid && (esp_timer_get_time() - s_gateway_status.updated_at_us) <= GATEWAY_STATUS_TIMEOUT_US;
+}
+
+static void refresh_wifi_rssi(void)
+{
+    wifi_ap_record_t ap_info = {0};
+
+    if (!s_wifi_connected) {
+        s_wifi_rssi_dbm = -127;
+        return;
+    }
+
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        s_wifi_rssi_dbm = ap_info.rssi;
+    }
+}
+
+static void format_wifi_status(char *buffer, size_t buffer_len)
+{
+    if (!s_wifi_connected) {
+        snprintf(buffer, buffer_len, "WERR");
+        return;
+    }
+
+    if (s_wifi_rssi_dbm > -127 && s_wifi_rssi_dbm < 0) {
+        snprintf(buffer, buffer_len, "%dDB", s_wifi_rssi_dbm);
+        return;
+    }
+
+    snprintf(buffer, buffer_len, "WIFI");
+}
+
+static void format_server_status(char *buffer, size_t buffer_len)
+{
+    if (!s_wifi_connected || !s_mqtt_connected || !gateway_status_is_fresh()) {
+        snprintf(buffer, buffer_len, "NG");
+        return;
+    }
+
+    if (s_gateway_status.server_online && s_gateway_status.mqtt_online) {
+        snprintf(buffer, buffer_len, "OK");
+        return;
+    }
+
+    snprintf(buffer, buffer_len, "NG");
+}
+
+static void mqtt_publish_dht11(const dht11_sample_t *sample)
+{
+    char payload[160];
+
+    if (!s_mqtt_connected || !sample->ready) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\",\"temperature\":%.1f,\"humidity\":%.1f}",
+        MQTT_DEVICE_ID,
+        MQTT_DEVICE_ALIAS,
+        sample->temperature_c,
+        sample->humidity_pct
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_DHT11, payload, 0, 0, 0);
+}
+
+static void mqtt_publish_ds18b20(const ds18b20_sample_t *sample)
+{
+    char payload[128];
+
+    if (!s_mqtt_connected || !sample->ready) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\",\"temperature\":%.1f}",
+        MQTT_DEVICE_ID,
+        MQTT_DEVICE_ALIAS,
+        sample->temperature_c
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_DS18B20, payload, 0, 0, 0);
+}
+
+static void mqtt_publish_pressure(const pressure_sample_t *sample)
+{
+    char payload[160];
+
+    if (!s_mqtt_connected || !sample->ready) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\",\"temperature\":%.1f,\"pressure\":%.1f}",
+        MQTT_DEVICE_ID,
+        MQTT_DEVICE_ALIAS,
+        sample->temperature_c,
+        sample->pressure_hpa
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_BMP280, payload, 0, 0, 0);
+}
+
+static void mqtt_publish_bh1750(const bh1750_sample_t *sample)
+{
+    char payload[128];
+
+    if (!s_mqtt_connected || !sample->ready) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\",\"illuminance\":%.1f}",
+        MQTT_DEVICE_ID,
+        MQTT_DEVICE_ALIAS,
+        sample->lux
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_BH1750, payload, 0, 0, 0);
+}
+
+static void publish_sensor_updates(
+    const pressure_sample_t *pressure,
+    const ds18b20_sample_t *ds18b20,
+    const dht11_sample_t *dht11,
+    const bh1750_sample_t *bh1750
+)
+{
+    mqtt_publish_pressure(pressure);
+    mqtt_publish_ds18b20(ds18b20);
+    mqtt_publish_dht11(dht11);
+    mqtt_publish_bh1750(bh1750);
+}
+
+static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+{
+    (void)handler_args;
+    (void)base;
+    esp_mqtt_event_handle_t event = event_data;
+
+    switch ((esp_mqtt_event_id_t)event_id) {
+    case MQTT_EVENT_CONNECTED:
+        s_mqtt_connected = true;
+        ESP_LOGI(TAG, "MQTT connected: %s", MQTT_BROKER_URI);
+        esp_mqtt_client_subscribe(s_mqtt_client, MQTT_TOPIC_GATEWAY_STATUS, 0);
+        esp_mqtt_client_subscribe(s_mqtt_client, MQTT_TOPIC_GATEWAY_BROADCAST, 0);
+        mqtt_publish_gateway_ping();
+        break;
+    case MQTT_EVENT_DISCONNECTED:
+        s_mqtt_connected = false;
+        ESP_LOGW(TAG, "MQTT disconnected");
+        break;
+    case MQTT_EVENT_ERROR:
+        s_mqtt_connected = false;
+        ESP_LOGW(TAG, "MQTT error");
+        break;
+    case MQTT_EVENT_DATA:
+        if (
+            mqtt_topic_matches(event->topic, event->topic_len, MQTT_TOPIC_GATEWAY_STATUS) ||
+            mqtt_topic_matches(event->topic, event->topic_len, MQTT_TOPIC_GATEWAY_BROADCAST)
+        ) {
+            int copy_offset = event->current_data_offset;
+            int total_len = event->total_data_len;
+            int copy_len = event->data_len;
+
+            if (total_len <= 0 || total_len >= (int)sizeof(s_gateway_payload_buffer)) {
+                ESP_LOGW(TAG, "Gateway heartbeat too large: %d", total_len);
+                break;
+            }
+
+            if (copy_offset == 0) {
+                memset(s_gateway_payload_buffer, 0, sizeof(s_gateway_payload_buffer));
+            }
+
+            if (copy_offset + copy_len > total_len) {
+                copy_len = total_len - copy_offset;
+            }
+
+            memcpy(s_gateway_payload_buffer + copy_offset, event->data, (size_t)copy_len);
+
+            if (copy_offset + copy_len >= total_len) {
+                s_gateway_payload_buffer[total_len] = '\0';
+                gateway_status_update_from_json(s_gateway_payload_buffer);
+            }
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+static void mqtt_start(void)
+{
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = MQTT_BROKER_URI,
+        .credentials.client_id = MQTT_CLIENT_ID,
+    };
+
+    s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+    ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_mqtt_client_start(s_mqtt_client));
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    (void)arg;
+    (void)event_data;
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+        return;
+    }
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_wifi_connected = false;
+        s_mqtt_connected = false;
+        s_wifi_rssi_dbm = -127;
+        ESP_LOGW(TAG, "WiFi disconnected, retrying");
+        esp_wifi_connect();
+        return;
+    }
+
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        s_wifi_connected = true;
+        refresh_wifi_rssi();
+        ESP_LOGI(TAG, "WiFi connected");
+        if (s_mqtt_client == NULL) {
+            mqtt_start();
+        }
+    }
+}
+
+static void wifi_init_sta(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+
+    wifi_config_t wifi_config = {0};
+    strlcpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password, WIFI_PASSWORD, sizeof(wifi_config.sta.password));
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 }
 
 static void page_button_init(void)
@@ -326,6 +713,39 @@ static void oled_draw_text(int x, int y, const char *text)
     }
 }
 
+static int oled_text_width(const char *text)
+{
+    size_t len = strlen(text);
+
+    if (len == 0) {
+        return 0;
+    }
+
+    return (int)(len * 6U) - 1;
+}
+
+static void oled_draw_text_center(int y, const char *text)
+{
+    int x = (OLED_H_RES - oled_text_width(text)) / 2;
+
+    if (x < 0) {
+        x = 0;
+    }
+
+    oled_draw_text(x, y, text);
+}
+
+static void oled_draw_text_right(int y, const char *text)
+{
+    int x = OLED_H_RES - oled_text_width(text);
+
+    if (x < 0) {
+        x = 0;
+    }
+
+    oled_draw_text(x, y, text);
+}
+
 static esp_err_t oled_flush(void)
 {
     for (int page = 0; page < OLED_V_RES / 8; page++) {
@@ -361,6 +781,29 @@ static void oled_render_text4(const char *line1, const char *line2, const char *
 
     oled_clear_buffer();
     oled_draw_text(0, 0, line1);
+    oled_draw_text(0, 16, line2);
+    oled_draw_text(0, 32, line3);
+    oled_draw_text(0, 48, line4);
+    ESP_ERROR_CHECK(oled_flush());
+}
+
+static void oled_render_sensor_page(
+    const char *page_text,
+    const char *wifi_text,
+    const char *server_text,
+    const char *line2,
+    const char *line3,
+    const char *line4
+)
+{
+    if (!s_oled_ready) {
+        return;
+    }
+
+    oled_clear_buffer();
+    oled_draw_text(0, 0, page_text);
+    oled_draw_text_center(0, wifi_text);
+    oled_draw_text_right(0, server_text);
     oled_draw_text(0, 16, line2);
     oled_draw_text(0, 32, line3);
     oled_draw_text(0, 48, line4);
@@ -973,60 +1416,80 @@ static void log_samples(
 
 static void render_pressure_page(const pressure_sample_t *sample)
 {
+    char wifi_text[12];
+    char server_text[12];
     char line2[24];
     char line3[24];
     char line4[24];
 
+    format_wifi_status(wifi_text, sizeof(wifi_text));
+    format_server_status(server_text, sizeof(server_text));
+
     if (!sample->ready) {
-        oled_render_text4("1/4", "PRESSURE", "P: --.-- HPA", "T: --.-- C A: --.- M");
+        oled_render_sensor_page("1/4", wifi_text, server_text, "PRESSURE", "P: ----.- PA", "T: --.-- C A: --.- M");
         return;
     }
 
     snprintf(line2, sizeof(line2), "%s", pressure_label(s_pressure_type));
-    snprintf(line3, sizeof(line3), "P: %4.2f HPA", sample->pressure_hpa);
+    snprintf(line3, sizeof(line3), "P: %.1f PA", sample->pressure_pa);
     snprintf(line4, sizeof(line4), "T: %2.2f C A: %3.1f M", sample->temperature_c, sample->altitude_m);
-    oled_render_text4("1/4", line2, line3, line4);
+    oled_render_sensor_page("1/4", wifi_text, server_text, line2, line3, line4);
 }
 
 static void render_ds18_page(const ds18b20_sample_t *sample)
 {
+    char wifi_text[12];
+    char server_text[12];
     char line3[24];
 
+    format_wifi_status(wifi_text, sizeof(wifi_text));
+    format_server_status(server_text, sizeof(server_text));
+
     if (!sample->ready) {
-        oled_render_text4("2/4", "DS18B20", "TEMP: --.-- C", "");
+        oled_render_sensor_page("2/4", wifi_text, server_text, "DS18B20", "TEMP: --.-- C", "");
         return;
     }
 
     snprintf(line3, sizeof(line3), "TEMP: %2.2f C", sample->temperature_c);
-    oled_render_text4("2/4", "DS18B20", line3, "");
+    oled_render_sensor_page("2/4", wifi_text, server_text, "DS18B20", line3, "");
 }
 
 static void render_dht11_page(const dht11_sample_t *sample)
 {
+    char wifi_text[12];
+    char server_text[12];
     char line3[24];
     char line4[24];
 
+    format_wifi_status(wifi_text, sizeof(wifi_text));
+    format_server_status(server_text, sizeof(server_text));
+
     if (!sample->ready) {
-        oled_render_text4("3/4", "DHT11", "TEMP: --.- C", "HUM: --.- %");
+        oled_render_sensor_page("3/4", wifi_text, server_text, "DHT11", "TEMP: --.- C", "HUM: --.- %");
         return;
     }
 
     snprintf(line3, sizeof(line3), "TEMP: %.1f C", sample->temperature_c);
     snprintf(line4, sizeof(line4), "HUM: %.1f %%", sample->humidity_pct);
-    oled_render_text4("3/4", "DHT11", line3, line4);
+    oled_render_sensor_page("3/4", wifi_text, server_text, "DHT11", line3, line4);
 }
 
 static void render_bh1750_page(const bh1750_sample_t *sample)
 {
+    char wifi_text[12];
+    char server_text[12];
     char line3[24];
 
+    format_wifi_status(wifi_text, sizeof(wifi_text));
+    format_server_status(server_text, sizeof(server_text));
+
     if (!sample->ready) {
-        oled_render_text4("4/4", "BH1750", "LIGHT: --.- LX", "");
+        oled_render_sensor_page("4/4", wifi_text, server_text, "BH1750", "LIGHT: --.- LX", "");
         return;
     }
 
     snprintf(line3, sizeof(line3), "LIGHT: %3.1f LX", sample->lux);
-    oled_render_text4("4/4", "BH1750", line3, "");
+    oled_render_sensor_page("4/4", wifi_text, server_text, "BH1750", line3, "");
 }
 
 static void render_current_page(
@@ -1036,6 +1499,8 @@ static void render_current_page(
     const bh1750_sample_t *bh1750
 )
 {
+    refresh_wifi_rssi();
+
     switch (s_page_index % 4) {
     case 0:
         render_pressure_page(pressure);
@@ -1054,11 +1519,25 @@ static void render_current_page(
 
 void app_main(void)
 {
+    esp_err_t nvs_ret = nvs_flash_init();
+    if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_ret);
+
     ESP_LOGI(TAG, "Start 4 sensor pages demo");
     ESP_LOGI(TAG, "I2C: SDA=GPIO%d SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
     ESP_LOGI(TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d, page button on GPIO%d", DS18B20_GPIO, DHT11_GPIO, PAGE_BUTTON_GPIO);
     board_rgb_off();
     page_button_init();
+
+    if (network_configured()) {
+        ESP_LOGI(TAG, "Starting WiFi STA and MQTT uploader");
+        wifi_init_sta();
+    } else {
+        ESP_LOGW(TAG, "WiFi credentials are not configured, MQTT upload disabled");
+    }
 
     i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
@@ -1168,6 +1647,8 @@ void app_main(void)
         }
 
         log_samples(&pressure, &ds18b20, &dht11, &bh1750);
+        publish_sensor_updates(&pressure, &ds18b20, &dht11, &bh1750);
+        maybe_publish_gateway_ping();
         render_current_page(&pressure, &ds18b20, &dht11, &bh1750);
 
         for (int elapsed_ms = 0; elapsed_ms < PAGE_REFRESH_MS; elapsed_ms += UI_POLL_MS) {
