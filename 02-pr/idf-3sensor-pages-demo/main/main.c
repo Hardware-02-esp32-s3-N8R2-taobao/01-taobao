@@ -39,6 +39,11 @@
 #define BMP180_CHIP_ID          0x55
 #define BMP280_CHIP_ID          0x58
 #define BME280_CHIP_ID          0x60
+#define BH1750_ADDR_LOW         0x23
+#define BH1750_ADDR_HIGH        0x5C
+#define BH1750_CMD_POWER_ON     0x01
+#define BH1750_CMD_RESET        0x07
+#define BH1750_CMD_CONT_HRES    0x10
 
 typedef enum {
     SENSOR_TYPE_NONE = 0,
@@ -95,12 +100,18 @@ typedef struct {
     int humidity_pct;
 } dht11_sample_t;
 
+typedef struct {
+    bool ready;
+    float lux;
+} bh1750_sample_t;
+
 static uint8_t s_oled_buffer[OLED_H_RES * OLED_V_RES / 8];
 static bool s_oled_ready;
 static uint8_t s_oled_addr = OLED_I2C_ADDR_PRIMARY;
 
 static sensor_type_t s_pressure_type;
 static uint8_t s_pressure_addr;
+static uint8_t s_bh1750_addr;
 static bmp180_calib_t s_bmp180;
 static bmp280_calib_t s_bmp280;
 static int32_t s_bmp280_t_fine;
@@ -153,6 +164,11 @@ static esp_err_t i2c_write_reg(uint8_t addr, uint8_t reg, uint8_t value)
 {
     uint8_t buffer[2] = {reg, value};
     return i2c_master_write_to_device(I2C_HOST, addr, buffer, sizeof(buffer), pdMS_TO_TICKS(100));
+}
+
+static esp_err_t i2c_write_byte(uint8_t addr, uint8_t value)
+{
+    return i2c_master_write_to_device(I2C_HOST, addr, &value, 1, pdMS_TO_TICKS(100));
 }
 
 static esp_err_t oled_write_command(uint8_t command)
@@ -509,6 +525,26 @@ static esp_err_t pressure_sensor_detect(void)
     return ESP_ERR_NOT_FOUND;
 }
 
+static esp_err_t bh1750_detect_and_init(void)
+{
+    const uint8_t candidate_addrs[] = {BH1750_ADDR_LOW, BH1750_ADDR_HIGH};
+
+    for (size_t i = 0; i < sizeof(candidate_addrs); i++) {
+        uint8_t addr = candidate_addrs[i];
+        if (i2c_probe(addr) != ESP_OK) {
+            continue;
+        }
+
+        ESP_RETURN_ON_ERROR(i2c_write_byte(addr, BH1750_CMD_POWER_ON), TAG, "bh1750 power on failed");
+        ESP_RETURN_ON_ERROR(i2c_write_byte(addr, BH1750_CMD_RESET), TAG, "bh1750 reset failed");
+        ESP_RETURN_ON_ERROR(i2c_write_byte(addr, BH1750_CMD_CONT_HRES), TAG, "bh1750 mode set failed");
+        s_bh1750_addr = addr;
+        return ESP_OK;
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
 static esp_err_t pressure_sensor_read(pressure_sample_t *sample)
 {
     memset(sample, 0, sizeof(*sample));
@@ -655,6 +691,27 @@ static esp_err_t ds18b20_read_sample(ds18b20_sample_t *sample)
     return ESP_OK;
 }
 
+static esp_err_t bh1750_read_sample(bh1750_sample_t *sample)
+{
+    uint8_t raw[2];
+    memset(sample, 0, sizeof(*sample));
+
+    if (s_bh1750_addr == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_RETURN_ON_ERROR(
+        i2c_master_read_from_device(I2C_HOST, s_bh1750_addr, raw, sizeof(raw), pdMS_TO_TICKS(100)),
+        TAG,
+        "bh1750 read failed"
+    );
+
+    uint16_t level = ((uint16_t)raw[0] << 8) | raw[1];
+    sample->ready = true;
+    sample->lux = level / 1.2f;
+    return ESP_OK;
+}
+
 static void dht11_bus_init(void)
 {
     gpio_config_t io_conf = {
@@ -722,13 +779,19 @@ static esp_err_t dht11_read_sample(dht11_sample_t *sample)
     return ESP_OK;
 }
 
-static void log_samples(const pressure_sample_t *pressure, const ds18b20_sample_t *ds18b20, const dht11_sample_t *dht11)
+static void log_samples(
+    const pressure_sample_t *pressure,
+    const ds18b20_sample_t *ds18b20,
+    const dht11_sample_t *dht11,
+    const bh1750_sample_t *bh1750
+)
 {
     s_seq++;
     ESP_LOGI(
         TAG,
         "{\"seq\":%d,\"press_ready\":%d,\"press_chip\":\"%s\",\"press_hpa\":%.2f,\"press_temp_c\":%.2f,"
-        "\"ds18_ready\":%d,\"ds18_temp_c\":%.2f,\"dht11_ready\":%d,\"dht11_temp_c\":%d,\"dht11_humi\":%d}",
+        "\"ds18_ready\":%d,\"ds18_temp_c\":%.2f,\"dht11_ready\":%d,\"dht11_temp_c\":%d,\"dht11_humi\":%d,"
+        "\"bh1750_ready\":%d,\"bh1750_lux\":%.2f}",
         s_seq,
         pressure->ready ? 1 : 0,
         pressure_label(s_pressure_type),
@@ -738,7 +801,9 @@ static void log_samples(const pressure_sample_t *pressure, const ds18b20_sample_
         ds18b20->temperature_c,
         dht11->ready ? 1 : 0,
         dht11->temperature_c,
-        dht11->humidity_pct
+        dht11->humidity_pct,
+        bh1750->ready ? 1 : 0,
+        bh1750->lux
     );
 }
 
@@ -787,9 +852,22 @@ static void render_dht11_page(const dht11_sample_t *sample)
     oled_render_text4("DHT11", line2, line3, "PAGE3");
 }
 
+static void render_bh1750_page(const bh1750_sample_t *sample)
+{
+    char line2[24];
+
+    if (!sample->ready) {
+        oled_render_text4("PAGE4 BH1750", "NO SENSOR", "CHECK I2C", "ADDR 0x23");
+        return;
+    }
+
+    snprintf(line2, sizeof(line2), "LUX:%3.1f", sample->lux);
+    oled_render_text4("BH1750", line2, "NO TEMP", "PAGE4");
+}
+
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Start 3 sensor pages demo");
+    ESP_LOGI(TAG, "Start 4 sensor pages demo");
     ESP_LOGI(TAG, "I2C: SDA=GPIO%d SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
     ESP_LOGI(TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d", DS18B20_GPIO, DHT11_GPIO);
     board_rgb_off();
@@ -827,6 +905,12 @@ void app_main(void)
         ESP_LOGW(TAG, "Pressure sensor not found");
     }
 
+    if (bh1750_detect_and_init() == ESP_OK) {
+        ESP_LOGI(TAG, "BH1750 detected at 0x%02X", s_bh1750_addr);
+    } else {
+        ESP_LOGW(TAG, "BH1750 not found at 0x23/0x5C");
+    }
+
     ds18b20_bus_init();
     dht11_bus_init();
 
@@ -834,6 +918,7 @@ void app_main(void)
         pressure_sample_t pressure = {0};
         ds18b20_sample_t ds18b20 = {0};
         dht11_sample_t dht11 = {0};
+        bh1750_sample_t bh1750 = {0};
 
         if (s_pressure_type != SENSOR_TYPE_NONE) {
             esp_err_t ret = pressure_sensor_read(&pressure);
@@ -852,17 +937,27 @@ void app_main(void)
             ESP_LOGW(TAG, "DHT11 read failed: %s", esp_err_to_name(dht_ret));
         }
 
-        log_samples(&pressure, &ds18b20, &dht11);
+        if (s_bh1750_addr != 0) {
+            esp_err_t bh_ret = bh1750_read_sample(&bh1750);
+            if (bh_ret != ESP_OK) {
+                ESP_LOGW(TAG, "BH1750 read failed: %s", esp_err_to_name(bh_ret));
+            }
+        }
 
-        switch (s_page_index % 3) {
+        log_samples(&pressure, &ds18b20, &dht11, &bh1750);
+
+        switch (s_page_index % 4) {
         case 0:
             render_pressure_page(&pressure);
             break;
         case 1:
             render_ds18_page(&ds18b20);
             break;
-        default:
+        case 2:
             render_dht11_page(&dht11);
+            break;
+        default:
+            render_bh1750_page(&bh1750);
             break;
         }
 
