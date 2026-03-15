@@ -26,6 +26,10 @@
 #define RGB_RMT_RESOLUTION_HZ   (10 * 1000 * 1000)
 #define PAGE_BUTTON_GPIO        15
 #define PAGE_BUTTON_ACTIVE      0
+#define PRESSURE_FILTER_ALPHA   0.20f
+#define DS18B20_FILTER_ALPHA    0.25f
+#define DHT11_FILTER_ALPHA      0.35f
+#define BH1750_FILTER_ALPHA     0.20f
 
 #define OLED_I2C_ADDR_PRIMARY   0x3C
 #define OLED_I2C_ADDR_SECONDARY 0x3D
@@ -99,8 +103,8 @@ typedef struct {
 
 typedef struct {
     bool ready;
-    int temperature_c;
-    int humidity_pct;
+    float temperature_c;
+    float humidity_pct;
 } dht11_sample_t;
 
 typedef struct {
@@ -122,6 +126,15 @@ static int s_page_index;
 static int s_seq;
 static led_strip_handle_t s_rgb_led;
 static bool s_page_button_last_level = true;
+static float s_altitude_reference_pa;
+static pressure_sample_t s_last_pressure_sample;
+static ds18b20_sample_t s_last_ds18b20_sample;
+static dht11_sample_t s_last_dht11_sample;
+static bh1750_sample_t s_last_bh1750_sample;
+static pressure_sample_t s_filtered_pressure_sample;
+static ds18b20_sample_t s_filtered_ds18b20_sample;
+static dht11_sample_t s_filtered_dht11_sample;
+static bh1750_sample_t s_filtered_bh1750_sample;
 
 static void board_rgb_off(void)
 {
@@ -368,6 +381,100 @@ static const char *pressure_label(sensor_type_t type)
     }
 }
 
+static float pressure_to_altitude_m(float pressure_pa, float reference_pa)
+{
+    if (pressure_pa <= 0.0f || reference_pa <= 0.0f) {
+        return 0.0f;
+    }
+
+    float altitude_m = 44330.0f * (1.0f - powf(pressure_pa / reference_pa, 0.1903f));
+    if (fabsf(altitude_m) < 0.5f) {
+        return 0.0f;
+    }
+
+    return altitude_m;
+}
+
+static float low_pass_filter(float current, float input, float alpha)
+{
+    return current + alpha * (input - current);
+}
+
+static void apply_pressure_filter(pressure_sample_t *sample)
+{
+    if (!sample->ready) {
+        return;
+    }
+
+    if (!s_filtered_pressure_sample.ready) {
+        s_filtered_pressure_sample = *sample;
+    } else {
+        s_filtered_pressure_sample.temperature_c =
+            low_pass_filter(s_filtered_pressure_sample.temperature_c, sample->temperature_c, PRESSURE_FILTER_ALPHA);
+        s_filtered_pressure_sample.pressure_pa =
+            low_pass_filter(s_filtered_pressure_sample.pressure_pa, sample->pressure_pa, PRESSURE_FILTER_ALPHA);
+        s_filtered_pressure_sample.pressure_hpa = s_filtered_pressure_sample.pressure_pa / 100.0f;
+        s_filtered_pressure_sample.altitude_m =
+            pressure_to_altitude_m(s_filtered_pressure_sample.pressure_pa, s_altitude_reference_pa);
+    }
+
+    s_filtered_pressure_sample.ready = true;
+    *sample = s_filtered_pressure_sample;
+}
+
+static void apply_ds18b20_filter(ds18b20_sample_t *sample)
+{
+    if (!sample->ready) {
+        return;
+    }
+
+    if (!s_filtered_ds18b20_sample.ready) {
+        s_filtered_ds18b20_sample = *sample;
+    } else {
+        s_filtered_ds18b20_sample.temperature_c =
+            low_pass_filter(s_filtered_ds18b20_sample.temperature_c, sample->temperature_c, DS18B20_FILTER_ALPHA);
+    }
+
+    s_filtered_ds18b20_sample.ready = true;
+    *sample = s_filtered_ds18b20_sample;
+}
+
+static void apply_dht11_filter(dht11_sample_t *sample)
+{
+    if (!sample->ready) {
+        return;
+    }
+
+    if (!s_filtered_dht11_sample.ready) {
+        s_filtered_dht11_sample = *sample;
+    } else {
+        s_filtered_dht11_sample.temperature_c =
+            low_pass_filter(s_filtered_dht11_sample.temperature_c, sample->temperature_c, DHT11_FILTER_ALPHA);
+        s_filtered_dht11_sample.humidity_pct =
+            low_pass_filter(s_filtered_dht11_sample.humidity_pct, sample->humidity_pct, DHT11_FILTER_ALPHA);
+    }
+
+    s_filtered_dht11_sample.ready = true;
+    *sample = s_filtered_dht11_sample;
+}
+
+static void apply_bh1750_filter(bh1750_sample_t *sample)
+{
+    if (!sample->ready) {
+        return;
+    }
+
+    if (!s_filtered_bh1750_sample.ready) {
+        s_filtered_bh1750_sample = *sample;
+    } else {
+        s_filtered_bh1750_sample.lux =
+            low_pass_filter(s_filtered_bh1750_sample.lux, sample->lux, BH1750_FILTER_ALPHA);
+    }
+
+    s_filtered_bh1750_sample.ready = true;
+    *sample = s_filtered_bh1750_sample;
+}
+
 static esp_err_t bmp180_load_calibration(uint8_t addr)
 {
     uint8_t raw[22];
@@ -435,7 +542,10 @@ static esp_err_t bmp180_read_sample(uint8_t addr, pressure_sample_t *sample)
     sample->temperature_c = temp_x10 / 10.0f;
     sample->pressure_pa = (float)pressure_pa;
     sample->pressure_hpa = sample->pressure_pa / 100.0f;
-    sample->altitude_m = 44330.0f * (1.0f - powf(sample->pressure_pa / 101325.0f, 0.1903f));
+    if (s_altitude_reference_pa <= 0.0f) {
+        s_altitude_reference_pa = sample->pressure_pa;
+    }
+    sample->altitude_m = pressure_to_altitude_m(sample->pressure_pa, s_altitude_reference_pa);
     return ESP_OK;
 }
 
@@ -515,7 +625,10 @@ static esp_err_t bmp280_read_sample(uint8_t addr, pressure_sample_t *sample)
     sample->temperature_c = temp_x100 / 100.0f;
     sample->pressure_pa = pressure_q24_8 / 256.0f;
     sample->pressure_hpa = sample->pressure_pa / 100.0f;
-    sample->altitude_m = 44330.0f * (1.0f - powf(sample->pressure_pa / 101325.0f, 0.1903f));
+    if (s_altitude_reference_pa <= 0.0f) {
+        s_altitude_reference_pa = sample->pressure_pa;
+    }
+    sample->altitude_m = pressure_to_altitude_m(sample->pressure_pa, s_altitude_reference_pa);
     return ESP_OK;
 }
 
@@ -765,7 +878,7 @@ static esp_err_t dht11_wait_level(int level, uint32_t timeout_us)
     return ESP_ERR_TIMEOUT;
 }
 
-static esp_err_t dht11_read_sample(dht11_sample_t *sample)
+static esp_err_t dht11_read_sample_raw(dht11_sample_t *sample)
 {
     uint8_t data[5] = {0};
     memset(sample, 0, sizeof(*sample));
@@ -803,9 +916,31 @@ static esp_err_t dht11_read_sample(dht11_sample_t *sample)
     }
 
     sample->ready = true;
-    sample->humidity_pct = data[0];
-    sample->temperature_c = data[2];
+    sample->humidity_pct = (float)data[0];
+    sample->temperature_c = (float)data[2];
     return ESP_OK;
+}
+
+static esp_err_t dht11_read_sample(dht11_sample_t *sample)
+{
+    esp_err_t last_err = ESP_FAIL;
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        last_err = dht11_read_sample_raw(sample);
+        if (last_err == ESP_OK) {
+            s_last_dht11_sample = *sample;
+            return ESP_OK;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+
+    if (s_last_dht11_sample.ready) {
+        *sample = s_last_dht11_sample;
+        return ESP_OK;
+    }
+
+    return last_err;
 }
 
 static void log_samples(
@@ -819,7 +954,7 @@ static void log_samples(
     ESP_LOGI(
         TAG,
         "{\"seq\":%d,\"press_ready\":%d,\"press_chip\":\"%s\",\"press_hpa\":%.2f,\"press_temp_c\":%.2f,"
-        "\"ds18_ready\":%d,\"ds18_temp_c\":%.2f,\"dht11_ready\":%d,\"dht11_temp_c\":%d,\"dht11_humi\":%d,"
+        "\"ds18_ready\":%d,\"ds18_temp_c\":%.2f,\"dht11_ready\":%d,\"dht11_temp_c\":%.1f,\"dht11_humi\":%.1f,"
         "\"bh1750_ready\":%d,\"bh1750_lux\":%.2f}",
         s_seq,
         pressure->ready ? 1 : 0,
@@ -843,13 +978,13 @@ static void render_pressure_page(const pressure_sample_t *sample)
     char line4[24];
 
     if (!sample->ready) {
-        oled_render_text4("1/4", "PRESSURE", "P:--.--HPA", "T:--.--C A:--M");
+        oled_render_text4("1/4", "PRESSURE", "P: --.-- HPA", "T: --.-- C A: --.- M");
         return;
     }
 
     snprintf(line2, sizeof(line2), "%s", pressure_label(s_pressure_type));
-    snprintf(line3, sizeof(line3), "P:%4.2fHPA", sample->pressure_hpa);
-    snprintf(line4, sizeof(line4), "T:%2.2fC A:%3.0fM", sample->temperature_c, sample->altitude_m);
+    snprintf(line3, sizeof(line3), "P: %4.2f HPA", sample->pressure_hpa);
+    snprintf(line4, sizeof(line4), "T: %2.2f C A: %3.1f M", sample->temperature_c, sample->altitude_m);
     oled_render_text4("1/4", line2, line3, line4);
 }
 
@@ -858,11 +993,11 @@ static void render_ds18_page(const ds18b20_sample_t *sample)
     char line3[24];
 
     if (!sample->ready) {
-        oled_render_text4("2/4", "DS18B20", "TEMP:--.--C", "");
+        oled_render_text4("2/4", "DS18B20", "TEMP: --.-- C", "");
         return;
     }
 
-    snprintf(line3, sizeof(line3), "TEMP:%2.2fC", sample->temperature_c);
+    snprintf(line3, sizeof(line3), "TEMP: %2.2f C", sample->temperature_c);
     oled_render_text4("2/4", "DS18B20", line3, "");
 }
 
@@ -872,12 +1007,12 @@ static void render_dht11_page(const dht11_sample_t *sample)
     char line4[24];
 
     if (!sample->ready) {
-        oled_render_text4("3/4", "DHT11", "TEMP:--C", "HUM:--%");
+        oled_render_text4("3/4", "DHT11", "TEMP: --.- C", "HUM: --.- %");
         return;
     }
 
-    snprintf(line3, sizeof(line3), "TEMP:%dC", sample->temperature_c);
-    snprintf(line4, sizeof(line4), "HUM:%d%%", sample->humidity_pct);
+    snprintf(line3, sizeof(line3), "TEMP: %.1f C", sample->temperature_c);
+    snprintf(line4, sizeof(line4), "HUM: %.1f %%", sample->humidity_pct);
     oled_render_text4("3/4", "DHT11", line3, line4);
 }
 
@@ -886,11 +1021,11 @@ static void render_bh1750_page(const bh1750_sample_t *sample)
     char line3[24];
 
     if (!sample->ready) {
-        oled_render_text4("4/4", "BH1750", "LIGHT:--.-LX", "");
+        oled_render_text4("4/4", "BH1750", "LIGHT: --.- LX", "");
         return;
     }
 
-    snprintf(line3, sizeof(line3), "LIGHT:%3.1fLX", sample->lux);
+    snprintf(line3, sizeof(line3), "LIGHT: %3.1f LX", sample->lux);
     oled_render_text4("4/4", "BH1750", line3, "");
 }
 
@@ -982,23 +1117,53 @@ void app_main(void)
             esp_err_t ret = pressure_sensor_read(&pressure);
             if (ret != ESP_OK) {
                 ESP_LOGW(TAG, "Pressure read failed: %s", esp_err_to_name(ret));
+                if (s_filtered_pressure_sample.ready) {
+                    pressure = s_filtered_pressure_sample;
+                } else if (s_last_pressure_sample.ready) {
+                    pressure = s_last_pressure_sample;
+                }
+            } else {
+                s_last_pressure_sample = pressure;
+                apply_pressure_filter(&pressure);
             }
         }
 
         esp_err_t ds_ret = ds18b20_read_sample(&ds18b20);
         if (ds_ret != ESP_OK) {
             ESP_LOGW(TAG, "DS18B20 read failed: %s", esp_err_to_name(ds_ret));
+            if (s_filtered_ds18b20_sample.ready) {
+                ds18b20 = s_filtered_ds18b20_sample;
+            } else if (s_last_ds18b20_sample.ready) {
+                ds18b20 = s_last_ds18b20_sample;
+            }
+        } else {
+            s_last_ds18b20_sample = ds18b20;
+            apply_ds18b20_filter(&ds18b20);
         }
 
         esp_err_t dht_ret = dht11_read_sample(&dht11);
         if (dht_ret != ESP_OK) {
             ESP_LOGW(TAG, "DHT11 read failed: %s", esp_err_to_name(dht_ret));
+            if (s_filtered_dht11_sample.ready) {
+                dht11 = s_filtered_dht11_sample;
+            }
+        } else {
+            s_last_dht11_sample = dht11;
+            apply_dht11_filter(&dht11);
         }
 
         if (s_bh1750_addr != 0) {
             esp_err_t bh_ret = bh1750_read_sample(&bh1750);
             if (bh_ret != ESP_OK) {
                 ESP_LOGW(TAG, "BH1750 read failed: %s", esp_err_to_name(bh_ret));
+                if (s_filtered_bh1750_sample.ready) {
+                    bh1750 = s_filtered_bh1750_sample;
+                } else if (s_last_bh1750_sample.ready) {
+                    bh1750 = s_last_bh1750_sample;
+                }
+            } else {
+                s_last_bh1750_sample = bh1750;
+                apply_bh1750_filter(&bh1750);
             }
         }
 
