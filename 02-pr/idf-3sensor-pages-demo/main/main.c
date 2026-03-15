@@ -11,6 +11,7 @@
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "led_strip.h"
 
 #define TAG "env_pages"
 
@@ -19,6 +20,9 @@
 #define I2C_SCL_GPIO            6
 #define I2C_CLOCK_HZ            (400 * 1000)
 #define PAGE_REFRESH_MS         3000
+#define RGB_LED_GPIO            48
+#define RGB_LED_COUNT           1
+#define RGB_RMT_RESOLUTION_HZ   (10 * 1000 * 1000)
 
 #define OLED_I2C_ADDR_PRIMARY   0x3C
 #define OLED_I2C_ADDR_SECONDARY 0x3D
@@ -102,6 +106,22 @@ static bmp280_calib_t s_bmp280;
 static int32_t s_bmp280_t_fine;
 static int s_page_index;
 static int s_seq;
+static led_strip_handle_t s_rgb_led;
+
+static void board_rgb_off(void)
+{
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = RGB_LED_GPIO,
+        .max_leds = RGB_LED_COUNT,
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .resolution_hz = RGB_RMT_RESOLUTION_HZ,
+    };
+
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_rgb_led));
+    ESP_ERROR_CHECK(led_strip_clear(s_rgb_led));
+    ESP_LOGI(TAG, "Board RGB LED turned off on GPIO%d", RGB_LED_GPIO);
+}
 
 static uint16_t read_le16(const uint8_t *buf)
 {
@@ -772,6 +792,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Start 3 sensor pages demo");
     ESP_LOGI(TAG, "I2C: SDA=GPIO%d SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
     ESP_LOGI(TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d", DS18B20_GPIO, DHT11_GPIO);
+    board_rgb_off();
 
     i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
