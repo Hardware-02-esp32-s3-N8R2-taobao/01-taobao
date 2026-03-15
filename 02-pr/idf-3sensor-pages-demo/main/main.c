@@ -20,21 +20,24 @@
 #define I2C_SCL_GPIO            6
 #define I2C_CLOCK_HZ            (400 * 1000)
 #define PAGE_REFRESH_MS         3000
+#define UI_POLL_MS              20
 #define RGB_LED_GPIO            48
 #define RGB_LED_COUNT           1
 #define RGB_RMT_RESOLUTION_HZ   (10 * 1000 * 1000)
+#define PAGE_BUTTON_GPIO        15
+#define PAGE_BUTTON_ACTIVE      0
 
 #define OLED_I2C_ADDR_PRIMARY   0x3C
 #define OLED_I2C_ADDR_SECONDARY 0x3D
 #define OLED_H_RES              128
 #define OLED_V_RES              64
 
-#define DS18B20_GPIO            4
+#define DS18B20_GPIO            7
 #define DS18B20_CMD_SKIP_ROM    0xCC
 #define DS18B20_CMD_CONVERT_T   0x44
 #define DS18B20_CMD_READ_PAD    0xBE
 
-#define DHT11_GPIO              7
+#define DHT11_GPIO              4
 
 #define BMP180_CHIP_ID          0x55
 #define BMP280_CHIP_ID          0x58
@@ -118,6 +121,7 @@ static int32_t s_bmp280_t_fine;
 static int s_page_index;
 static int s_seq;
 static led_strip_handle_t s_rgb_led;
+static bool s_page_button_last_level = true;
 
 static void board_rgb_off(void)
 {
@@ -132,6 +136,29 @@ static void board_rgb_off(void)
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_rgb_led));
     ESP_ERROR_CHECK(led_strip_clear(s_rgb_led));
     ESP_LOGI(TAG, "Board RGB LED turned off on GPIO%d", RGB_LED_GPIO);
+}
+
+static void page_button_init(void)
+{
+    const gpio_config_t button_conf = {
+        .pin_bit_mask = 1ULL << PAGE_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&button_conf));
+    s_page_button_last_level = gpio_get_level(PAGE_BUTTON_GPIO) != PAGE_BUTTON_ACTIVE;
+    ESP_LOGI(TAG, "Page button on GPIO%d", PAGE_BUTTON_GPIO);
+}
+
+static bool page_button_was_pressed(void)
+{
+    bool level_high = gpio_get_level(PAGE_BUTTON_GPIO) != PAGE_BUTTON_ACTIVE;
+    bool pressed = s_page_button_last_level && !level_high;
+    s_page_button_last_level = level_high;
+    return pressed;
 }
 
 static uint16_t read_le16(const uint8_t *buf)
@@ -205,6 +232,7 @@ static const uint8_t *font5x7(char c)
     case ' ': return (const uint8_t[5]){0x00, 0x00, 0x00, 0x00, 0x00};
     case '-': return (const uint8_t[5]){0x08, 0x08, 0x08, 0x08, 0x08};
     case '.': return (const uint8_t[5]){0x00, 0x60, 0x60, 0x00, 0x00};
+    case '/': return (const uint8_t[5]){0x20, 0x10, 0x08, 0x04, 0x02};
     case ':': return (const uint8_t[5]){0x00, 0x36, 0x36, 0x00, 0x00};
     case '%': return (const uint8_t[5]){0x62, 0x64, 0x08, 0x13, 0x23};
     case '0': return (const uint8_t[5]){0x3E, 0x51, 0x49, 0x45, 0x3E};
@@ -238,6 +266,7 @@ static const uint8_t *font5x7(char c)
     case 'U': return (const uint8_t[5]){0x3F, 0x40, 0x40, 0x40, 0x3F};
     case 'V': return (const uint8_t[5]){0x1F, 0x20, 0x40, 0x20, 0x1F};
     case 'W': return (const uint8_t[5]){0x7F, 0x20, 0x18, 0x20, 0x7F};
+    case 'X': return (const uint8_t[5]){0x63, 0x14, 0x08, 0x14, 0x63};
     case 'Y': return (const uint8_t[5]){0x03, 0x04, 0x78, 0x04, 0x03};
     default: return blank;
     }
@@ -814,63 +843,87 @@ static void render_pressure_page(const pressure_sample_t *sample)
     char line4[24];
 
     if (!sample->ready) {
-        oled_render_text4("PAGE1 PRESS", "NO SENSOR", "CHECK I2C", "GPIO5 GPIO6");
+        oled_render_text4("1/4", "PRESSURE", "P:--.--HPA", "T:--.--C A:--M");
         return;
     }
 
-    snprintf(line2, sizeof(line2), "P:%4.2fHPA", sample->pressure_hpa);
-    snprintf(line3, sizeof(line3), "T:%2.2fC", sample->temperature_c);
-    snprintf(line4, sizeof(line4), "ALT:%3.1fM", sample->altitude_m);
-    oled_render_text4(pressure_label(s_pressure_type), line2, line3, line4);
+    snprintf(line2, sizeof(line2), "%s", pressure_label(s_pressure_type));
+    snprintf(line3, sizeof(line3), "P:%4.2fHPA", sample->pressure_hpa);
+    snprintf(line4, sizeof(line4), "T:%2.2fC A:%3.0fM", sample->temperature_c, sample->altitude_m);
+    oled_render_text4("1/4", line2, line3, line4);
 }
 
 static void render_ds18_page(const ds18b20_sample_t *sample)
 {
-    char line2[24];
+    char line3[24];
 
     if (!sample->ready) {
-        oled_render_text4("PAGE2 DS18", "NO SENSOR", "GPIO4", "PULLUP 4K7");
+        oled_render_text4("2/4", "DS18B20", "TEMP:--.--C", "");
         return;
     }
 
-    snprintf(line2, sizeof(line2), "TEMP:%2.2fC", sample->temperature_c);
-    oled_render_text4("DS18B20", line2, "GPIO4", "PAGE2");
+    snprintf(line3, sizeof(line3), "TEMP:%2.2fC", sample->temperature_c);
+    oled_render_text4("2/4", "DS18B20", line3, "");
 }
 
 static void render_dht11_page(const dht11_sample_t *sample)
 {
-    char line2[24];
     char line3[24];
+    char line4[24];
 
     if (!sample->ready) {
-        oled_render_text4("PAGE3 DHT11", "NO SENSOR", "GPIO7", "PULLUP 10K");
+        oled_render_text4("3/4", "DHT11", "TEMP:--C", "HUM:--%");
         return;
     }
 
-    snprintf(line2, sizeof(line2), "TEMP:%dC", sample->temperature_c);
-    snprintf(line3, sizeof(line3), "HUMI:%d%%", sample->humidity_pct);
-    oled_render_text4("DHT11", line2, line3, "PAGE3");
+    snprintf(line3, sizeof(line3), "TEMP:%dC", sample->temperature_c);
+    snprintf(line4, sizeof(line4), "HUM:%d%%", sample->humidity_pct);
+    oled_render_text4("3/4", "DHT11", line3, line4);
 }
 
 static void render_bh1750_page(const bh1750_sample_t *sample)
 {
-    char line2[24];
+    char line3[24];
 
     if (!sample->ready) {
-        oled_render_text4("PAGE4 BH1750", "NO SENSOR", "CHECK I2C", "ADDR 0x23");
+        oled_render_text4("4/4", "BH1750", "LIGHT:--.-LX", "");
         return;
     }
 
-    snprintf(line2, sizeof(line2), "LUX:%3.1f", sample->lux);
-    oled_render_text4("BH1750", line2, "NO TEMP", "PAGE4");
+    snprintf(line3, sizeof(line3), "LIGHT:%3.1fLX", sample->lux);
+    oled_render_text4("4/4", "BH1750", line3, "");
+}
+
+static void render_current_page(
+    const pressure_sample_t *pressure,
+    const ds18b20_sample_t *ds18b20,
+    const dht11_sample_t *dht11,
+    const bh1750_sample_t *bh1750
+)
+{
+    switch (s_page_index % 4) {
+    case 0:
+        render_pressure_page(pressure);
+        break;
+    case 1:
+        render_ds18_page(ds18b20);
+        break;
+    case 2:
+        render_dht11_page(dht11);
+        break;
+    default:
+        render_bh1750_page(bh1750);
+        break;
+    }
 }
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "Start 4 sensor pages demo");
     ESP_LOGI(TAG, "I2C: SDA=GPIO%d SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
-    ESP_LOGI(TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d", DS18B20_GPIO, DHT11_GPIO);
+    ESP_LOGI(TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d, page button on GPIO%d", DS18B20_GPIO, DHT11_GPIO, PAGE_BUTTON_GPIO);
     board_rgb_off();
+    page_button_init();
 
     i2c_config_t i2c_conf = {
         .mode = I2C_MODE_MASTER,
@@ -914,11 +967,16 @@ void app_main(void)
     ds18b20_bus_init();
     dht11_bus_init();
 
+    pressure_sample_t pressure = {0};
+    ds18b20_sample_t ds18b20 = {0};
+    dht11_sample_t dht11 = {0};
+    bh1750_sample_t bh1750 = {0};
+
     while (1) {
-        pressure_sample_t pressure = {0};
-        ds18b20_sample_t ds18b20 = {0};
-        dht11_sample_t dht11 = {0};
-        bh1750_sample_t bh1750 = {0};
+        pressure = (pressure_sample_t){0};
+        ds18b20 = (ds18b20_sample_t){0};
+        dht11 = (dht11_sample_t){0};
+        bh1750 = (bh1750_sample_t){0};
 
         if (s_pressure_type != SENSOR_TYPE_NONE) {
             esp_err_t ret = pressure_sensor_read(&pressure);
@@ -945,23 +1003,16 @@ void app_main(void)
         }
 
         log_samples(&pressure, &ds18b20, &dht11, &bh1750);
+        render_current_page(&pressure, &ds18b20, &dht11, &bh1750);
 
-        switch (s_page_index % 4) {
-        case 0:
-            render_pressure_page(&pressure);
-            break;
-        case 1:
-            render_ds18_page(&ds18b20);
-            break;
-        case 2:
-            render_dht11_page(&dht11);
-            break;
-        default:
-            render_bh1750_page(&bh1750);
-            break;
+        for (int elapsed_ms = 0; elapsed_ms < PAGE_REFRESH_MS; elapsed_ms += UI_POLL_MS) {
+            if (page_button_was_pressed()) {
+                s_page_index = (s_page_index + 1) % 4;
+                ESP_LOGI(TAG, "Page changed to %d", s_page_index + 1);
+                render_current_page(&pressure, &ds18b20, &dht11, &bh1750);
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(UI_POLL_MS));
         }
-
-        s_page_index++;
-        vTaskDelay(pdMS_TO_TICKS(PAGE_REFRESH_MS));
     }
 }
