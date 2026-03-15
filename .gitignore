@@ -1,0 +1,38 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# ESP-IDF generated files
+**/build/
+**/managed_components/
+**/sdkconfig
+**/config.env
+**/compile_commands.json
+**/flasher_args.json
+**/flash_args
+**/flash_args.in
+**/flash_app_args
+**/flash_bootloader_args
+**/flash_project_args
+**/app-flash_args
+**/bootloader-flash_args
+**/partition-table-flash_args
+**/project_description.json
+**/project_elf_src_*.c
+**/x509_crt_bundle.S
+**/.bin_timestamp
+**/.ninja_*
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/kconfigs.in
+**/kconfigs_projbuild.in
+**/ldgen_libraries
+**/ldgen_libraries.in
+
+# ESP-IDF binary artifacts
+**/*.bin
+**/*.elf
+**/*.map
+
+# Build logs and temp files
+**/log/
