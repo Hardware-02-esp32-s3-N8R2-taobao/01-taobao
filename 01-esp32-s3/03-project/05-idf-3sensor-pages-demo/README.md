@@ -1,13 +1,42 @@
-# IDF 3 Sensor Pages Demo
+# IDF Multi Sensor Pages Demo
 
-这是一个给 YD-ESP32-S3 准备的四传感器分页显示工程。
+这是一个给 `YD-ESP32-S3` 准备的多传感器分页显示工程。
 
-它会把下面四个传感器整合到同一块 OLED 上，页面由外接按钮手动翻页：
+虽然目录名还叫 `05-idf-3sensor-pages-demo`，但当前程序已经整理成 `5` 个页面：
 
 1. 气压计页面
 2. `DS18B20` 页面
 3. `DHT11` 页面
 4. `BH1750` 页面
+5. 土壤湿度页面
+
+这次重构的重点是：
+
+- 把 `main` 里原来塞在一个文件中的驱动和业务逻辑拆到独立目录
+- 每个模块按模块名建文件夹，方便维护
+- 新增土壤湿度驱动、页面、日志和 MQTT 上报
+- 在 README 中补齐接线、周期、流程图和资料链接
+
+## 目录结构
+
+当前 `main` 目录已经按模块拆开：
+
+```text
+main/
+├─ app/                公共配置与数据结构
+├─ bh1750/             BH1750 驱动
+├─ board/              板级初始化
+├─ dht11/              DHT11 驱动
+├─ ds18b20/            DS18B20 驱动
+├─ i2c_bus/            I2C 总线封装
+├─ network/            Wi-Fi / MQTT / 网关状态
+├─ oled_display/       OLED 显示驱动
+├─ page_button/        翻页按钮输入
+├─ pressure/           BMP180 / BMP280 / BME280 驱动
+├─ soil_moisture/      土壤湿度驱动
+├─ ui/                 页面渲染
+└─ main.c              主流程编排
+```
 
 ## GPIO 分配
 
@@ -17,25 +46,18 @@
 - OLED I2C `SCL` -> `GPIO6`
 - 气压计 `SDA` -> `GPIO5`
 - 气压计 `SCL` -> `GPIO6`
-- `DS18B20 DQ` -> `GPIO7`
-- `DHT11 DATA` -> `GPIO4`
 - `BH1750 SDA` -> `GPIO5`
 - `BH1750 SCL` -> `GPIO6`
+- `DS18B20 DQ` -> `GPIO7`
+- `DHT11 DATA` -> `GPIO4`
+- 土壤湿度 `AO` -> `GPIO8`
 
-### 开发板上已经占用或建议保留的 IO
+### 控制和板载资源
 
 - 翻页按钮 -> `GPIO15`
 - 板载 RGB -> `GPIO48`
 - `BOOT` 按键 -> `GPIO0`
 - 原生 USB -> `GPIO19 / GPIO20`
-
-这样分配的原因是：
-
-- `GPIO5 / GPIO6` 已经稳定用于 OLED 和 I2C 气压计
-- `BH1750` 也是 I2C 设备，可以直接并在 `GPIO5 / GPIO6`
-- `GPIO7` 继续给 `DS18B20` 使用，方便和你现在的实际接线保持一致
-- `GPIO4` 改给 `DHT11` 使用，不影响 I2C、按钮或板载资源
-- `GPIO15` 可以稳定作为普通输入口，用来接翻页按钮比较合适
 
 ## 接线总表
 
@@ -59,113 +81,52 @@
 | DHT11 | VCC | `3V3` |
 | DHT11 | GND | `GND` |
 | DHT11 | DATA | `GPIO4` |
+| 土壤湿度模块 | VCC | `3V3` |
+| 土壤湿度模块 | GND | `GND` |
+| 土壤湿度模块 | `AO` | `GPIO8` |
 | 翻页按钮 | 一端 | `GPIO15` |
 | 翻页按钮 | 另一端 | `GND` |
 
-## IO 口说明
+## 土壤湿度模块说明
 
-- `GPIO5 / GPIO6`：整套工程唯一的 I2C 总线，同时挂了 OLED、气压计和 `BH1750`
-- `GPIO7`：单总线温度传感器 `DS18B20`
-- `GPIO4`：单线数字温湿度传感器 `DHT11`
-- `GPIO15`：外接翻页按钮输入，使用内部上拉
-- `GPIO48`：板载 `WS2812 RGB`，本工程启动时会主动关灯，不建议再外接别的设备
-- `GPIO0`：开发板 `BOOT` 键，保留作下载模式
-- `GPIO19 / GPIO20`：ESP32-S3 原生 USB 数据口，不建议用于普通 GPIO
+当前驱动按常见的 `AO/DO` 模拟土壤湿度模块来接入，程序只使用：
+
+- `AO` 模拟输出
+- `VCC`
+- `GND`
+
+没有使用比较器数字口 `DO`。
+
+当前土壤湿度算法是一个可调的线性映射：
+
+- `ADC_DRY_RAW = 3000`
+- `ADC_WET_RAW = 1300`
+
+程序会把 ADC 原始值映射成 `0 ~ 100%` 的湿度百分比，所以你后面拿到真实模块后，最好按你的土壤和探头重新校准这两个值。
+
+### 资料链接
+
+- 土壤湿度模块购买/资料链接：
+  `https://item.taobao.com/item.htm?id=605702777228&mi_id=0000bvaJajfSU-Q5FH9BEXynhnm91ReWZ9z68lSM3mkswss&spm=tbpc.boughtlist.suborder_itemtitle.1.2b5f2e8diwmlPr`
 
 ## I2C 总线说明
 
-- OLED、气压计和 `BH1750` 是并联在同一组 `GPIO5 / GPIO6` 上的
-- 所有这些模块都必须共地，也就是都接到同一个 `GND`
+- OLED、气压计和 `BH1750` 都并联在同一组 `GPIO5 / GPIO6`
+- 所有这些模块都必须共地
 - 电源统一建议接 `3V3`
 - 常见 I2C 地址：
-- OLED 通常是 `0x3C` 或 `0x3D`
-- `GY-302 / BH1750` 在 `ADDR` 没接时通常是 `0x23`
-- `BH1750` 如果 `ADDR` 拉高，通常会变成 `0x5C`
-- 气压计常见是 `0x77`，也可能因模块不同而变化
-- 同一条 I2C 总线上地址不能冲突，只要地址不同，就可以一起工作
-
-## 接线
-
-### OLED
-
-- `VCC` -> `3V3`
-- `GND` -> `GND`
-- `SDA` -> `GPIO5`
-- `SCL` -> `GPIO6`
-
-### 气压计
-
-- `VCC` -> `3V3`
-- `GND` -> `GND`
-- `SDA` -> `GPIO5`
-- `SCL` -> `GPIO6`
-
-当前工程里已经兼容了之前接过的 I2C 气压计模块，继续和 OLED、`BH1750` 共用同一组 I2C 引脚。
-
-### BH1750 / GY-302
-
-- `VCC` -> `3V3`
-- `GND` -> `GND`
-- `SDA` -> `GPIO5`
-- `SCL` -> `GPIO6`
-
-你这个 `GY-302` 模块的 `ADDR` 没有接时，默认一般是 `0x23`。
-程序里我同时兼容了：
-
-- `0x23`：`ADDR` 悬空或接地
-- `0x5C`：`ADDR` 接高电平
-
-### DS18B20
-
-- `GND` -> `GND`
-- `DQ` -> `GPIO7`
-- `VDD` -> `3V3`
-- `GPIO7` 和 `3V3` 之间加 `4.7K` 上拉
-
-如果你用的是已经做成小模块的 `DS18B20`，很多模块板上已经带了上拉电阻，但裸管一般需要你自己加。
-
-### DHT11
-
-- `GND` -> `GND`
-- `DATA` -> `GPIO4`
-- `VCC` -> `3V3`
-- `GPIO4` 和 `3V3` 之间建议加 `10K` 上拉
-
-如果你手上是 DHT11 小模块板，通常板上已经带了上拉电阻，也能直接接。
-
-### 翻页按钮
-
-- 按钮一端 -> `GPIO15`
-- 按钮另一端 -> `GND`
-- 程序已经开启了 `GPIO15` 内部上拉，普通轻触按钮可以直接接
-- 按下时输入变低电平，系统就翻到下一页
-
-## 当前整机连线建议
-
-- `3V3`：同时供电给 OLED、气压计、`BH1750`、`DS18B20`、`DHT11`
-- `GND`：所有模块共地
-- `GPIO5`：I2C `SDA`
-- `GPIO6`：I2C `SCL`
-- `GPIO7`：`DS18B20`
-- `GPIO4`：`DHT11`
-- `GPIO15`：外接翻页按钮
-- `GPIO0`：保留，不接传感器和按钮
-
-## 翻页方式
-
-- 按一下接在 `GPIO15` 上的按钮，OLED 就切到下一页
-- 页面不会再自动轮播
-- 传感器数据仍然会每 3 秒刷新一次
-- `BOOT(GPIO0)` 继续保留给下载模式和刷机使用
+  - OLED：`0x3C` 或 `0x3D`
+  - `BH1750`：`0x23` 或 `0x5C`
+  - 气压计：通常 `0x76` 或 `0x77`
 
 ## 页面内容
 
 ### 第 1 页
 
 - 气压计型号
-- 气压 `hPa`
+- 气压 `Pa`
 - 温度 `C`
-- 海拔 `m`
+- 相对高度 `m`
 
 ### 第 2 页
 
@@ -183,19 +144,146 @@
 - `BH1750`
 - 光照 `lux`
 
-`BH1750` 本身是光照传感器，不提供温度数据，所以这一页只显示照度。
+### 第 5 页
 
-## 构建和烧录
+- 土壤湿度百分比 `%`
+- ADC 原始值 `raw`
+
+## 程序周期与刷新节奏
+
+### 主循环周期
+
+- 主采样、日志、上报、页面刷新：每 `3s` 一轮
+
+### 按钮轮询
+
+- 主循环内会在 `3s` 的空档期内按 `20ms` 轮询翻页按钮
+- 按下后立即切换到下一页，并立刻重绘 OLED
+
+### 各模块采样特征
+
+- 气压计：I2C 即时读取，耗时较短
+- `BH1750`：I2C 即时读取，耗时较短
+- 土壤湿度：ADC 单次采样，耗时较短
+- `DHT11`：单次采样失败时最多重试 `3` 次，每次失败后间隔 `30ms`
+- `DS18B20`：一次测温会等待大约 `800ms` 完成温度转换
+
+### 上报周期
+
+- 传感器 MQTT 上报：随主循环，每 `3s` 一次
+- 网关 ping：每 `25s` 一次
+- 网关状态超时判定：`60s`
+
+## 线程 / 任务模型
+
+这个工程的用户代码没有再额外创建自定义 FreeRTOS 任务，主体是一个 `app_main()` 主循环。
+
+但运行时仍然有两类“并发来源”需要理解：
+
+1. 用户主循环
+   - 负责采样、滤波、日志、MQTT 上报调用、OLED 渲染、按钮轮询
+2. `ESP-IDF` 系统任务和事件回调
+   - `Wi-Fi` 连接事件回调
+   - `MQTT` 连接、断开、数据接收回调
+   - 网关心跳 JSON 状态更新
+
+也就是说：
+
+- 传感器驱动是“同步读”
+- 网络状态维护是“事件驱动”
+- OLED 页面显示由主循环统一刷新
+
+## 整体流程图
+
+```mermaid
+flowchart TD
+    A[app_main] --> B[nvs_flash_init]
+    B --> C[board_rgb_off]
+    C --> D[page_button_init]
+    D --> E{network_service_configured}
+    E -- yes --> F[network_service_start]
+    E -- no --> G[skip Wi-Fi and MQTT]
+    F --> H[i2c_bus_init]
+    G --> H
+    H --> I[oled_display_init]
+    I --> J[pressure_sensor_init]
+    J --> K[bh1750_sensor_init]
+    K --> L[ds18b20_sensor_init]
+    L --> M[dht11_sensor_init]
+    M --> N[soil_moisture_sensor_init]
+    N --> O[ui_render_boot_screen]
+    O --> P{{Main loop every 3s}}
+    P --> Q[pressure_sensor_read]
+    Q --> R[ds18b20_sensor_read]
+    R --> S[dht11_sensor_read]
+    S --> T[bh1750_sensor_read]
+    T --> U[soil_moisture_sensor_read]
+    U --> V[low pass filter and fallback cache]
+    V --> W[JSON log output]
+    W --> X[network_service_publish_samples]
+    X --> Y[network_service_tick]
+    Y --> Z[ui_render_current_page]
+    Z --> AA{{Poll button every 20ms}}
+    AA -- pressed --> AB[page_index++ and rerender]
+    AB --> AA
+    AA -- timeout 3s --> P
+```
+
+## 并发与事件关系图
+
+```mermaid
+flowchart LR
+    subgraph UserCode[用户代码]
+        A[app_main while loop]
+        B[3s sensor sampling]
+        C[filter and cache]
+        D[OLED render]
+        E[MQTT publish call]
+        F[20ms page button poll]
+        A --> B --> C --> E --> D --> F --> A
+    end
+
+    subgraph SystemTasks[ESP-IDF 系统任务]
+        G[Wi-Fi event callback]
+        H[MQTT event callback]
+    end
+
+    G --> I[s_wifi_connected and RSSI]
+    H --> J[s_mqtt_connected]
+    H --> K[gateway heartbeat JSON]
+    I --> D
+    J --> E
+    K --> D
+```
+
+## 过滤与容错策略
+
+- 气压、`DS18B20`、`DHT11`、`BH1750`、土壤湿度都加了低通滤波
+- 某轮采样失败时，优先回退到上一份滤波值
+- 如果还没有滤波值，再回退到最近一次成功值
+- `DHT11` 内部自带重试和最近值回退
+
+## 构建
 
 ```powershell
-cd F:\01-dev-board\06-esp32s3\YD-ESP32-S3\02-pr\idf-3sensor-pages-demo
+cd F:\01-dev-board\06-esp32s3\YD-ESP32-S3\01-esp32-s3\03-project\05-idf-3sensor-pages-demo
 . D:\02-software-stash-cache\02-esp32-idf\Initialize-Idf.ps1
 idf.py set-target esp32s3
 idf.py build
-idf.py -p COM4 flash
-idf.py -p COM4 monitor
 ```
 
-## 串口日志
+## 烧录
 
-程序也会同步输出每个传感器的采样结果，便于调试和后续“上报”。
+等你接好线后再执行：
+
+```powershell
+idf.py -p COMx flash
+idf.py -p COMx monitor
+```
+
+## 当前实现备注
+
+- 项目已经完成模块化重构
+- 已新增土壤湿度页面、日志和 MQTT 上报
+- 已在本机按 `esp32s3` 目标编译通过
+- 当前还没有烧录，等你线接好后再烧

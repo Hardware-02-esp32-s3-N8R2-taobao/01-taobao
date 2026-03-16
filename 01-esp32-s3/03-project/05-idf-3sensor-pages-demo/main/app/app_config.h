@@ -1,0 +1,65 @@
+#ifndef APP_CONFIG_H
+#define APP_CONFIG_H
+
+#include "driver/gpio.h"
+#include "driver/i2c.h"
+#include "esp_adc/adc_oneshot.h"
+
+#define APP_TAG "env_pages"
+
+#define I2C_HOST I2C_NUM_0
+#define I2C_SDA_GPIO 5
+#define I2C_SCL_GPIO 6
+#define I2C_CLOCK_HZ (400 * 1000)
+
+#define PAGE_REFRESH_MS 3000
+#define UI_POLL_MS 20
+#define UI_PAGE_COUNT 5
+
+#define RGB_LED_GPIO 48
+#define RGB_LED_COUNT 1
+#define RGB_RMT_RESOLUTION_HZ (10 * 1000 * 1000)
+
+#define PAGE_BUTTON_GPIO GPIO_NUM_15
+#define PAGE_BUTTON_ACTIVE 0
+
+#define DS18B20_GPIO GPIO_NUM_7
+#define DHT11_GPIO GPIO_NUM_4
+#define SOIL_MOISTURE_GPIO GPIO_NUM_8
+
+#define SOIL_MOISTURE_ADC_UNIT ADC_UNIT_1
+#define SOIL_MOISTURE_ADC_CHANNEL ADC_CHANNEL_7
+#define SOIL_MOISTURE_ADC_ATTEN ADC_ATTEN_DB_11
+#define SOIL_MOISTURE_ADC_DRY_RAW 3000
+#define SOIL_MOISTURE_ADC_WET_RAW 1300
+
+#define PRESSURE_FILTER_ALPHA 0.20f
+#define DS18B20_FILTER_ALPHA 0.25f
+#define DHT11_FILTER_ALPHA 0.35f
+#define BH1750_FILTER_ALPHA 0.20f
+#define SOIL_MOISTURE_FILTER_ALPHA 0.25f
+
+#define WIFI_SSID "Ermao"
+#define WIFI_PASSWORD "gf666666"
+#define MQTT_BROKER_URI "mqtt://192.168.1.226:1883"
+#define MQTT_TOPIC_DHT11 "garden/flower/dht11"
+#define MQTT_TOPIC_DS18B20 "garden/fish/ds18b20"
+#define MQTT_TOPIC_BMP280 "garden/climate/bmp280"
+#define MQTT_TOPIC_BH1750 "garden/light/bh1750"
+#define MQTT_TOPIC_SOIL_MOISTURE "garden/soil/moisture"
+#define MQTT_DEVICE_ID "yard-node-1"
+#define MQTT_DEVICE_ALIAS "YD-ESP32-S3"
+#define MQTT_CLIENT_ID "yd-esp32s3-garden-01"
+#define MQTT_GATEWAY_DEVICE MQTT_DEVICE_ID
+#define MQTT_TOPIC_GATEWAY_PING "garden/gateway/ping"
+#define MQTT_TOPIC_GATEWAY_STATUS "garden/gateway/status/" MQTT_GATEWAY_DEVICE
+#define MQTT_TOPIC_GATEWAY_BROADCAST "garden/gateway/broadcast"
+#define GATEWAY_PING_INTERVAL_US (25LL * 1000 * 1000)
+#define GATEWAY_STATUS_TIMEOUT_US (60LL * 1000 * 1000)
+
+#define OLED_I2C_ADDR_PRIMARY 0x3C
+#define OLED_I2C_ADDR_SECONDARY 0x3D
+#define OLED_H_RES 128
+#define OLED_V_RES 64
+
+#endif
