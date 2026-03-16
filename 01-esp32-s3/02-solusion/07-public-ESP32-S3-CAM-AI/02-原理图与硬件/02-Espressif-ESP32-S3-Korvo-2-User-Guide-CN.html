@@ -1,0 +1,1296 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="zh-CN" >
+<head>
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32-S3-Korvo-2 V3.1 -  -  &mdash; 乐鑫音频开发框架指南 latest 文档</title>
+      <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+      <link rel="stylesheet" href="../../_static/css/theme.css" type="text/css" />
+      <link rel="stylesheet" href="../../_static/copybutton.css" type="text/css" />
+      <link rel="stylesheet" href="../../_static/theme_overrides.css" type="text/css" />
+  <!--[if lt IE 9]>
+    <script src="../../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  
+        <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+        <script src="../../_static/jquery.js"></script>
+        <script src="../../_static/underscore.js"></script>
+        <script src="../../_static/doctools.js"></script>
+        <script src="../../_static/clipboard.min.js"></script>
+        <script src="../../_static/copybutton.js"></script>
+        <script src="../../_static/translations.js"></script>
+        <script src="https://wavedrom.com/skins/default.js"></script>
+        <script src="https://wavedrom.com/wavedrom.min.js"></script>
+    <script src="../../_static/js/theme.js"></script>
+
+    
+        
+
+    <script type="text/javascript">
+        DOCUMENTATION_OPTIONS.PAGENAME = 'design-guide/dev-boards/user-guide-esp32-s3-korvo-2';
+        DOCUMENTATION_OPTIONS.PROJECT_SLUG = 'esp-adf';
+        DOCUMENTATION_OPTIONS.LATEST_BRANCH_NAME = 'release/v2.x';
+        DOCUMENTATION_OPTIONS.LANGUAGES = ["en", "zh_CN"];
+        DOCUMENTATION_OPTIONS.RELEASE = 'latest';
+    </script>
+
+    <script type="text/javascript" src=""></script>
+    <link rel="author" title="关于这些文档" href="../../about.html" />
+    <link rel="index" title="索引" href="../../genindex.html" />
+    <link rel="search" title="搜索" href="../../search.html" />
+    <link rel="next" title="ESP32-S3-Korvo-2 V3.0" href="user-guide-esp32-s3-korvo-2-v3.0.html" />
+    <link rel="prev" title="ESP32-Korvo-DU1906" href="get-started-esp32-korvo-du1906.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+            <a href="../../index.html" class="icon icon-home"> 乐鑫音频开发框架指南
+            <img src="../../_static/espressif-logo.svg" class="logo" alt="Logo"/>
+          </a>
+
+          
+
+          <div class="selectors">
+            <select id="version-select" style="width: 150px;" hidden>
+              <option value="" disabled selected>Choose version...</option>
+            </select>
+          </div>
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="在文档中搜索" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../get-started/index.html">Get Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api-reference/index.html">API Reference</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Design Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../project-design.html"> Project Design</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../design-considerations.html"> Design Considerations</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.espressif.com/sites/default/files/documentation/esp32_audio_design_guidelines__en.pdf"> Hardware Design (PDF)</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html"> Development Boards</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat-mini.html">ESP32-LyraT-Mini V1.2 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="board-esp32-lyrat-mini-v1.2.html">ESP32-LyraT-Mini V1.2 Hardware Reference</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat.html">ESP32-LyraT V4.3 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="board-esp32-lyrat-v4.3.html">ESP32-LyraT V4.3 Hardware Reference</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat-v4.2.html">ESP32-LyraT V4.2 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat-v4.html">ESP32-LyraT V4 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyratd-msc.html">ESP32-LyraTD-MSC V2.2 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-korvo-du1906.html">ESP32-Korvo-DU1906</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">ESP32-S3-Korvo-2 V3.1</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#id1">入门指南</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id11">硬件参考</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id21">硬件版本</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#id23">相关文档</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide-esp32-s3-korvo-2-v3.0.html">ESP32-S3-Korvo-2 V3.0</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide-esp32-s3-korvo-2-lcd.html">ESP32-S3-Korvo-2-LCD V1.0</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide-esp32-c3-lyra.html">ESP32-C3-Lyra V2.0</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../audio-samples.html"> Audio Samples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../knowledge-center/index.html">知识中心</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../resources.html">Resources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../COPYRIGHT.html">Copyrights</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../english-chinese-glossary.html">English-Chinese Glossary</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../about.html">About</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">乐鑫音频开发框架指南</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home"></a> &raquo;</li>
+          <li><a href="../index.html">Design Guide</a> &raquo;</li>
+          <li><a href="index.html">Development Boards</a> &raquo;</li>
+      <li>ESP32-S3-Korvo-2 V3.1</li>
+      <li class="wy-breadcrumbs-aside">
+              <a href="https://github.com/espressif/esp-adf/blob/0148857/docs/zh_CN/design-guide/dev-boards/user-guide-esp32-s3-korvo-2.rst" class="fa fa-github"> 在 GitHub 上修改</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="esp32-s3-korvo-2-v3-1">
+<h1>ESP32-S3-Korvo-2 V3.1<a class="headerlink" href="#esp32-s3-korvo-2-v3-1" title="永久链接至标题"></a></h1>
+<p><a class="reference external" href="../../../../en/latest/design-guide/dev-boards/user-guide-esp32-s3-korvo-2.html"> [English]</a></p>
+<p>更早版本： <a class="reference internal" href="user-guide-esp32-s3-korvo-2-v3.0.html"><span class="doc">ESP32-S3-Korvo-2 V3.0</span></a></p>
+<p>本指南将帮助您快速上手 ESP32-S3-Korvo-2 V3.1，并提供该款开发板的详细信息。</p>
+<p>ESP32-S3-Korvo-2 V3.1 是一款基于 ESP32-S3 芯片的多媒体开发板，搭载双麦克风阵列，支持语音识别和近/远场语音唤醒。同时它还搭载 LCD、摄像头、microSD 卡等外设，可支持基于 JPEG 的视频流处理，满足用户对低成本、低功耗、联网的音视频产品开发需求。</p>
+<figure class="align-center" id="id25">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-overview.png"><img alt="ESP32-S3-Korvo-2 V3.1（板载 ESP32-S3-WROOM-1 模组）" src="../../_images/esp32-s3-korvo-2-v3.0-overview.png" style="width: 675.0px; height: 539.5500000000001px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1（板载 ESP32-S3-WROOM-1 模组）</span><a class="headerlink" href="#id25" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<p>ESP32-S3-Korvo-2 V3.1 主板可与 LCD 扩展板 <a class="reference internal" href="user-guide-esp32-s3-korvo-2-lcd.html"><span class="doc">ESP32-S3-Korvo-2-LCD</span></a> 搭配使用。本文档主要介绍 ESP32-S3-Korvo-2 V3.1 主板，更多关于 LCD 扩展版的信息，请参阅 <a class="reference internal" href="user-guide-esp32-s3-korvo-2-lcd.html"><span class="doc">ESP32-S3-Korvo-2-LCD 用户指南</span></a>。</p>
+<p>本指南包括如下内容：</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#id1">入门指南</a>：简要介绍了开发板和硬件、软件设置指南。</p></li>
+<li><p><a class="reference internal" href="#id11">硬件参考</a>：详细介绍了开发板的硬件。</p></li>
+<li><p><a class="reference internal" href="#id21">硬件版本</a>：介绍硬件历史版本和已知问题，并提供链接至历史版本开发板的入门指南（如有）。</p></li>
+<li><p><a class="reference internal" href="#id23">相关文档</a>：列出了相关文档的链接。</p></li>
+</ul>
+<section id="id1">
+<h2>入门指南<a class="headerlink" href="#id1" title="永久链接至标题"></a></h2>
+<p>本小节将简要介绍 ESP32-S3-Korvo-2 V3.1，说明如何在 ESP32-S3-Korvo-2 V3.1 上烧录固件及相关准备工作。</p>
+<section id="id2">
+<h3>组件介绍<a class="headerlink" href="#id2" title="永久链接至标题"></a></h3>
+<figure class="align-center" id="id26">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0.png"><img alt="ESP32-S3-Korvo-2 V3.1（点击放大）" src="../../_images/esp32-s3-korvo-2-v3.0.png" style="width: 740.5999999999999px; height: 553.6999999999999px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1（点击放大）</span><a class="headerlink" href="#id26" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<p>以下按照顺时针的顺序依次介绍开发板上的主要组件。</p>
+<table class="colwidths-given docutils align-default">
+<colgroup>
+<col style="width: 30%" />
+<col style="width: 70%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>主要组件</p></th>
+<th class="head"><p>介绍</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ESP32-S3-WROOM-1 模组</p></td>
+<td><p>ESP32-S3-WROOM-1 模组是两款通用型 Wi-Fi + 低功耗蓝牙 MCU 模组，搭载 ESP32-S3 系列芯片。除具有丰富的外设接口外，模组还拥有强大的神经网络运算能力和信号处理能力，适用于 AIoT 领域的多种应用场景，例如唤醒词检测和语音命令识别、人脸检测和识别、智能家居、智能家电、智能控制面板、智能扬声器等。</p></td>
+</tr>
+<tr class="row-odd"><td><p>左侧麦克风 (Left Microphone)</p></td>
+<td><p>板载麦克风，连接至 ADC。</p></td>
+</tr>
+<tr class="row-even"><td><p>音频模数转换器 (Audio ADC Chip）</p></td>
+<td><p><a class="reference external" href="http://www.everest-semi.com/pdf/ES7210%20PB.pdf">ES7210</a> 是一款用于麦克风阵列应用的高性能、低功耗 4 通道音频模数转换器，非常适合音乐和语音应用。此外，ES7210 也可以用作声学回声消除 (AEC)。</p></td>
+</tr>
+<tr class="row-odd"><td><p>音频编解码芯片 (Audio Codec Chip)</p></td>
+<td><p>音频编解码器芯片 <a class="reference external" href="http://www.everest-semi.com/pdf/ES8311%20PB.pdf">ES8311</a> 是一种低功耗单声道音频编解码器，包含单通道 ADC、单通道 DAC、低噪声前置放大器、耳机驱动器、数字音效、模拟混音和增益功能。它通过 I2S 和 I2C 总线与 ESP32-S3-WROOM-1 模组连接，以提供独立于音频应用程序的硬件音频处理。</p></td>
+</tr>
+<tr class="row-even"><td><p>音频功率放大器 (Audio PA Chip)</p></td>
+<td><p>NS4150 是一款低 EMI、3 W 单声道 D 类音频功率放大器，用于放大来自音频编解码芯片的音频信号，以驱动扬声器。</p></td>
+</tr>
+<tr class="row-odd"><td><p>右侧麦克风 (Right Microphone)</p></td>
+<td><p>板载麦克风，连接至 ADC。</p></td>
+</tr>
+<tr class="row-even"><td><p>扬声器输出端口 (Speaker Output Port)</p></td>
+<td><p>可通过音频功率放大器的支持，实现外部扬声器播放功能。</p></td>
+</tr>
+<tr class="row-odd"><td><p>USB-to-UART 桥接器 (USB-to-UART Bridge Chip)</p></td>
+<td><p>单芯片 USB-UART 桥接器 CP2102N 为软件下载和调试提供高达 3 Mbps 的传输速率。</p></td>
+</tr>
+<tr class="row-even"><td><p>USB-to-UART 端口 (USB-to-UART Port)</p></td>
+<td><p>用于 PC 端与 ESP32-S3-WROOM-1 模组的通信。</p></td>
+</tr>
+<tr class="row-odd"><td><p>USB 电源端口 (USB Power Port)</p></td>
+<td><p>为整个系统提供电源。建议使用至少 5V/2A 电源适配器供电，保证供电稳定。</p></td>
+</tr>
+<tr class="row-even"><td><p>电池接口 (Battery Socket)</p></td>
+<td><p>用于连接单节锂离子电池的两针接口。</p></td>
+</tr>
+<tr class="row-odd"><td><p>电源开关 (Power Switch)</p></td>
+<td><p>电源拨动开/关：向下拨动开启开发板电源，向上拨动关闭开发板电源。</p></td>
+</tr>
+<tr class="row-even"><td><p>电池充电管理芯片 (Battery Charger)</p></td>
+<td><p>恒流/恒压线性电源管理芯片 AP5056 可以用于单节锂离子电池的充电管理，为通过 Micro USB 端口连接到电池接口的电池充电。</p></td>
+</tr>
+<tr class="row-odd"><td><p>功能按键 (Function Press Keys)</p></td>
+<td><p>六个按键，分别为 REC、MUTE、PLAY、SET、VOL- 和 VOL+，与 ESP32-S3-WROOM-1 模组连接，借助该 UI 和专用的 API 可以开发和测试音频应用程序。</p></td>
+</tr>
+<tr class="row-even"><td><p>Boot/Reset 按键 (Boot/Reset Press Keys)</p></td>
+<td><div class="line-block">
+<div class="line">Boot：长按 Boot 键时，再按 Reset 键可启动固件上传模式，然后便可通过串口上传固件。</div>
+<div class="line">Reset：单独按下此按键会重置系统。</div>
+</div>
+</td>
+</tr>
+<tr class="row-odd"><td><p>microSD 插槽 (MicroSD Slot)</p></td>
+<td><p>本开发板支持一线模式的 microSD 卡，可以存储或播放 microSD 卡中的音频文件。</p></td>
+</tr>
+<tr class="row-even"><td><p>LCD 连接器 (LCD Connector)</p></td>
+<td><p>一款 0.5 mm 间距的 FPC 连接器，用以连接 LCD 扩展板。</p></td>
+</tr>
+<tr class="row-odd"><td><p>系统 LED (System LEDs)</p></td>
+<td><p>两个通用 LED（绿色和红色），由 ESP32-S3-WROOM-1 模组控制，可借助专用的 API 为音频应用程序做状态行为指示。</p></td>
+</tr>
+<tr class="row-even"><td><p>摄像头连接器 (Camera Connector)</p></td>
+<td><p>通过连接器外接摄像头模组至开发板，实现图像传输。</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="id3">
+<h3>开始开发应用<a class="headerlink" href="#id3" title="永久链接至标题"></a></h3>
+<p>通电前，请确保开发板完好无损。</p>
+<section id="id4">
+<h4>必备硬件<a class="headerlink" href="#id4" title="永久链接至标题"></a></h4>
+<ul class="simple">
+<li><p>1 x ESP32-S3-Korvo-2 V3.1</p></li>
+<li><p>1 x 扬声器</p></li>
+<li><p>2 x USB 2.0 数据线（标准 A 型转 Micro-B 型）</p></li>
+<li><p>1 x 电脑（Windows、Linux 或 macOS）</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">备注</p>
+<p>请确保使用适当的 USB 数据线。部分数据线仅可用于充电，无法用于数据传输和编程。</p>
+</div>
+</section>
+<section id="id5">
+<h4>可选硬件<a class="headerlink" href="#id5" title="永久链接至标题"></a></h4>
+<ul class="simple">
+<li><p>1 x microSD 卡</p></li>
+<li><p>1 x 锂离子电池</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">备注</p>
+<p>请务必使用内置保护电路的锂离子电池。</p>
+</div>
+</section>
+<section id="id6">
+<h4>硬件设置<a class="headerlink" href="#id6" title="永久链接至标题"></a></h4>
+<ol class="arabic simple">
+<li><p>连接扬声器至 <strong>扬声器输出</strong> 端口。</p></li>
+<li><p>插入 USB 数据线，分别连接 PC 与开发板的两个 USB 端口。</p></li>
+<li><p>此时，绿色待机指示灯应亮起。若电池未连接，红色充电指示灯每隔几秒闪烁一次。</p></li>
+<li><p>打开 <strong>电源开关</strong>。</p></li>
+<li><p>此时，红色电源指示灯应亮起。</p></li>
+</ol>
+</section>
+<section id="esp32-s3-korvo-2-v3-0-software-setup">
+<span id="id7"></span><h4>软件设置<a class="headerlink" href="#esp32-s3-korvo-2-v3-0-software-setup" title="永久链接至标题"></a></h4>
+<p>请前往 <a class="reference internal" href="../../get-started/index.html"><span class="doc">Get Started</span></a>，在 <a class="reference internal" href="../../get-started/index.html#get-started-step-by-step"><span class="std std-ref">Installation Step by Step</span></a> 小节查看如何快速设置开发环境，并将 <a class="reference external" href="https://github.com/espressif/esp-adf/tree/0148857/examples">应用程序示例 </a> 烧录至您的开发板。</p>
+</section>
+</section>
+<section id="id8">
+<h3>内含组件和包装<a class="headerlink" href="#id8" title="永久链接至标题"></a></h3>
+<p id="esp32-s3-korvo-2-v3-0-accessories">可分开购买主板或主板配件，其中配件包含：</p>
+<ul class="simple">
+<li><p>LCD 扩展板：ESP32-S3-Korvo-2-LCD</p></li>
+<li><p>摄像头</p></li>
+<li><p>连接器</p>
+<ul>
+<li><p>20 针 FPC 线</p></li>
+</ul>
+</li>
+<li><p>紧固件：</p>
+<ul>
+<li><p>安装螺栓 (x8)</p></li>
+<li><p>螺丝 (x4)</p></li>
+</ul>
+</li>
+</ul>
+<section id="id9">
+<h4>零售订单<a class="headerlink" href="#id9" title="永久链接至标题"></a></h4>
+<p>如购买样品，每个开发板将以防静电袋或零售商选择的其他方式包装。</p>
+<p>零售订单请前往 <a class="reference external" href="https://www.espressif.com/zh-hans/company/contact/buy-a-sample">https://www.espressif.com/zh-hans/company/contact/buy-a-sample</a>。</p>
+</section>
+<section id="id10">
+<h4>批量订单<a class="headerlink" href="#id10" title="永久链接至标题"></a></h4>
+<p>如批量购买，开发板将以大纸板箱包装。</p>
+<p>批量订单请前往 <a class="reference external" href="https://www.espressif.com/zh-hans/contact-us/sales-questions">https://www.espressif.com/zh-hans/contact-us/sales-questions</a>。</p>
+</section>
+</section>
+</section>
+<section id="id11">
+<h2>硬件参考<a class="headerlink" href="#id11" title="永久链接至标题"></a></h2>
+<section id="id12">
+<h3>功能框图<a class="headerlink" href="#id12" title="永久链接至标题"></a></h3>
+<p>ESP32-S3-Korvo-2 V3.1 的主要组件和连接方式如下图所示。</p>
+<figure class="align-center" id="id27">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-electrical-block-diagram.png"><img alt="ESP32-S3-Korvo-2 V3.1 电气功能框图" src="../../_images/esp32-s3-korvo-2-v3.0-electrical-block-diagram.png" style="width: 679.25px; height: 436.70000000000005px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 电气功能框图</span><a class="headerlink" href="#id27" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+</section>
+<section id="id13">
+<h3>供电说明<a class="headerlink" href="#id13" title="永久链接至标题"></a></h3>
+<section id="usb">
+<h4>USB 与电池供电<a class="headerlink" href="#usb" title="永久链接至标题"></a></h4>
+<p>主电源为 5 V，由 USB 提供。辅助电源为 3.7 V，由电池提供，为可选项。USB 供电使用专用的数据线，与用于上传应用程序的 USB 数据线分开。为了近一步减少来自 USB 的噪音，可使用电池代替 USB。</p>
+<figure class="align-center" id="id28">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-usb-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - USB 电源供电" src="../../_images/esp32-s3-korvo-2-v3.0-usb-ps.png" style="width: 558.4px; height: 340.8px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - USB 电源供电</span><a class="headerlink" href="#id28" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id29">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-battery-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - 电池供电" src="../../_images/esp32-s3-korvo-2-v3.0-battery-ps.png" style="width: 616.8000000000001px; height: 260.8px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - 电池供电</span><a class="headerlink" href="#id29" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<p>如下图所示，当 USB 供电和电池供电同时存在时，VBUS 为高电平，Q14 处于截止状态，VBAT 自动与系统电源切断。此时，USB 为系统供电。</p>
+<figure class="align-center" id="id30">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-ps-options.png"><img alt="ESP32-S3-Korvo-2 V3.1 - 供电选项" src="../../_images/esp32-s3-korvo-2-v3.0-ps-options.png" style="width: 316.8px; height: 220.0px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - 供电选项</span><a class="headerlink" href="#id30" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+</section>
+<section id="id14">
+<h4>音频和数字独立供电<a class="headerlink" href="#id14" title="永久链接至标题"></a></h4>
+<p>ESP32-S3-Korvo-2 V3.1 可为音频组件和 ESP 模组提供相互独立的电源，可降低数字组件给音频信号带来的噪声并提高组件的整体性能。</p>
+<figure class="align-center" id="id31">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-digital-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - 数字供电" src="../../_images/esp32-s3-korvo-2-v3.0-digital-ps.png" style="width: 640.0px; height: 321.6px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - 数字供电</span><a class="headerlink" href="#id31" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id32">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-audio-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - 音频供电" src="../../_images/esp32-s3-korvo-2-v3.0-audio-ps.png" style="width: 732.0px; height: 356.8px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - 音频供电</span><a class="headerlink" href="#id32" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+</section>
+</section>
+<section id="id15">
+<h3>管脚分配列表<a class="headerlink" href="#id15" title="永久链接至标题"></a></h3>
+<p>下表为 ESP32-S3-WROOM-1 模组的管脚分配列表，用于控制开发板的特定组件或功能。</p>
+<table class="colwidths-given docutils align-default" id="id33">
+<caption><span class="caption-text">ESP32-S3-WROOM-1 管脚分配</span><a class="headerlink" href="#id33" title="永久链接至表格"></a></caption>
+<colgroup>
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>管脚 <a class="footnote-reference brackets" href="#one" id="id16">1</a></p></th>
+<th class="head"><p>管脚名称</p></th>
+<th class="head"><p>ES8311</p></th>
+<th class="head"><p>ES7210</p></th>
+<th class="head"><p>摄像头</p></th>
+<th class="head"><p>LCD</p></th>
+<th class="head"><p>按键</p></th>
+<th class="head"><p>microSD 卡</p></th>
+<th class="head"><p>IO 扩展</p></th>
+<th class="head"><p>其他</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>EN</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>EN_KEY</p></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>IO4</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>DATA0</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>IO5</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>REC, MUTE, PLAY, SET, VOL-, VOL+</p></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>IO6</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>BAT_MEAS_ADC</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p>IO7</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>CMD</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>IO15</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>CLK</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>IO16</p></td>
+<td><p>I2S0_MCLK</p></td>
+<td><p>MCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>IO17</p></td>
+<td><p>I2C_SDA</p></td>
+<td><p>I2C_SDA</p></td>
+<td><p>SIOD</p></td>
+<td><p>TP_I2C_SDA</p></td>
+<td></td>
+<td></td>
+<td><p>I2C_SDA</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p>IO18</p></td>
+<td><p>I2C_CLK</p></td>
+<td><p>I2C_CLK</p></td>
+<td><p>SIOC</p></td>
+<td><p>TP_I2C_CLK</p></td>
+<td></td>
+<td></td>
+<td><p>I2C_CLK</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p>IO8</p></td>
+<td><p>I2S0_DSDIN</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>13</p></td>
+<td><p>IO19</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP_USB_DM (Reserve)</p></td>
+</tr>
+<tr class="row-odd"><td><p>14</p></td>
+<td><p>IO20</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP_USB_DP (Reserve)</p></td>
+</tr>
+<tr class="row-even"><td><p>15</p></td>
+<td><p>IO3</p></td>
+<td></td>
+<td></td>
+<td><p>D5</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>16</p></td>
+<td><p>IO46</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-even"><td><p>17</p></td>
+<td><p>IO9</p></td>
+<td><p>I2S0_SCLK</p></td>
+<td><p>SCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>18</p></td>
+<td><p>IO10</p></td>
+<td></td>
+<td><p>SDOUT</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>19</p></td>
+<td><p>IO11</p></td>
+<td></td>
+<td></td>
+<td><p>PCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>20</p></td>
+<td><p>IO12</p></td>
+<td></td>
+<td></td>
+<td><p>D6</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>21</p></td>
+<td><p>IO13</p></td>
+<td></td>
+<td></td>
+<td><p>D2</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>22</p></td>
+<td><p>IO14</p></td>
+<td></td>
+<td></td>
+<td><p>D4</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>23</p></td>
+<td><p>IO21</p></td>
+<td></td>
+<td></td>
+<td><p>VSYNC</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>24</p></td>
+<td><p>IO47</p></td>
+<td></td>
+<td></td>
+<td><p>D3</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>25</p></td>
+<td><p>IO48</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>PA_CTRL</p></td>
+</tr>
+<tr class="row-odd"><td><p>26</p></td>
+<td><p>IO45</p></td>
+<td><p>I2S0_LRCK</p></td>
+<td><p>LRCK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>27</p></td>
+<td><p>IO0</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>LCD_SPI_SDA</p></td>
+<td><p>BOOT_KEY</p></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>28</p></td>
+<td><p>IO35</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-even"><td><p>29</p></td>
+<td><p>IO36</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-odd"><td><p>30</p></td>
+<td><p>IO37</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-even"><td><p>31</p></td>
+<td><p>IO38</p></td>
+<td></td>
+<td></td>
+<td><p>HREF</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>32</p></td>
+<td><p>IO39</p></td>
+<td></td>
+<td></td>
+<td><p>D9</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>33</p></td>
+<td><p>IO40</p></td>
+<td></td>
+<td></td>
+<td><p>XCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>34</p></td>
+<td><p>IO41</p></td>
+<td></td>
+<td></td>
+<td><p>D8</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>35</p></td>
+<td><p>IO42</p></td>
+<td></td>
+<td></td>
+<td><p>D7</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>36</p></td>
+<td><p>RXD0</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP0_UART0_RX</p></td>
+</tr>
+<tr class="row-even"><td><p>37</p></td>
+<td><p>TXD0</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP0_UART0_TX</p></td>
+</tr>
+<tr class="row-odd"><td><p>38</p></td>
+<td><p>IO2</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>LCD_SPI_DC</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>39</p></td>
+<td><p>IO1</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>LCD_SPI_CLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>41</p></td>
+<td><p>EPAD</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<dl class="footnote brackets">
+<dt class="label" id="one"><span class="brackets"><a class="fn-backref" href="#id16">1</a></span></dt>
+<dd><p>管脚 - ESP32-S3-WROOM-1 模组管脚号，不含 GND 和供电管脚。</p>
+</dd>
+</dl>
+<p>分配给 IO 扩展器的 GPIO 被进一步分配为多个 GPIO。</p>
+<table class="colwidths-given docutils align-default" id="id34">
+<caption><span class="caption-text">IO 扩展器 GPIO 分配</span><a class="headerlink" href="#id34" title="永久链接至表格"></a></caption>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>IO 扩展器管脚</p></th>
+<th class="head"><p>管脚名称</p></th>
+<th class="head"><p>LCD</p></th>
+<th class="head"><p>其他</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4</p></td>
+<td><p>P0</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>5</p></td>
+<td><p>P1</p></td>
+<td><p>LCD_CTRL</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>6</p></td>
+<td><p>P2</p></td>
+<td><p>LCD_RST</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>7</p></td>
+<td><p>P3</p></td>
+<td><p>LCD_CS</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>P4</p></td>
+<td><p>TP_INT</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>P5</p></td>
+<td></td>
+<td><p>PERI_PWR_ON</p></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p>P6</p></td>
+<td></td>
+<td><p>LED1</p></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p>P7</p></td>
+<td></td>
+<td><p>LED2</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="id17">
+<h3>连接器<a class="headerlink" href="#id17" title="永久链接至标题"></a></h3>
+<section id="id18">
+<h4>摄像头连接器<a class="headerlink" href="#id18" title="永久链接至标题"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 10%" />
+<col style="width: 42%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>摄像头信号</p></th>
+<th class="head"><p>ESP32-S3 管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>SIOD</p></td>
+<td><p>GPIO17</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>SIOC</p></td>
+<td><p>GPIO18</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>D5</p></td>
+<td><p>GPIO3</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>PCLK</p></td>
+<td><p>GPIO11</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>D6</p></td>
+<td><p>GPIO12</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>D2</p></td>
+<td><p>GPIO13</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p>D4</p></td>
+<td><p>GPIO14</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>VSYNC</p></td>
+<td><p>GPIO21</p></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>D3</p></td>
+<td><p>GPIO47</p></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>HREF</p></td>
+<td><p>GPIO38</p></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p>D9</p></td>
+<td><p>GPIO39</p></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p>XCLK</p></td>
+<td><p>GPIO40</p></td>
+</tr>
+<tr class="row-even"><td><p>13</p></td>
+<td><p>D8</p></td>
+<td><p>GPIO41</p></td>
+</tr>
+<tr class="row-odd"><td><p>14</p></td>
+<td><p>D7</p></td>
+<td><p>GPIO42</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="lcd">
+<h4>LCD 连接器<a class="headerlink" href="#lcd" title="永久链接至标题"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 39%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>LCD 信号</p></th>
+<th class="head"><p>ESP32-S3 管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>TP_I2C_SDA</p></td>
+<td><p>GPIO17</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>TP_I2C_CLK</p></td>
+<td><p>GPIO18</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>LCD_SPI_SDA</p></td>
+<td><p>GPIO0</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>LCD_SPI_DC</p></td>
+<td><p>GPIO2</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>LCD_SPI_CLK</p></td>
+<td><p>GPIO1</p></td>
+</tr>
+</tbody>
+</table>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 44%" />
+<col style="width: 44%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>LCD 信号</p></th>
+<th class="head"><p>扩展器管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>ESP_LCD_CTRL</p></td>
+<td><p>P1</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>ESP_LCD_RST</p></td>
+<td><p>P2</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>ESP_LCD_CS</p></td>
+<td><p>P3</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>ESP_TP_INT</p></td>
+<td><p>P4</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="aec">
+<h3>AEC 电路<a class="headerlink" href="#aec" title="永久链接至标题"></a></h3>
+<p>AEC 电路为 AEC 算法提供参考信号。</p>
+<p>ESP32-S3-Korvo-2 V3.1 回声参考信号源有两路兼容设计，一路是 Codec (ES8311) DAC 输出 (DAC_AOUTLN/DAC_AOUTLP)，一路是 PA (NS4150) 输出 (PA_OUTL+/PA_OUTL-)。默认推荐将 Codec (ES8311) DAC 输出 (DAC_AOUTLN/DAC_AOUTLP) 作为回声参考信号，同时将下图中电阻 R132、R140 NC。</p>
+<p>回声参考信号通过 ADC (ES7210) 的 ADC_MIC3P/ADC_MIC3N 采集后送回给 ESP32-S3 用于 AEC 算法。</p>
+<figure class="align-center" id="id35">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-aec-codec-o.png"><img alt="ESP32-S3-Korvo-2 V3.1 - AEC Codec DAC 输出（点击放大）" src="../../_images/esp32-s3-korvo-2-v3.0-aec-codec-o.png" style="width: 450.0px; height: 177.6px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - AEC Codec DAC 输出（点击放大）</span><a class="headerlink" href="#id35" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id36">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-aec-pa-o.png"><img alt="ESP32-S3-Korvo-2 V3.1 - AEC PA 输出 （点击放大）" src="../../_images/esp32-s3-korvo-2-v3.0-aec-pa-o.png" style="width: 792.0px; height: 271.2px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - AEC PA 输出（点击放大）</span><a class="headerlink" href="#id36" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id37">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-aec-signal-collection.png"><img alt="ESP32-S3-Korvo-2 V3.1 - AEC 参考信号采集（点击放大）" src="../../_images/esp32-s3-korvo-2-v3.0-aec-signal-collection.png" style="width: 418.8px; height: 163.2px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - 参考信号采集（点击放大）</span><a class="headerlink" href="#id37" title="永久链接至图片"></a></p>
+</figcaption>
+</figure>
+</section>
+<section id="id19">
+<h3>硬件设置选项<a class="headerlink" href="#id19" title="永久链接至标题"></a></h3>
+<section id="id20">
+<h4>自动下载<a class="headerlink" href="#id20" title="永久链接至标题"></a></h4>
+<p>可以通过两种方式使 ESP 开发板进入下载模式：</p>
+<ul class="simple">
+<li><p>手动按下 Boot 和 RST 键，然后先松开 RST，再松开 Boot 键。</p></li>
+<li><p>由软件自动执行下载。软件利用串口的 DTR 和 RTS 信号来控制 ESP 开发板的 EN、IO0 管脚的状态。详情请参见 <a class="reference external" href="https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-Korvo-2_V3.1.2_20240116.pdf">ESP32-S3-Korvo-2 V3.1 原理图</a> (PDF)。</p></li>
+</ul>
+</section>
+</section>
+<section id="esp">
+<h3>ESP 管脚测试点分配<a class="headerlink" href="#esp" title="永久链接至标题"></a></h3>
+<p>本节介绍了 ESP32-S3-Korvo-2 V3.1 板上可分配的测试点。</p>
+<p>测试点是裸通孔，具有标准的 2.54 毫米/0.1 英寸间距。您可能需要接入排针或排针插孔，从而连接外部硬件。</p>
+<section id="j15">
+<h4>编解码器测试点/J15<a class="headerlink" href="#j15" title="永久链接至标题"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 10%" />
+<col style="width: 40%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>编解码器管脚</p></th>
+<th class="head"><p>ESP32-S3 管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>MCLK</p></td>
+<td><p>GPIO16</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>SCLK</p></td>
+<td><p>GPIO9</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>LRCK</p></td>
+<td><p>GPIO45</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>DSDIN</p></td>
+<td><p>GPIO8</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>ASDOUT</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>GND</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="adc-j16">
+<h4>ADC 测试点/J16<a class="headerlink" href="#adc-j16" title="永久链接至标题"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 37%" />
+<col style="width: 52%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>ADC 管脚</p></th>
+<th class="head"><p>ESP32-S3 管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>MCLK</p></td>
+<td><p>GPIO16</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>SCLK</p></td>
+<td><p>GPIO9</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>LRCK</p></td>
+<td><p>GPIO45</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>SDOUT</p></td>
+<td><p>GPIO10</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>INT</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>GND</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="uart-j17">
+<h4>UART 测试点/J17<a class="headerlink" href="#uart-j17" title="永久链接至标题"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 77%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>UART 管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>3.3V</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>TXD</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>RXD</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>IO0</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>EN</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>GND</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="i2c-j18">
+<h4>I2C 测试点/J18<a class="headerlink" href="#i2c-j18" title="永久链接至标题"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 37%" />
+<col style="width: 52%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>I2C 管脚</p></th>
+<th class="head"><p>ESP32-S3 管脚</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>3.3V</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>CLK</p></td>
+<td><p>GPIO18</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>SDA</p></td>
+<td><p>GPIO17</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>GND</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+</section>
+<section id="id21">
+<h2>硬件版本<a class="headerlink" href="#id21" title="永久链接至标题"></a></h2>
+<section id="id22">
+<h3>ESP32-S3-Korvo-2 V3.1<a class="headerlink" href="#id22" title="永久链接至标题"></a></h3>
+<p>删除 PA_CTRL 与 U4 IO 扩展芯片的连接，保留与 ESP32-S3 模组的连接。</p>
+</section>
+<section id="esp32-s3-korvo-2-v3-0">
+<h3>ESP32-S3-Korvo-2 V3.0<a class="headerlink" href="#esp32-s3-korvo-2-v3-0" title="永久链接至标题"></a></h3>
+<p><a class="reference internal" href="user-guide-esp32-s3-korvo-2-v3.0.html"><span class="doc">首次发布</span></a></p>
+</section>
+</section>
+<section id="id23">
+<h2>相关文档<a class="headerlink" href="#id23" title="永久链接至标题"></a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_cn.pdf">ESP32-S3 技术规格书</a> (PDF)</p></li>
+<li><p><a class="reference external" href="https://www.espressif.com/sites/default/files/documentation/esp32-s3-wroom-1_wroom-1u_datasheet_cn.pdf">ESP32-S3-WROOM-1/1U 技术规格书</a> (PDF)</p></li>
+<li><p><a class="reference external" href="https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-Korvo-2_V3.1.2_20240116.pdf">ESP32-S3-Korvo-2 V3.1 原理图</a> (PDF)</p></li>
+<li><p><a class="reference external" href="https://dl.espressif.com/dl/schematics/PCB_ESP32-S3-Korvo-2_V3.1_20221104.pdf">ESP32-S3-Korvo-2 V3.1 PCB 布局图</a> (PDF)</p></li>
+</ul>
+<p>有关本开发板的更多设计文档，请联系我们的商务部门 <a class="reference external" href="mailto:sales&#37;&#52;&#48;espressif&#46;com">sales<span>&#64;</span>espressif<span>&#46;</span>com</a>。</p>
+</section>
+</section>
+
+    <script type="text/javascript">
+        function init() {
+            WaveDrom.ProcessAll();
+        }
+        window.onload = init;
+    </script>
+
+           </div>
+             <div class="articleComments">
+<p style="text-align:center"><a href="https://www.espressif.com/zh-hans/company/documents/documentation_feedback?docId=5147&sections=ESP32-S3-Korvo-2 V3.1 (design-guide/dev-boards/user-guide-esp32-s3-korvo-2)&version=latest (master)">提供有关此文档的反馈</a></p>
+
+             </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="get-started-esp32-korvo-du1906.html" class="btn btn-neutral float-left" title="ESP32-Korvo-DU1906" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> 上一页</a>
+        <a href="user-guide-esp32-s3-korvo-2-v3.0.html" class="btn btn-neutral float-right" title="ESP32-S3-Korvo-2 V3.0" accesskey="n" rel="next">下一页 <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; 版权所有 2017 - 2026, 乐鑫信息科技（上海）股份有限公司.</p>
+  </div>
+
+  <ul class="footer">
+        <li>
+	    
+            
+            利用 <a href="http://sphinx-doc.org/">Sphinx</a> 构建，使用了  <a href="https://github.com/espressif/sphinx_idf_theme">主题</a>  based on <a href="https://github.com/readthedocs/sphinx_rtd_theme">Read the Docs Sphinx Theme</a>.
+         </li>
+    <li class="footer-aside">
+        <a href="../../esp-adf-zh_CN-master.pdf" class="fa fa-file-pdf-o"> Download PDF</a>
+    </li>
+
+  </ul> 
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP32-S3-Korvo-2 V3.1 -  -  &mdash; Espressif Audio Development Framework Guide latest documentation</title>
+      <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+      <link rel="stylesheet" href="../../_static/css/theme.css" type="text/css" />
+      <link rel="stylesheet" href="../../_static/copybutton.css" type="text/css" />
+      <link rel="stylesheet" href="../../_static/theme_overrides.css" type="text/css" />
+  <!--[if lt IE 9]>
+    <script src="../../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  
+        <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+        <script src="../../_static/jquery.js"></script>
+        <script src="../../_static/underscore.js"></script>
+        <script src="../../_static/doctools.js"></script>
+        <script src="../../_static/clipboard.min.js"></script>
+        <script src="../../_static/copybutton.js"></script>
+        <script src="https://wavedrom.com/skins/default.js"></script>
+        <script src="https://wavedrom.com/wavedrom.min.js"></script>
+    <script src="../../_static/js/theme.js"></script>
+
+    
+        
+
+    <script type="text/javascript">
+        DOCUMENTATION_OPTIONS.PAGENAME = 'design-guide/dev-boards/user-guide-esp32-s3-korvo-2';
+        DOCUMENTATION_OPTIONS.PROJECT_SLUG = 'esp-adf';
+        DOCUMENTATION_OPTIONS.LATEST_BRANCH_NAME = 'release/v2.x';
+        DOCUMENTATION_OPTIONS.LANGUAGES = ["en", "zh_CN"];
+        DOCUMENTATION_OPTIONS.RELEASE = 'latest';
+    </script>
+
+    <script type="text/javascript" src=""></script>
+    <link rel="author" title="About these documents" href="../../about.html" />
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="ESP32-S3-Korvo-2 V3.0" href="user-guide-esp32-s3-korvo-2-v3.0.html" />
+    <link rel="prev" title="ESP32-Korvo-DU1906" href="get-started-esp32-korvo-du1906.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+            <a href="../../index.html" class="icon icon-home"> Espressif Audio Development Framework Guide
+            <img src="../../_static/espressif-logo.svg" class="logo" alt="Logo"/>
+          </a>
+
+          
+
+          <div class="selectors">
+            <select id="version-select" style="width: 150px;" hidden>
+              <option value="" disabled selected>Choose version...</option>
+            </select>
+          </div>
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../../get-started/index.html">Get Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../api-reference/index.html">API Reference</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../index.html">Design Guide</a><ul class="current">
+<li class="toctree-l2"><a class="reference internal" href="../project-design.html"> Project Design</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../design-considerations.html"> Design Considerations</a></li>
+<li class="toctree-l2"><a class="reference external" href="https://www.espressif.com/sites/default/files/documentation/esp32_audio_design_guidelines__en.pdf"> Hardware Design (PDF)</a></li>
+<li class="toctree-l2 current"><a class="reference internal" href="index.html"> Development Boards</a><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat-mini.html">ESP32-LyraT-Mini V1.2 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="board-esp32-lyrat-mini-v1.2.html">ESP32-LyraT-Mini V1.2 Hardware Reference</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat.html">ESP32-LyraT V4.3 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="board-esp32-lyrat-v4.3.html">ESP32-LyraT V4.3 Hardware Reference</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat-v4.2.html">ESP32-LyraT V4.2 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyrat-v4.html">ESP32-LyraT V4 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-lyratd-msc.html">ESP32-LyraTD-MSC V2.2 Getting Started Guide</a></li>
+<li class="toctree-l3"><a class="reference internal" href="get-started-esp32-korvo-du1906.html">ESP32-Korvo-DU1906</a></li>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">ESP32-S3-Korvo-2 V3.1</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#getting-started">Getting Started</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#hardware-reference">Hardware Reference</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#hardware-revision-details">Hardware Revision Details</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#related-documents">Related Documents</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide-esp32-s3-korvo-2-v3.0.html">ESP32-S3-Korvo-2 V3.0</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide-esp32-s3-korvo-2-lcd.html">ESP32-S3-Korvo-2-LCD V1.0</a></li>
+<li class="toctree-l3"><a class="reference internal" href="user-guide-esp32-c3-lyra.html">ESP32-C3-Lyra V2.0</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="../audio-samples.html"> Audio Samples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../../knowledge-center/index.html">Knowledge Center</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../resources.html">Resources</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../COPYRIGHT.html">Copyrights</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../english-chinese-glossary.html">English-Chinese Glossary</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../about.html">About</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../../index.html">Espressif Audio Development Framework Guide</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../../index.html" class="icon icon-home"></a> &raquo;</li>
+          <li><a href="../index.html">Design Guide</a> &raquo;</li>
+          <li><a href="index.html">Development Boards</a> &raquo;</li>
+      <li>ESP32-S3-Korvo-2 V3.1</li>
+      <li class="wy-breadcrumbs-aside">
+              <a href="https://github.com/espressif/esp-adf/blob/0148857/docs/en/design-guide/dev-boards/user-guide-esp32-s3-korvo-2.rst" class="fa fa-github"> Edit on GitHub</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="esp32-s3-korvo-2-v3-1">
+<h1>ESP32-S3-Korvo-2 V3.1<a class="headerlink" href="#esp32-s3-korvo-2-v3-1" title="Permalink to this headline"></a></h1>
+<p><a class="reference external" href="../../../../zh_CN/latest/design-guide/dev-boards/user-guide-esp32-s3-korvo-2.html">[中文]</a></p>
+<p>Older version: <a class="reference internal" href="user-guide-esp32-s3-korvo-2-v3.0.html"><span class="doc">ESP32-S3-Korvo-2 V3.0</span></a></p>
+<p>This user guide will help you get started with ESP32-S3-Korvo-2 V3.1 and will also provide more in-depth information.</p>
+<p>The ESP32-S3-Korvo-2 V3.1 is a multimedia development board based on the ESP32-S3 chip. It is equipped with a two-microphone array which is suitable for voice recognition and near/far-field voice wake-up applications. The board integrates multiple peripherals such as LCD, camera, and microSD card. It also supports JPEG video stream processing. With all of its outstanding features, the board is an ideal choice for the development of low-cost and low-power network-connected audio and video products.</p>
+<figure class="align-center" id="id3">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-overview.png"><img alt="ESP32-S3-Korvo-2 V3.1 with ESP32-S3-WROOM-1 module" src="../../_images/esp32-s3-korvo-2-v3.0-overview.png" style="width: 675.0px; height: 539.5500000000001px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 with ESP32-S3-WROOM-1 module</span><a class="headerlink" href="#id3" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<p>The main board ESP32-S3-Korvo-2 V3.1 can be used with the LCD extension board <a class="reference internal" href="user-guide-esp32-s3-korvo-2-lcd.html"><span class="doc">ESP32-S3-Korvo-2-LCD</span></a>. This document is mostly dedicated to the main board ESP32-S3-Korvo-2 V3.1. For detailed information about the LCD extension board, please refer to <a class="reference internal" href="user-guide-esp32-s3-korvo-2-lcd.html"><span class="doc">ESP32-S3-Korvo-2-LCD User Guide</span></a>.</p>
+<p>The document consists of the following sections:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#getting-started">Getting started</a>: Overview of the board and hardware/software setup instructions to get started.</p></li>
+<li><p><a class="reference internal" href="#hardware-reference">Hardware Reference</a>: More detailed information about the board’s hardware.</p></li>
+<li><p><a class="reference internal" href="#hardware-revision-details">Hardware Revision Details</a>: Hardware revision history, known issues, and links to user guides for previous versions (if any) of the board.</p></li>
+<li><p><a class="reference internal" href="#related-documents">Related Documents</a>: Links to related documentation.</p></li>
+</ul>
+<section id="getting-started">
+<h2>Getting Started<a class="headerlink" href="#getting-started" title="Permalink to this headline"></a></h2>
+<p>This section provides a brief introduction of ESP32-S3-Korvo-2 V3.1, instructions on how to do the initial hardware setup and how to flash firmware onto it.</p>
+<section id="description-of-components">
+<h3>Description of Components<a class="headerlink" href="#description-of-components" title="Permalink to this headline"></a></h3>
+<figure class="align-center" id="id4">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0.png"><img alt="ESP32-S3-Korvo-2 V3.1 (click to enlarge)" src="../../_images/esp32-s3-korvo-2-v3.0.png" style="width: 740.5999999999999px; height: 553.6999999999999px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 (click to enlarge)</span><a class="headerlink" href="#id4" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<p>The key components of the board are described in a clockwise direction.</p>
+<table class="colwidths-given docutils align-default">
+<colgroup>
+<col style="width: 30%" />
+<col style="width: 70%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Key Component</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ESP32-S3-WROOM-1 Module</p></td>
+<td><p>The ESP32-S3-WROOM-1 is a powerful, generic Wi-Fi + Bluetooth LE MCU module that is built around the ESP32-S3 series of SoCs. On top of a rich set of peripherals, the acceleration for neural network computing and signal processing workloads provided by the SoC make the modules an ideal choice for a wide variety of application scenarios related to AI and Artificial Intelligence of Things (AIoT), such as wake word detection, speech commands recognition, face detection and recognition, smart home, smart appliances, smart control panel, smart speaker, etc.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Left Microphone</p></td>
+<td><p>Onboard microphone connected to ADC.</p></td>
+</tr>
+<tr class="row-even"><td><p>Audio ADC Chip</p></td>
+<td><p><a class="reference external" href="http://www.everest-semi.com/pdf/ES7210%20PB.pdf">ES7210</a> is a high-performance, low-power 4-channel audio analog-to-digital converter for microphone array applications. It is very suitable for music and speech applications. In addition, ES7210 can also be used to collect acoustic echo cancellation (AEC) echo reference signals.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Audio Codec Chip</p></td>
+<td><p>The audio codec chip, <a class="reference external" href="http://www.everest-semi.com/pdf/ES8311%20PB.pdf">ES8311</a>, is a low-power mono audio codec. It consists of 1-channel ADC, 1-channel DAC, low noise pre-amplifier, headphone driver, digital sound effects, analog mixing, and gain functions. It is interfaced with ESP32-S3-WROOM-1 module over I2S and I2C buses to provide audio processing in hardware independently from the audio application.</p></td>
+</tr>
+<tr class="row-even"><td><p>Audio PA Chip</p></td>
+<td><p>NS4150 is an EMI, 3 W mono Class D audio power amplifier, amplifying audio signals from audio codec chips to drive speakers.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Right Microphone</p></td>
+<td><p>Onboard microphone connected to ADC.</p></td>
+</tr>
+<tr class="row-even"><td><p>Speaker Output Port</p></td>
+<td><p>Output socket to connect a speaker. The 4-ohm and 3-watt speaker is recommended. The pins have a 2.00 mm/0.08” pitch.</p></td>
+</tr>
+<tr class="row-odd"><td><p>USB-to-UART Bridge Chip</p></td>
+<td><p>A single chip USB-UART bridge CP2102N provides up to 3 Mbps transfer rates for software download and debugging.</p></td>
+</tr>
+<tr class="row-even"><td><p>USB-to-UART Port</p></td>
+<td><p>Functions as the communication interface between a PC and the ESP32-S3-WROOM-1 module.</p></td>
+</tr>
+<tr class="row-odd"><td><p>USB Power Port</p></td>
+<td><p>Provides power to the board. It is recommended to use at least 5V/2A power adapter to ensure a stable power supply.</p></td>
+</tr>
+<tr class="row-even"><td><p>Battery Socket</p></td>
+<td><p>Two pins socket to connect a single cell Li-ion battery.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Power Switch</p></td>
+<td><p>Power on/off knob: toggling it down powers the board on; toggling it up powers the board off.</p></td>
+</tr>
+<tr class="row-even"><td><p>Battery Charger</p></td>
+<td><p>AP5056 is a constant current and constant voltage linear charger for single cell lithium-ion batteries. Used for charging of a battery connected to the Battery Socket over the Micro USB Port.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Function Press Keys</p></td>
+<td><p>Six press keys labeled REC, MUTE, PLAY, SET, VOL- and VOL+. They are routed to ESP32-S3-WROOM-1 module and intended for development and testing of a UI for audio applications using a dedicated API.</p></td>
+</tr>
+<tr class="row-even"><td><p>Boot/Reset Press Keys</p></td>
+<td><div class="line-block">
+<div class="line">Boot: holding down the Boot key and momentarily pressing the Reset key initiates the firmware upload mode. Then you can upload firmware through the serial port.</div>
+<div class="line">Reset: pressing this button alone resets the system.</div>
+</div>
+</td>
+</tr>
+<tr class="row-odd"><td><p>MicroSD Slot</p></td>
+<td><p>The development board supports a microSD card in 1-bit mode, and can store or play audio files in the microSD card.</p></td>
+</tr>
+<tr class="row-even"><td><p>LCD Connector</p></td>
+<td><p>A FPC connector with 0.5 mm pitch to connect to the LCD extension board.</p></td>
+</tr>
+<tr class="row-odd"><td><p>System LEDs</p></td>
+<td><p>Two general-purpose LEDs (green and red) controlled by ESP32-S3-WROOM-1 module to indicate certain operation states of the audio application using dedicated API.</p></td>
+</tr>
+<tr class="row-even"><td><p>Camera Connector</p></td>
+<td><p>An external camera module that can be connected to the development board with the connector to transmit images.</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="start-application-development">
+<h3>Start Application Development<a class="headerlink" href="#start-application-development" title="Permalink to this headline"></a></h3>
+<p>Before powering up your board, please make sure that it is in good condition with no obvious signs of damage.</p>
+<section id="required-hardware">
+<h4>Required Hardware<a class="headerlink" href="#required-hardware" title="Permalink to this headline"></a></h4>
+<ul class="simple">
+<li><p>1 x ESP32-S3-Korvo-2 V3.1</p></li>
+<li><p>1 x Speaker</p></li>
+<li><p>2 x USB 2.0 cable (Standard-A to Micro-B)</p></li>
+<li><p>1 x Computer running Windows, Linux, or macOS</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Be sure to use an appropriate USB cable. Some cables are for charging only and do not provide the needed data lines nor work for programming the boards.</p>
+</div>
+</section>
+<section id="optional-hardware">
+<h4>Optional Hardware<a class="headerlink" href="#optional-hardware" title="Permalink to this headline"></a></h4>
+<ul class="simple">
+<li><p>1 x MicroSD card</p></li>
+<li><p>1 x Li-ion battery</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Be sure to use a Li-ion battery that has a built-in protection circuit.</p>
+</div>
+</section>
+<section id="hardware-setup">
+<h4>Hardware Setup<a class="headerlink" href="#hardware-setup" title="Permalink to this headline"></a></h4>
+<ol class="arabic simple">
+<li><p>Connect the speaker to the <strong>Speaker Output</strong>.</p></li>
+<li><p>Plug in the USB cables to the PC and to both USB ports of the board.</p></li>
+<li><p>The standby LED (green) should turn on. Assuming that a battery is not connected, the charging LED (red) will blink every couple of seconds.</p></li>
+<li><p>Toggle the <strong>Power Switch</strong>.</p></li>
+<li><p>The red Power On LED should turn on.</p></li>
+</ol>
+</section>
+<section id="software-setup">
+<span id="esp32-s3-korvo-2-v3-0-software-setup"></span><h4>Software Setup<a class="headerlink" href="#software-setup" title="Permalink to this headline"></a></h4>
+<p>Please proceed to <a class="reference internal" href="../../get-started/index.html"><span class="doc">Get Started</span></a>, where Section <a class="reference internal" href="../../get-started/index.html#get-started-step-by-step"><span class="std std-ref">Installation Step by Step</span></a> will quickly help you set up the development environment and then flash an <a class="reference external" href="https://github.com/espressif/esp-adf/tree/0148857/examples">application example </a> onto your board.</p>
+</section>
+</section>
+<section id="contents-and-packaging">
+<h3>Contents and Packaging<a class="headerlink" href="#contents-and-packaging" title="Permalink to this headline"></a></h3>
+<p id="esp32-s3-korvo-2-v3-0-accessories">The main board and its accessories can be ordered separately. The accessories include:</p>
+<ul class="simple">
+<li><p>LCD extension board: ESP32-S3-Korvo-2-LCD</p></li>
+<li><p>Camera</p></li>
+<li><p>Connectors:</p>
+<ul>
+<li><p>20-pin FPC cable</p></li>
+</ul>
+</li>
+<li><p>Fasteners:</p>
+<ul>
+<li><p>Copper standoffs (x8)</p></li>
+<li><p>Screws (x4)</p></li>
+</ul>
+</li>
+</ul>
+<section id="retail-orders">
+<h4>Retail Orders<a class="headerlink" href="#retail-orders" title="Permalink to this headline"></a></h4>
+<p>If you order a few samples, each board comes in an individual package in either antistatic bag or any packaging depending on your retailer.</p>
+<p>For retail orders, please go to <a class="reference external" href="https://www.espressif.com/en/company/contact/buy-a-sample">https://www.espressif.com/en/company/contact/buy-a-sample</a>.</p>
+</section>
+<section id="wholesale-orders">
+<h4>Wholesale Orders<a class="headerlink" href="#wholesale-orders" title="Permalink to this headline"></a></h4>
+<p>If you order in bulk, the boards come in large cardboard boxes.</p>
+<p>For wholesale orders, please go to <a class="reference external" href="https://www.espressif.com/en/contact-us/sales-questions">https://www.espressif.com/en/contact-us/sales-questions</a>.</p>
+</section>
+</section>
+</section>
+<section id="hardware-reference">
+<h2>Hardware Reference<a class="headerlink" href="#hardware-reference" title="Permalink to this headline"></a></h2>
+<section id="block-diagram">
+<h3>Block Diagram<a class="headerlink" href="#block-diagram" title="Permalink to this headline"></a></h3>
+<p>The block diagram below shows the components of ESP32-S3-Korvo-2 V3.1 and their interconnections.</p>
+<figure class="align-center" id="id5">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-electrical-block-diagram.png"><img alt="ESP32-S3-Korvo-2 V3.1 Electrical Block Diagram" src="../../_images/esp32-s3-korvo-2-v3.0-electrical-block-diagram.png" style="width: 679.25px; height: 436.70000000000005px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 Electrical Block Diagram</span><a class="headerlink" href="#id5" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+</section>
+<section id="notes-on-power-distribution">
+<h3>Notes on Power Distribution<a class="headerlink" href="#notes-on-power-distribution" title="Permalink to this headline"></a></h3>
+<section id="power-supply-over-usb-and-from-battery">
+<h4>Power Supply over USB and from Battery<a class="headerlink" href="#power-supply-over-usb-and-from-battery" title="Permalink to this headline"></a></h4>
+<p>The main power supply is 5 V and provided by a USB. The secondary power supply is 3.7 V and provided by an optional battery. The USB power itself is fed with a dedicated cable, separating from a USB cable used for an application upload. To further reduce noise from the USB, the battery may be used instead of the USB.</p>
+<figure class="align-center" id="id6">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-usb-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - Dedicated USB Power Supply Socket" src="../../_images/esp32-s3-korvo-2-v3.0-usb-ps.png" style="width: 558.4px; height: 340.8px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - Dedicated USB Power Supply Socket</span><a class="headerlink" href="#id6" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id7">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-battery-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - Power Supply from a Battery" src="../../_images/esp32-s3-korvo-2-v3.0-battery-ps.png" style="width: 616.8000000000001px; height: 260.8px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - Power Supply from a Battery</span><a class="headerlink" href="#id7" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<p>As shown in the figure below, if the USB power supply and battery power supply are connected at the same time with a high VBUS, an off-state Q14, and an automatic cut-off VBAT, the USB becomes the power supply for the system.</p>
+<figure class="align-center" id="id8">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-ps-options.png"><img alt="ESP32-S3-Korvo-2 V3.1 - Power Supply Options" src="../../_images/esp32-s3-korvo-2-v3.0-ps-options.png" style="width: 316.8px; height: 220.0px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - Power Supply Options</span><a class="headerlink" href="#id8" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+</section>
+<section id="independent-audio-and-digital-power-supply">
+<h4>Independent Audio and Digital Power Supply<a class="headerlink" href="#independent-audio-and-digital-power-supply" title="Permalink to this headline"></a></h4>
+<p>ESP32-S3-Korvo-2 V3.1 features independent power supplies to the audio components and ESP module. This should reduce noise in the audio signal from digital components and improve overall performance of the components.</p>
+<figure class="align-center" id="id9">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-digital-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - Digital Power Supply" src="../../_images/esp32-s3-korvo-2-v3.0-digital-ps.png" style="width: 640.0px; height: 321.6px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - Digital Power Supply</span><a class="headerlink" href="#id9" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id10">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-audio-ps.png"><img alt="ESP32-S3-Korvo-2 V3.1 - Audio Power Supply" src="../../_images/esp32-s3-korvo-2-v3.0-audio-ps.png" style="width: 732.0px; height: 356.8px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - Audio Power Supply</span><a class="headerlink" href="#id10" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+</section>
+</section>
+<section id="pin-allocation-summary">
+<h3>Pin Allocation Summary<a class="headerlink" href="#pin-allocation-summary" title="Permalink to this headline"></a></h3>
+<p>The table below provides allocation of pins exposed on terminals of ESP32-S3-WROOM-1 module to control specific components or functions of the board.</p>
+<table class="colwidths-given docutils align-default" id="id11">
+<caption><span class="caption-text">ESP32-S3-WROOM-1 Pin Allocation</span><a class="headerlink" href="#id11" title="Permalink to this table"></a></caption>
+<colgroup>
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+<col style="width: 10%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Pin <a class="footnote-reference brackets" href="#one" id="id1">1</a></p></th>
+<th class="head"><p>Pin Name</p></th>
+<th class="head"><p>ES8311</p></th>
+<th class="head"><p>ES7210</p></th>
+<th class="head"><p>Camera</p></th>
+<th class="head"><p>LCD</p></th>
+<th class="head"><p>Keys</p></th>
+<th class="head"><p>MicroSD</p></th>
+<th class="head"><p>IO Expander</p></th>
+<th class="head"><p>Other</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>EN</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>EN_KEY</p></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>IO4</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>DATA0</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>IO5</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>REC, MUTE, PLAY, SET, VOL-, VOL+</p></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>IO6</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>BAT_MEAS_ADC</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p>IO7</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>CMD</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>IO15</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>CLK</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>IO16</p></td>
+<td><p>I2S0_MCLK</p></td>
+<td><p>MCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>IO17</p></td>
+<td><p>I2C_SDA</p></td>
+<td><p>I2C_SDA</p></td>
+<td><p>SIOD</p></td>
+<td><p>TP_I2C_SDA</p></td>
+<td></td>
+<td></td>
+<td><p>I2C_SDA</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p>IO18</p></td>
+<td><p>I2C_CLK</p></td>
+<td><p>I2C_CLK</p></td>
+<td><p>SIOC</p></td>
+<td><p>TP_I2C_CLK</p></td>
+<td></td>
+<td></td>
+<td><p>I2C_CLK</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p>IO8</p></td>
+<td><p>I2S0_DSDIN</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>13</p></td>
+<td><p>IO19</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP_USB_DM (Reserve)</p></td>
+</tr>
+<tr class="row-odd"><td><p>14</p></td>
+<td><p>IO20</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP_USB_DP (Reserve)</p></td>
+</tr>
+<tr class="row-even"><td><p>15</p></td>
+<td><p>IO3</p></td>
+<td></td>
+<td></td>
+<td><p>D5</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>16</p></td>
+<td><p>IO46</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-even"><td><p>17</p></td>
+<td><p>IO9</p></td>
+<td><p>I2S0_SCLK</p></td>
+<td><p>SCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>18</p></td>
+<td><p>IO10</p></td>
+<td></td>
+<td><p>SDOUT</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>19</p></td>
+<td><p>IO11</p></td>
+<td></td>
+<td></td>
+<td><p>PCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>20</p></td>
+<td><p>IO12</p></td>
+<td></td>
+<td></td>
+<td><p>D6</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>21</p></td>
+<td><p>IO13</p></td>
+<td></td>
+<td></td>
+<td><p>D2</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>22</p></td>
+<td><p>IO14</p></td>
+<td></td>
+<td></td>
+<td><p>D4</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>23</p></td>
+<td><p>IO21</p></td>
+<td></td>
+<td></td>
+<td><p>VSYNC</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>24</p></td>
+<td><p>IO47</p></td>
+<td></td>
+<td></td>
+<td><p>D3</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>25</p></td>
+<td><p>IO48</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>PA_CTRL</p></td>
+</tr>
+<tr class="row-odd"><td><p>26</p></td>
+<td><p>IO45</p></td>
+<td><p>I2S0_LRCK</p></td>
+<td><p>LRCK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>27</p></td>
+<td><p>IO0</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>LCD_SPI_SDA</p></td>
+<td><p>BOOT_KEY</p></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>28</p></td>
+<td><p>IO35</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-even"><td><p>29</p></td>
+<td><p>IO36</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-odd"><td><p>30</p></td>
+<td><p>IO37</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>NC</p></td>
+</tr>
+<tr class="row-even"><td><p>31</p></td>
+<td><p>IO38</p></td>
+<td></td>
+<td></td>
+<td><p>HREF</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>32</p></td>
+<td><p>IO39</p></td>
+<td></td>
+<td></td>
+<td><p>D9</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>33</p></td>
+<td><p>IO40</p></td>
+<td></td>
+<td></td>
+<td><p>XCLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>34</p></td>
+<td><p>IO41</p></td>
+<td></td>
+<td></td>
+<td><p>D8</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>35</p></td>
+<td><p>IO42</p></td>
+<td></td>
+<td></td>
+<td><p>D7</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>36</p></td>
+<td><p>RXD0</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP0_UART0_RX</p></td>
+</tr>
+<tr class="row-even"><td><p>37</p></td>
+<td><p>TXD0</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>ESP0_UART0_TX</p></td>
+</tr>
+<tr class="row-odd"><td><p>38</p></td>
+<td><p>IO2</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>LCD_SPI_DC</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>39</p></td>
+<td><p>IO1</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>LCD_SPI_CLK</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>41</p></td>
+<td><p>EPAD</p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<dl class="footnote brackets">
+<dt class="label" id="one"><span class="brackets"><a class="fn-backref" href="#id1">1</a></span></dt>
+<dd><p>Pin - ESP32-S3-WROOM-1 module pin number, GND and power supply pins are not listed.</p>
+</dd>
+</dl>
+<p>The GPIOs allocated to the IO expander are further expanded to multiple GPIOs.</p>
+<table class="colwidths-given docutils align-default" id="id12">
+<caption><span class="caption-text">IO Expander GPIO Allocation</span><a class="headerlink" href="#id12" title="Permalink to this table"></a></caption>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>IO Expander Pin</p></th>
+<th class="head"><p>Pin Name</p></th>
+<th class="head"><p>LCD</p></th>
+<th class="head"><p>Other</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>4</p></td>
+<td><p>P0</p></td>
+<td></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>5</p></td>
+<td><p>P1</p></td>
+<td><p>LCD_CTRL</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>6</p></td>
+<td><p>P2</p></td>
+<td><p>LCD_RST</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>7</p></td>
+<td><p>P3</p></td>
+<td><p>LCD_CS</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>P4</p></td>
+<td><p>TP_INT</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>P5</p></td>
+<td></td>
+<td><p>PERI_PWR_ON</p></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p>P6</p></td>
+<td></td>
+<td><p>LED1</p></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p>P7</p></td>
+<td></td>
+<td><p>LED2</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="connector">
+<h3>Connector<a class="headerlink" href="#connector" title="Permalink to this headline"></a></h3>
+<section id="camera-connector">
+<h4>Camera Connector<a class="headerlink" href="#camera-connector" title="Permalink to this headline"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 11%" />
+<col style="width: 46%" />
+<col style="width: 43%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>Camera Signal</p></th>
+<th class="head"><p>ESP32-S3 Pin</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>SIOD</p></td>
+<td><p>GPIO17</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>SIOC</p></td>
+<td><p>GPIO18</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>D5</p></td>
+<td><p>GPIO3</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>PCLK</p></td>
+<td><p>GPIO11</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>D6</p></td>
+<td><p>GPIO12</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>D2</p></td>
+<td><p>GPIO13</p></td>
+</tr>
+<tr class="row-even"><td><p>7</p></td>
+<td><p>D4</p></td>
+<td><p>GPIO14</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>VSYNC</p></td>
+<td><p>GPIO21</p></td>
+</tr>
+<tr class="row-even"><td><p>9</p></td>
+<td><p>D3</p></td>
+<td><p>GPIO47</p></td>
+</tr>
+<tr class="row-odd"><td><p>10</p></td>
+<td><p>HREF</p></td>
+<td><p>GPIO38</p></td>
+</tr>
+<tr class="row-even"><td><p>11</p></td>
+<td><p>D9</p></td>
+<td><p>GPIO39</p></td>
+</tr>
+<tr class="row-odd"><td><p>12</p></td>
+<td><p>XCLK</p></td>
+<td><p>GPIO40</p></td>
+</tr>
+<tr class="row-even"><td><p>13</p></td>
+<td><p>D8</p></td>
+<td><p>GPIO41</p></td>
+</tr>
+<tr class="row-odd"><td><p>14</p></td>
+<td><p>D7</p></td>
+<td><p>GPIO42</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="lcd-connector">
+<h4>LCD Connector<a class="headerlink" href="#lcd-connector" title="Permalink to this headline"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 42%" />
+<col style="width: 46%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>LCD Signal</p></th>
+<th class="head"><p>ESP32-S3 Pin</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>TP_I2C_SDA</p></td>
+<td><p>GPIO17</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>TP_I2C_CLK</p></td>
+<td><p>GPIO18</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>LCD_SPI_SDA</p></td>
+<td><p>GPIO0</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>LCD_SPI_DC</p></td>
+<td><p>GPIO2</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>LCD_SPI_CLK</p></td>
+<td><p>GPIO1</p></td>
+</tr>
+</tbody>
+</table>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 46%" />
+<col style="width: 42%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>LCD Signal</p></th>
+<th class="head"><p>IO Expander</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>ESP_LCD_CTRL</p></td>
+<td><p>P1</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>ESP_LCD_RST</p></td>
+<td><p>P2</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>ESP_LCD_CS</p></td>
+<td><p>P3</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>ESP_TP_INT</p></td>
+<td><p>P4</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<section id="aec-path">
+<h3>AEC Path<a class="headerlink" href="#aec-path" title="Permalink to this headline"></a></h3>
+<p>AEC path provides reference signals for AEC algorithm.</p>
+<p>ESP32-S3-Korvo-2 V3.1 provides two compatible echo reference signal source designs. One is Codec (ES8311) DAC output (DAC_AOUTLN/DAC_AOUTLP), the other is PA (NS4150) output (PA_OUTL+/PA_OUTL-). The former is the default and recommended selection. Resistors R132 and R140 marked NC (no component) in the figure below should not be installed.</p>
+<p>The echo reference signal is collected by ADC_MIC3P/ADC_MIC3N of ADC (ES7210) and then sent back to ESP32-S3 for AEC algorithm.</p>
+<figure class="align-center" id="id13">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-aec-codec-o.png"><img alt="ESP32-S3-Korvo-2 V3.1 - AEC Codec DAC Output (click to enlarge)" src="../../_images/esp32-s3-korvo-2-v3.0-aec-codec-o.png" style="width: 450.0px; height: 177.6px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - AEC Codec DAC Output (click to enlarge)</span><a class="headerlink" href="#id13" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id14">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-aec-pa-o.png"><img alt="ESP32-S3-Korvo-2 V3.1 - AEC PA Output (click to enlarge)" src="../../_images/esp32-s3-korvo-2-v3.0-aec-pa-o.png" style="width: 792.0px; height: 271.2px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - AEC PA Output (click to enlarge)</span><a class="headerlink" href="#id14" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+<figure class="align-center" id="id15">
+<a class="reference internal image-reference" href="../../_images/esp32-s3-korvo-2-v3.0-aec-signal-collection.png"><img alt="ESP32-S3-Korvo-2 V3.1 - AEC Reference Signal Collection (click to enlarge)" src="../../_images/esp32-s3-korvo-2-v3.0-aec-signal-collection.png" style="width: 418.8px; height: 163.2px;" /></a>
+<figcaption>
+<p><span class="caption-text">ESP32-S3-Korvo-2 V3.1 - AEC Reference Signal Collection (click to enlarge)</span><a class="headerlink" href="#id15" title="Permalink to this image"></a></p>
+</figcaption>
+</figure>
+</section>
+<section id="hardware-setup-options">
+<h3>Hardware Setup Options<a class="headerlink" href="#hardware-setup-options" title="Permalink to this headline"></a></h3>
+<section id="using-automatic-upload">
+<h4>Using Automatic Upload<a class="headerlink" href="#using-automatic-upload" title="Permalink to this headline"></a></h4>
+<p>Entering of the ESP board into upload mode may be done in two ways:</p>
+<ul class="simple">
+<li><p>Manually by pressing both Boot and RST keys and then releasing first RST and then Boot key.</p></li>
+<li><p>Automatically by software performing the upload. The software is using DTR and RTS signals of the serial interface to control states of EN and IO0 of the ESP board. For details see <a class="reference external" href="https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-Korvo-2_V3.1.2_20240116.pdf">ESP32-S3-Korvo-2 V3.1 Schematic</a> (PDF).</p></li>
+</ul>
+</section>
+</section>
+<section id="allocation-of-esp-pins-to-test-points">
+<h3>Allocation of ESP Pins to Test Points<a class="headerlink" href="#allocation-of-esp-pins-to-test-points" title="Permalink to this headline"></a></h3>
+<p>This section describes the allocation of test points available on the ESP32-S3-Korvo-2 V3.1 board.</p>
+<p>The test points are bare through hole solder pads and have a standard 2.54 mm/0.1” pitch. You may need to populate them with pin headers or sockets for easy connection of external hardware.</p>
+<section id="codec-test-point-j15">
+<h4>Codec Test Point/J15<a class="headerlink" href="#codec-test-point-j15" title="Permalink to this headline"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 40%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>Codec Pin</p></th>
+<th class="head"><p>ESP32-S3 Pin</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>MCLK</p></td>
+<td><p>GPIO16</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>SCLK</p></td>
+<td><p>GPIO9</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>LRCK</p></td>
+<td><p>GPIO45</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>DSDIN</p></td>
+<td><p>GPIO8</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>ASDOUT</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>GND</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="adc-test-point-j16">
+<h4>ADC Test Point/J16<a class="headerlink" href="#adc-test-point-j16" title="Permalink to this headline"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 40%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>ADC Pin</p></th>
+<th class="head"><p>ESP32-S3 Pin</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>MCLK</p></td>
+<td><p>GPIO16</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>SCLK</p></td>
+<td><p>GPIO9</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>LRCK</p></td>
+<td><p>GPIO45</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>SDOUT</p></td>
+<td><p>GPIO10</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>INT</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>GND</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="uart-test-point-j17">
+<h4>UART Test Point/J17<a class="headerlink" href="#uart-test-point-j17" title="Permalink to this headline"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 77%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>UART Pin</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>3.3V</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>TXD</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>RXD</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>IO0</p></td>
+</tr>
+<tr class="row-even"><td><p>5</p></td>
+<td><p>EN</p></td>
+</tr>
+<tr class="row-odd"><td><p>6</p></td>
+<td><p>GND</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="i2c-test-point-j18">
+<h4>I2C Test Point/J18<a class="headerlink" href="#i2c-test-point-j18" title="Permalink to this headline"></a></h4>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 12%" />
+<col style="width: 40%" />
+<col style="width: 48%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>No.</p></th>
+<th class="head"><p>I2C Pin</p></th>
+<th class="head"><p>ESP32-S3 Pin</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>3.3V</p></td>
+<td><p>–</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>CLK</p></td>
+<td><p>GPIO18</p></td>
+</tr>
+<tr class="row-even"><td><p>3</p></td>
+<td><p>SDA</p></td>
+<td><p>GPIO17</p></td>
+</tr>
+<tr class="row-odd"><td><p>4</p></td>
+<td><p>GND</p></td>
+<td><p>–</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+</section>
+<section id="hardware-revision-details">
+<h2>Hardware Revision Details<a class="headerlink" href="#hardware-revision-details" title="Permalink to this headline"></a></h2>
+<section id="id2">
+<h3>ESP32-S3-Korvo-2 V3.1<a class="headerlink" href="#id2" title="Permalink to this headline"></a></h3>
+<p>Disconnected PA_CTRL from the U4 IO expansion chip while keeping its connection to the ESP32-S3 module.</p>
+</section>
+<section id="esp32-s3-korvo-2-v3-0">
+<h3>ESP32-S3-Korvo-2 V3.0<a class="headerlink" href="#esp32-s3-korvo-2-v3-0" title="Permalink to this headline"></a></h3>
+<p><a class="reference internal" href="user-guide-esp32-s3-korvo-2-v3.0.html"><span class="doc">Initial release</span></a></p>
+</section>
+</section>
+<section id="related-documents">
+<h2>Related Documents<a class="headerlink" href="#related-documents" title="Permalink to this headline"></a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://www.espressif.com/sites/default/files/documentation/esp32-s3_datasheet_en.pdf">ESP32-S3 Series Datasheet</a> (PDF)</p></li>
+<li><p><a class="reference external" href="https://www.espressif.com/sites/default/files/documentation/esp32-s3-wroom-1_wroom-1u_datasheet_en.pdf">ESP32-S3-WROOM-1/1U Datasheet</a> (PDF)</p></li>
+<li><p><a class="reference external" href="https://dl.espressif.com/dl/schematics/SCH_ESP32-S3-Korvo-2_V3.1.2_20240116.pdf">ESP32-S3-Korvo-2 V3.1 Schematic</a> (PDF)</p></li>
+<li><p><a class="reference external" href="https://dl.espressif.com/dl/schematics/PCB_ESP32-S3-Korvo-2_V3.1_20221104.pdf">ESP32-S3-Korvo-2 V3.1 PCB Layout</a> (PDF)</p></li>
+</ul>
+<p>For further design documentation for the board, please contact us at <a class="reference external" href="mailto:sales&#37;&#52;&#48;espressif&#46;com">sales<span>&#64;</span>espressif<span>&#46;</span>com</a>.</p>
+</section>
+</section>
+
+    <script type="text/javascript">
+        function init() {
+            WaveDrom.ProcessAll();
+        }
+        window.onload = init;
+    </script>
+
+           </div>
+             <div class="articleComments">
+<p style="text-align:center"><a href="https://www.espressif.com/en/company/documents/documentation_feedback?docId=5146&sections=ESP32-S3-Korvo-2 V3.1 (design-guide/dev-boards/user-guide-esp32-s3-korvo-2)&version=latest (master)">Provide feedback about this document</a></p>
+
+             </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="get-started-esp32-korvo-du1906.html" class="btn btn-neutral float-left" title="ESP32-Korvo-DU1906" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="user-guide-esp32-s3-korvo-2-v3.0.html" class="btn btn-neutral float-right" title="ESP32-S3-Korvo-2 V3.0" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2017 - 2026, Espressif Systems (Shanghai) Co., Ltd..</p>
+  </div>
+
+  <ul class="footer">
+        <li>
+	    
+            
+            Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/espressif/sphinx_idf_theme">theme</a>  based on <a href="https://github.com/readthedocs/sphinx_rtd_theme">Read the Docs Sphinx Theme</a>.
+         </li>
+    <li class="footer-aside">
+        <a href="../../esp-adf-en-master.pdf" class="fa fa-file-pdf-o"> Download PDF</a>
+    </li>
+
+  </ul> 
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

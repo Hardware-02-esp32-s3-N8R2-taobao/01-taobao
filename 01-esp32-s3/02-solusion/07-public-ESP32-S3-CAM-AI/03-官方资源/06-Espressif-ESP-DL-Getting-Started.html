@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+  <meta charset="utf-8" />
+        <!-- Global site tag (gtag.js) - Google Analytics -->
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-KTJ5YS7QWC"></script>
+        <script>
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+
+            gtag('config', 'G-KTJ5YS7QWC');
+        </script><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Getting Started -  -  &mdash; ESP-DL User Guide latest documentation</title>
+      <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+      <link rel="stylesheet" href="../_static/css/theme.css" type="text/css" />
+      <link rel="stylesheet" href="../_static/copybutton.css" type="text/css" />
+      <link rel="stylesheet" href="../_static/theme_overrides.css" type="text/css" />
+  <!--[if lt IE 9]>
+    <script src="../_static/js/html5shiv.min.js"></script>
+  <![endif]-->
+  
+        <script data-url_root="../" id="documentation_options" src="../_static/documentation_options.js"></script>
+        <script src="../_static/jquery.js"></script>
+        <script src="../_static/underscore.js"></script>
+        <script src="../_static/doctools.js"></script>
+        <script src="../_static/clipboard.min.js"></script>
+        <script src="../_static/copybutton.js"></script>
+    <script src="../_static/js/theme.js"></script>
+
+    
+        
+
+    <script type="text/javascript">
+        DOCUMENTATION_OPTIONS.PAGENAME = 'getting_started/readme';
+        DOCUMENTATION_OPTIONS.PROJECT_SLUG = 'esp-dl';
+        DOCUMENTATION_OPTIONS.LATEST_BRANCH_NAME = 'master';
+        DOCUMENTATION_OPTIONS.VERSIONS_URL = '.././_static/docs_version.js';
+        DOCUMENTATION_OPTIONS.LANGUAGES = ["en", "zh_CN"];
+        DOCUMENTATION_OPTIONS.RELEASE = 'latest';
+    </script>
+
+    <script type="text/javascript" src=".././_static/docs_version.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Tutorials" href="../tutorials/index.html" />
+    <link rel="prev" title="ESP-DL Project Organization" href="../introduction/esp_dl_project.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+            <a href="../index.html" class="icon icon-home"> ESP-DL User Guide
+            <img src="../_static/espressif-logo.svg" class="logo" alt="Logo"/>
+          </a>
+
+          
+
+          <div class="selectors">
+            <select id="version-select" style="width: 150px;" hidden>
+              <option value="" disabled selected>Choose version...</option>
+            </select>
+          </div>
+
+          
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../introduction/index.html">Introduction</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Getting Started</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#hardware-requirements">Hardware Requirements</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#software-requirements">Software Requirements</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#esp-idf">ESP-IDF</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#esp-ppq">ESP-PPQ</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#quick-start">Quick Start</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#example-compile-flash">Example Compile &amp; Flash</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#example-configuration">Example Configuration</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#trouble-shooting">Trouble shooting</a><ul>
+<li class="toctree-l4"><a class="reference internal" href="#check-esp-idf-doc">Check ESP-IDF doc</a></li>
+<li class="toctree-l4"><a class="reference internal" href="#erase-flash-clear-example">Erase FLASH &amp; Clear Example</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#model-quantization">Model Quantization</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#model-deployment">Model deployment</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="../tutorials/index.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api_reference/index.html">API Reference</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">ESP-DL User Guide</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home"></a> &raquo;</li>
+      <li>Getting Started</li>
+      <li class="wy-breadcrumbs-aside">
+              <a href="https://github.com/espressif/esp-dl/blob/5c28279/docs/en/getting_started/readme.rst" class="fa fa-github"> Edit on GitHub</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="getting-started">
+<h1>Getting Started<a class="headerlink" href="#getting-started" title="Permalink to this headline"></a></h1>
+<p><a class="reference external" href="../../../zh_CN/latest/getting_started/readme.html">[中文]</a></p>
+<section id="hardware-requirements">
+<h2>Hardware Requirements<a class="headerlink" href="#hardware-requirements" title="Permalink to this headline"></a></h2>
+<p><ul class="simple">
+<li><p>An ESP32-S3 or ESP32-P4 development board. Recommended: ESP32-S3-EYE or ESP32-P4-Function-EV-Board</p></li>
+<li><p>PC (Linux)</p></li>
+</ul>
+</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<ul>
+<li><p>Some boards currently use Type C connectors. Make sure you use the right cable to connect the board!</p></li>
+<li><p>ESP-DL also supports ESP32, but its operator implementations are written in C, so the execution speed on ESP32 will be significantly slower than on ESP32-S3 or ESP32-P4. If needed, you can manually add compilation configuration files to your project—the function interface calls in ESP-DL remain identical. Note:</p>
+<blockquote>
+<div><ul class="simple">
+<li><p>When quantizing <strong>ESP32</strong> platform models using <strong>ESP-PPQ</strong>, set the target to <code class="docutils literal notranslate"><span class="pre">c</span></code>.</p></li>
+<li><p>When deploying <strong>ESP32</strong> platform models using <strong>ESP-DL</strong>, set the project compilation target to <code class="docutils literal notranslate"><span class="pre">esp32</span></code>.</p></li>
+</ul>
+</div></blockquote>
+</li>
+</ul>
+</div>
+</section>
+<section id="software-requirements">
+<h2>Software Requirements<a class="headerlink" href="#software-requirements" title="Permalink to this headline"></a></h2>
+<section id="esp-idf">
+<span id="requirements-esp-idf"></span><h3>ESP-IDF<a class="headerlink" href="#esp-idf" title="Permalink to this headline"></a></h3>
+<p>ESP-DL runs based on ESP-IDF. For detailed instructions on how to get ESP-IDF, see the <a class="reference external" href="https://idf.espressif.com">ESP-IDF Programming Guide</a>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Please use <code class="docutils literal notranslate"><span class="pre">release/v5.3</span></code> or higher version of <a class="reference external" href="https://github.com/espressif/esp-idf">ESP-IDF</a>.</p>
+</div>
+</section>
+<section id="esp-ppq">
+<span id="requirements-esp-ppq"></span><h3>ESP-PPQ<a class="headerlink" href="#esp-ppq" title="Permalink to this headline"></a></h3>
+<p>ESP-PPQ is a quantization tool based on ppq, and its <a class="reference external" href="https://github.com/espressif/esp-ppq">source code</a> is fully open-sourced. ESP-PPQ adds Espressif’s customized quantizer and exporter based on <a class="reference external" href="https://github.com/OpenPPL/ppq">PPQ</a>, which makes it convenient for users to select quantization rules that match ESP-DL according to different chip selections, and export them to standard model files that can be directly loaded by ESP-DL. ESP-PPQ is compatible with all PPQ APIs and quantization scripts. For more details, please refer to <a class="reference external" href="https://github.com/OpenPPL/ppq">PPQ documents and videos</a>. If you want to quantize your model, you can install esp-ppq using the following method:</p>
+<p><strong>Method 1: Install the package using pip</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>torchaudio<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/cpu
+pip<span class="w"> </span>install<span class="w"> </span>esp-ppq
+</pre></div>
+</div>
+<p><strong>Method 2: Install from source with pip to stay synchronized with the master branch</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/espressif/esp-ppq.git
+<span class="nb">cd</span><span class="w"> </span>esp-ppq
+pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>torchaudio<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/cpu
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
+</pre></div>
+</div>
+<p><strong>Method 3: Install the package using uv</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;esp-ppq[cpu]&quot;</span><span class="w"> </span>--torch-backend<span class="o">=</span>cpu
+<span class="c1"># GPU</span>
+<span class="c1"># uv pip install &quot;esp-ppq[cpu]&quot; --torch-backend=cu124</span>
+<span class="c1"># AMD GPU</span>
+<span class="c1"># uv pip install &quot;esp-ppq[cpu]&quot; --torch-backend=rocm6.2</span>
+<span class="c1"># Intel XPU</span>
+<span class="c1"># uv pip install &quot;esp-ppq[cpu]&quot; --torch-backend=xpu</span>
+</pre></div>
+</div>
+<p><strong>Method 4: Install from source using uv to stay in sync with the master branch</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/espressif/esp-ppq.git
+<span class="nb">cd</span><span class="w"> </span>esp-ppq
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>torch<span class="w"> </span>torchvision<span class="w"> </span>torchaudio<span class="w"> </span>--index-url<span class="w"> </span>https://download.pytorch.org/whl/cpu
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
+</pre></div>
+</div>
+<p><strong>Method 5: Use esp-ppq with docker</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>build<span class="w"> </span>-t<span class="w"> </span>esp-ppq:your_tag<span class="w"> </span>https://github.com/espressif/esp-ppq.git
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<ul class="simple">
+<li><p>The example code installs the Linux PyTorch CPU version. Please install the appropriate PyTorch version based on your actual needs.</p></li>
+<li><p>If installing the package with uv, simply modify the <code class="docutils literal notranslate"><span class="pre">--torch-backend</span></code> parameter, which will override the PyTorch URLs index configured in the project.</p></li>
+</ul>
+</div>
+</section>
+</section>
+<section id="quick-start">
+<h2>Quick Start<a class="headerlink" href="#quick-start" title="Permalink to this headline"></a></h2>
+<p>ESP-DL provides some out-of-the-box <a class="reference external" href="https://github.com/espressif/esp-dl/tree/5c28279/examples">examples </a></p>
+<section id="example-compile-flash">
+<h3>Example Compile &amp; Flash<a class="headerlink" href="#example-compile-flash" title="Permalink to this headline"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">idf</span><span class="o">.</span><span class="n">py</span> <span class="nb">set</span><span class="o">-</span><span class="n">target</span> <span class="p">[</span><span class="n">Soc</span><span class="p">]</span>
+<span class="n">idf</span><span class="o">.</span><span class="n">py</span> <span class="n">flash</span> <span class="n">monitor</span> <span class="o">-</span><span class="n">p</span> <span class="p">[</span><span class="n">PORT</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>Replace <code class="docutils literal notranslate"><span class="pre">[Soc]</span></code> with the specific chip, currently supports <code class="docutils literal notranslate"><span class="pre">esp32s3</span></code> and <code class="docutils literal notranslate"><span class="pre">esp32p4</span></code>. The example does not yet include the model and compilation configuration files for <code class="docutils literal notranslate"><span class="pre">esp32</span></code>.</p>
+</section>
+<section id="example-configuration">
+<h3>Example Configuration<a class="headerlink" href="#example-configuration" title="Permalink to this headline"></a></h3>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">idf</span><span class="o">.</span><span class="n">py</span> <span class="n">menuconfig</span>
+</pre></div>
+</div>
+<p>Some examples contain configurable options that can be configured using <code class="docutils literal notranslate"><span class="pre">idf.py</span> <span class="pre">menuconfig</span></code> after specifying the chip using <code class="docutils literal notranslate"><span class="pre">idf.py</span> <span class="pre">set-target</span></code>.</p>
+</section>
+<section id="trouble-shooting">
+<h3>Trouble shooting<a class="headerlink" href="#trouble-shooting" title="Permalink to this headline"></a></h3>
+<section id="check-esp-idf-doc">
+<h4>Check ESP-IDF doc<a class="headerlink" href="#check-esp-idf-doc" title="Permalink to this headline"></a></h4>
+<p>See <a class="reference external" href="https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html#">ESP-IDF DOC</a></p>
+</section>
+<section id="erase-flash-clear-example">
+<h4>Erase FLASH &amp; Clear Example<a class="headerlink" href="#erase-flash-clear-example" title="Permalink to this headline"></a></h4>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">idf</span><span class="o">.</span><span class="n">py</span> <span class="n">erase</span><span class="o">-</span><span class="n">flash</span> <span class="o">-</span><span class="n">p</span> <span class="p">[</span><span class="n">PORT</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>Delete <code class="docutils literal notranslate"><span class="pre">build/</span></code>, <code class="docutils literal notranslate"><span class="pre">sdkconfig</span></code>, <code class="docutils literal notranslate"><span class="pre">dependencies.lock</span></code>, <code class="docutils literal notranslate"><span class="pre">managed_components/</span></code> and try again.</p>
+</section>
+</section>
+</section>
+<section id="model-quantization">
+<h2>Model Quantization<a class="headerlink" href="#model-quantization" title="Permalink to this headline"></a></h2>
+<p>First, please refer to <a class="reference external" href="https://github.com/espressif/esp-dl/blob/5c28279/operator_support_state.md">operator_support_state.md</a> to ensure that the operators in your model are supported.</p>
+<p>ESP-DL must use the proprietary format <code class="docutils literal notranslate"><span class="pre">.espdl</span></code> for model deployment. Deep learning models need to be quantized and converted to the format before they can be used. ESP-PPQ provides two interfaces, <code class="docutils literal notranslate"><span class="pre">espdl_quantize_onnx</span></code> and <code class="docutils literal notranslate"><span class="pre">espdl_quantize_torch</span></code>, to support ONNX models and PyTorch models to be exported as <code class="docutils literal notranslate"><span class="pre">.espdl</span></code> models. Other deep learning frameworks, such as TensorfFlow, PaddlePaddle, etc., need to convert the model to ONNX first. So make sure your model can be converted to ONNX model. For more details, please refer to:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../tutorials/how_to_quantize_model.html"><span class="doc">How to quantize model</span></a></p></li>
+<li><p><a class="reference internal" href="../tutorials/how_to_deploy_mobilenetv2.html#how-to-quantize-mobilenetv2"><span class="std std-ref">How to quantize MobileNetV2</span></a></p></li>
+<li><p><a class="reference internal" href="../tutorials/how_to_deploy_yolo11n.html#how-to-quantize-yolo11n"><span class="std std-ref">How to quantize YOLO11n</span></a></p></li>
+<li><p><a class="reference internal" href="../tutorials/how_to_deploy_yolo11n-pose.html#how-to-quantize-yolo11n-pose"><span class="std std-ref">How to quantize YOLO11n-pose</span></a></p></li>
+<li><p><a class="reference internal" href="../tutorials/how_to_deploy_streaming_model.html#how-to-quantize-streaming-model"><span class="std std-ref">How to quantize streaming model</span></a></p></li>
+</ul>
+</section>
+<section id="model-deployment">
+<h2>Model deployment<a class="headerlink" href="#model-deployment" title="Permalink to this headline"></a></h2>
+<p>ESP-DL provides a series of APIs to quickly load and run models. For more details, see:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../tutorials/how_to_load_test_profile_model.html"><span class="doc">How to load &amp; test &amp; profile model</span></a></p></li>
+<li><p><a class="reference internal" href="../tutorials/how_to_run_model.html"><span class="doc">How to run model</span></a></p></li>
+<li><p><a class="reference internal" href="../tutorials/how_to_deploy_streaming_model.html#how-to-deploy-streaming-model"><span class="std std-ref">How to deploy streaming model</span></a></p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../introduction/esp_dl_project.html" class="btn btn-neutral float-left" title="ESP-DL Project Organization" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="../tutorials/index.html" class="btn btn-neutral float-right" title="Tutorials" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2018 - 2026, Espressif Systems (Shanghai) Co., Ltd.</p>
+  </div>
+
+  <ul class="footer">
+        <li>
+	    
+            
+            Built with <a href="http://sphinx-doc.org/">Sphinx</a> using a <a href="https://github.com/espressif/sphinx_idf_theme">theme</a>  based on <a href="https://github.com/readthedocs/sphinx_rtd_theme">Read the Docs Sphinx Theme</a>.
+         </li>
+    <li class="footer-aside">
+        <a href="../esp-dl-en-v3.2.3-44-g5c282796d8.pdf" class="fa fa-file-pdf-o"> Download PDF</a>
+    </li>
+
+  </ul> 
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
