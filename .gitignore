@@ -5,6 +5,7 @@ __pycache__/
 # ESP-IDF generated files
 **/build/
 **/managed_components/
+**/dependencies.lock
 **/sdkconfig
 **/sdkconfig.old
 **/config.env
