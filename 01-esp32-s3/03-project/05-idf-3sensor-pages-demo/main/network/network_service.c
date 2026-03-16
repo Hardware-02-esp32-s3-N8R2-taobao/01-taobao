@@ -12,6 +12,7 @@
 #include "mqtt_client.h"
 
 #include "app/app_config.h"
+#include "pump/pump_controller.h"
 
 static esp_mqtt_client_handle_t s_mqtt_client;
 static bool s_wifi_connected;
@@ -20,6 +21,7 @@ static int s_wifi_rssi_dbm = -127;
 static int64_t s_last_gateway_ping_us;
 static gateway_status_t s_gateway_status;
 static char s_gateway_payload_buffer[768];
+static char s_pump_payload_buffer[256];
 
 bool network_service_configured(void)
 {
@@ -112,6 +114,94 @@ static void gateway_status_update_from_json(const char *json_text)
 static bool gateway_status_is_fresh(void)
 {
     return s_gateway_status.valid && (esp_timer_get_time() - s_gateway_status.updated_at_us) <= GATEWAY_STATUS_TIMEOUT_US;
+}
+
+static bool mqtt_copy_payload_fragment(char *buffer, size_t buffer_len, esp_mqtt_event_handle_t event)
+{
+    int copy_offset = event->current_data_offset;
+    int total_len = event->total_data_len;
+    int copy_len = event->data_len;
+
+    if (total_len <= 0 || total_len >= (int)buffer_len) {
+        ESP_LOGW(APP_TAG, "MQTT payload too large: %d", total_len);
+        return false;
+    }
+
+    if (copy_offset == 0) {
+        memset(buffer, 0, buffer_len);
+    }
+
+    if (copy_offset + copy_len > total_len) {
+        copy_len = total_len - copy_offset;
+    }
+
+    memcpy(buffer + copy_offset, event->data, (size_t)copy_len);
+
+    if (copy_offset + copy_len < total_len) {
+        return false;
+    }
+
+    buffer[total_len] = '\0';
+    return true;
+}
+
+static void pump_command_handle_json(const char *json_text)
+{
+    cJSON *root = cJSON_Parse(json_text);
+    if (root == NULL) {
+        ESP_LOGW(APP_TAG, "Pump command JSON parse failed");
+        return;
+    }
+
+    cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device");
+    cJSON *action = cJSON_GetObjectItemCaseSensitive(root, "action");
+    cJSON *duration_seconds = cJSON_GetObjectItemCaseSensitive(root, "durationSeconds");
+    cJSON *requested_by = cJSON_GetObjectItemCaseSensitive(root, "requestedBy");
+    cJSON *ts = cJSON_GetObjectItemCaseSensitive(root, "ts");
+
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "pump-command") != 0) {
+        ESP_LOGW(APP_TAG, "Ignore pump command with invalid type");
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (!cJSON_IsString(device) || strcmp(device->valuestring, MQTT_DEVICE_ID) != 0) {
+        ESP_LOGW(APP_TAG, "Ignore pump command for other device");
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (!cJSON_IsString(action)) {
+        ESP_LOGW(APP_TAG, "Ignore unsupported pump action");
+        cJSON_Delete(root);
+        return;
+    }
+
+    if (strcmp(action->valuestring, "start") == 0) {
+        if (!cJSON_IsNumber(duration_seconds) || duration_seconds->valuedouble <= 0) {
+            ESP_LOGW(APP_TAG, "Ignore pump command with invalid duration");
+            cJSON_Delete(root);
+            return;
+        }
+
+        pump_controller_start(
+            (uint32_t)duration_seconds->valueint,
+            cJSON_IsString(requested_by) ? requested_by->valuestring : "mqtt",
+            cJSON_IsString(ts) ? ts->valuestring : ""
+        );
+    } else if (strcmp(action->valuestring, "stop") == 0) {
+        pump_controller_stop(
+            cJSON_IsString(requested_by) ? requested_by->valuestring : "mqtt",
+            cJSON_IsString(ts) ? ts->valuestring : ""
+        );
+    } else {
+        ESP_LOGW(APP_TAG, "Ignore unsupported pump action: %s", action->valuestring);
+        cJSON_Delete(root);
+        return;
+    }
+
+    cJSON_Delete(root);
 }
 
 static void mqtt_publish_pressure(const pressure_sample_t *sample)
@@ -213,6 +303,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(APP_TAG, "MQTT connected: %s", MQTT_BROKER_URI);
         esp_mqtt_client_subscribe(s_mqtt_client, MQTT_TOPIC_GATEWAY_STATUS, 0);
         esp_mqtt_client_subscribe(s_mqtt_client, MQTT_TOPIC_GATEWAY_BROADCAST, 0);
+        esp_mqtt_client_subscribe(s_mqtt_client, MQTT_TOPIC_PUMP_SET, 0);
         mqtt_publish_gateway_ping();
         break;
     case MQTT_EVENT_DISCONNECTED:
@@ -228,28 +319,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             mqtt_topic_matches(event->topic, event->topic_len, MQTT_TOPIC_GATEWAY_STATUS) ||
             mqtt_topic_matches(event->topic, event->topic_len, MQTT_TOPIC_GATEWAY_BROADCAST)
         ) {
-            int copy_offset = event->current_data_offset;
-            int total_len = event->total_data_len;
-            int copy_len = event->data_len;
-
-            if (total_len <= 0 || total_len >= (int)sizeof(s_gateway_payload_buffer)) {
-                ESP_LOGW(APP_TAG, "Gateway heartbeat too large: %d", total_len);
-                break;
-            }
-
-            if (copy_offset == 0) {
-                memset(s_gateway_payload_buffer, 0, sizeof(s_gateway_payload_buffer));
-            }
-
-            if (copy_offset + copy_len > total_len) {
-                copy_len = total_len - copy_offset;
-            }
-
-            memcpy(s_gateway_payload_buffer + copy_offset, event->data, (size_t)copy_len);
-
-            if (copy_offset + copy_len >= total_len) {
-                s_gateway_payload_buffer[total_len] = '\0';
+            if (mqtt_copy_payload_fragment(s_gateway_payload_buffer, sizeof(s_gateway_payload_buffer), event)) {
                 gateway_status_update_from_json(s_gateway_payload_buffer);
+            }
+        } else if (mqtt_topic_matches(event->topic, event->topic_len, MQTT_TOPIC_PUMP_SET)) {
+            if (mqtt_copy_payload_fragment(s_pump_payload_buffer, sizeof(s_pump_payload_buffer), event)) {
+                pump_command_handle_json(s_pump_payload_buffer);
             }
         }
         break;

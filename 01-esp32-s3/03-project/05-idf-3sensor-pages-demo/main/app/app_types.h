@@ -43,6 +43,17 @@ typedef struct {
 } soil_moisture_sample_t;
 
 typedef struct {
+    bool command_received;
+    bool active;
+    uint32_t duration_seconds;
+    uint32_t remaining_seconds;
+    int64_t started_at_us;
+    int64_t stop_at_us;
+    char requested_by[32];
+    char issued_at[40];
+} pump_state_t;
+
+typedef struct {
     bool valid;
     bool server_online;
     bool mqtt_online;
@@ -58,6 +69,7 @@ typedef struct {
     dht11_sample_t dht11;
     bh1750_sample_t bh1750;
     soil_moisture_sample_t soil_moisture;
+    pump_state_t pump;
 } app_samples_t;
 
 #endif

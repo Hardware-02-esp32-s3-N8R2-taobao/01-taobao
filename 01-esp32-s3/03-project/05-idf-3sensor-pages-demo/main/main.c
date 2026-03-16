@@ -17,6 +17,7 @@
 #include "network/network_service.h"
 #include "oled_display/oled_display.h"
 #include "page_button/page_button.h"
+#include "pump/pump_controller.h"
 #include "pressure/pressure_sensor.h"
 #include "soil_moisture/soil_moisture_sensor.h"
 #include "ui/ui_pages.h"
@@ -35,6 +36,11 @@ typedef struct {
 
 static int s_page_index;
 static int s_seq;
+
+static void refresh_pump_state(app_samples_t *samples)
+{
+    pump_controller_get_state(&samples->pump);
+}
 
 static float low_pass_filter(float current, float input, float alpha)
 {
@@ -145,7 +151,8 @@ static void log_samples(const app_samples_t *samples)
         APP_TAG,
         "{\"seq\":%d,\"press_ready\":%d,\"press_chip\":\"%s\",\"press_hpa\":%.2f,\"press_temp_c\":%.2f,"
         "\"ds18_ready\":%d,\"ds18_temp_c\":%.2f,\"dht11_ready\":%d,\"dht11_temp_c\":%.1f,\"dht11_humi\":%.1f,"
-        "\"bh1750_ready\":%d,\"bh1750_lux\":%.2f,\"soil_ready\":%d,\"soil_pct\":%.1f,\"soil_raw\":%d}",
+        "\"bh1750_ready\":%d,\"bh1750_lux\":%.2f,\"soil_ready\":%d,\"soil_pct\":%.1f,\"soil_raw\":%d,"
+        "\"pump_active\":%d,\"pump_left\":%lu}",
         s_seq,
         samples->pressure.ready ? 1 : 0,
         pressure_sensor_label(pressure_sensor_type()),
@@ -160,15 +167,19 @@ static void log_samples(const app_samples_t *samples)
         samples->bh1750.lux,
         samples->soil_moisture.ready ? 1 : 0,
         samples->soil_moisture.moisture_pct,
-        samples->soil_moisture.raw
+        samples->soil_moisture.raw,
+        samples->pump.active ? 1 : 0,
+        (unsigned long)samples->pump.remaining_seconds
     );
 }
 
-static void render_active_page(const app_samples_t *samples)
+static void render_active_page(app_samples_t *samples)
 {
     char wifi_text[12];
     char server_text[12];
 
+    pump_controller_tick();
+    refresh_pump_state(samples);
     network_service_tick();
     network_service_format_status(wifi_text, sizeof(wifi_text), server_text, sizeof(server_text));
     ui_render_current_page(s_page_index, samples, wifi_text, server_text);
@@ -183,12 +194,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_ret);
 
-    ESP_LOGI(APP_TAG, "Start 5 sensor pages demo");
+    ESP_LOGI(APP_TAG, "Start 6 page garden demo");
     ESP_LOGI(APP_TAG, "I2C: SDA=GPIO%d SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
     ESP_LOGI(APP_TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d, soil moisture on GPIO%d, page button on GPIO%d",
              DS18B20_GPIO, DHT11_GPIO, SOIL_MOISTURE_GPIO, PAGE_BUTTON_GPIO);
 
-    board_rgb_off();
+    ESP_ERROR_CHECK(pump_controller_init());
     page_button_init();
 
     if (network_service_configured()) {
@@ -302,11 +313,25 @@ void app_main(void)
             }
         }
 
+        pump_controller_tick();
+        refresh_pump_state(&samples);
         log_samples(&samples);
         network_service_publish_samples(&samples);
         render_active_page(&samples);
 
         for (int elapsed_ms = 0; elapsed_ms < PAGE_REFRESH_MS; elapsed_ms += UI_POLL_MS) {
+            pump_controller_tick();
+
+            pump_state_t latest_pump = {0};
+            pump_controller_get_state(&latest_pump);
+            if ((s_page_index % ui_pages_count()) == (ui_pages_count() - 1) &&
+                (latest_pump.active != samples.pump.active ||
+                 latest_pump.remaining_seconds != samples.pump.remaining_seconds ||
+                 latest_pump.command_received != samples.pump.command_received)) {
+                samples.pump = latest_pump;
+                render_active_page(&samples);
+            }
+
             if (page_button_was_pressed()) {
                 s_page_index = (s_page_index + 1) % ui_pages_count();
                 ESP_LOGI(APP_TAG, "Page changed to %d", s_page_index + 1);

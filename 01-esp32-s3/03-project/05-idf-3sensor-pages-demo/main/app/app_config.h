@@ -14,11 +14,15 @@
 
 #define PAGE_REFRESH_MS 3000
 #define UI_POLL_MS 20
-#define UI_PAGE_COUNT 5
+#define UI_PAGE_COUNT 6
 
 #define RGB_LED_GPIO 48
 #define RGB_LED_COUNT 1
 #define RGB_RMT_RESOLUTION_HZ (10 * 1000 * 1000)
+#define PUMP_SIM_COLOR_R 0
+#define PUMP_SIM_COLOR_G 20
+#define PUMP_SIM_COLOR_B 40
+#define PUMP_MAX_DURATION_SECONDS 600
 
 #define PAGE_BUTTON_GPIO GPIO_NUM_15
 #define PAGE_BUTTON_ACTIVE 0
@@ -47,6 +51,7 @@
 #define MQTT_TOPIC_BMP280 "garden/climate/bmp280"
 #define MQTT_TOPIC_BH1750 "garden/light/bh1750"
 #define MQTT_TOPIC_SOIL_MOISTURE "garden/soil/moisture"
+#define MQTT_TOPIC_PUMP_SET "garden/device/" MQTT_DEVICE_ID "/pump/set"
 #define MQTT_DEVICE_ID "yard-node-1"
 #define MQTT_DEVICE_ALIAS "YD-ESP32-S3"
 #define MQTT_CLIENT_ID "yd-esp32s3-garden-01"
