@@ -5,6 +5,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "esp_check.h"
 
+#include "adc_shared/adc_shared.h"
 #include "app/app_config.h"
 
 static adc_oneshot_unit_handle_t s_adc_handle;
@@ -26,15 +27,12 @@ static float soil_moisture_pct_from_raw(int raw)
 
 esp_err_t soil_moisture_sensor_init(void)
 {
-    adc_oneshot_unit_init_cfg_t unit_cfg = {
-        .unit_id = SOIL_MOISTURE_ADC_UNIT,
-    };
     adc_oneshot_chan_cfg_t channel_cfg = {
         .atten = SOIL_MOISTURE_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
 
-    ESP_RETURN_ON_ERROR(adc_oneshot_new_unit(&unit_cfg, &s_adc_handle), APP_TAG, "adc unit init failed");
+    ESP_RETURN_ON_ERROR(adc_shared_get_handle(SOIL_MOISTURE_ADC_UNIT, &s_adc_handle), APP_TAG, "adc unit init failed");
     ESP_RETURN_ON_ERROR(adc_oneshot_config_channel(s_adc_handle, SOIL_MOISTURE_ADC_CHANNEL, &channel_cfg),
                         APP_TAG, "soil moisture adc config failed");
     s_soil_moisture_ready = true;

@@ -19,6 +19,7 @@
 #include "page_button/page_button.h"
 #include "pump/pump_controller.h"
 #include "pressure/pressure_sensor.h"
+#include "rain/rain_sensor.h"
 #include "soil_moisture/soil_moisture_sensor.h"
 #include "ui/ui_pages.h"
 
@@ -32,6 +33,8 @@ typedef struct {
     bh1750_sample_t filtered_bh1750;
     soil_moisture_sample_t last_soil_moisture;
     soil_moisture_sample_t filtered_soil_moisture;
+    rain_sensor_sample_t last_rain;
+    rain_sensor_sample_t filtered_rain;
 } sample_cache_t;
 
 static int s_page_index;
@@ -144,6 +147,29 @@ static void apply_soil_moisture_filter(sample_cache_t *cache, soil_moisture_samp
     *sample = cache->filtered_soil_moisture;
 }
 
+static void apply_rain_filter(sample_cache_t *cache, rain_sensor_sample_t *sample)
+{
+    if (!sample->ready) {
+        return;
+    }
+
+    if (!cache->filtered_rain.ready) {
+        cache->filtered_rain = *sample;
+    } else {
+        cache->filtered_rain.rain_level_pct =
+            low_pass_filter(cache->filtered_rain.rain_level_pct, sample->rain_level_pct, RAIN_SENSOR_FILTER_ALPHA);
+        cache->filtered_rain.voltage_v =
+            low_pass_filter(cache->filtered_rain.voltage_v, sample->voltage_v, RAIN_SENSOR_FILTER_ALPHA);
+        cache->filtered_rain.raw = (int)lroundf(
+            low_pass_filter((float)cache->filtered_rain.raw, (float)sample->raw, RAIN_SENSOR_FILTER_ALPHA)
+        );
+        cache->filtered_rain.is_raining = cache->filtered_rain.rain_level_pct >= RAIN_SENSOR_ACTIVE_THRESHOLD_PCT;
+    }
+
+    cache->filtered_rain.ready = true;
+    *sample = cache->filtered_rain;
+}
+
 static void log_samples(const app_samples_t *samples)
 {
     s_seq++;
@@ -152,6 +178,7 @@ static void log_samples(const app_samples_t *samples)
         "{\"seq\":%d,\"press_ready\":%d,\"press_chip\":\"%s\",\"press_hpa\":%.2f,\"press_temp_c\":%.2f,"
         "\"ds18_ready\":%d,\"ds18_temp_c\":%.2f,\"dht11_ready\":%d,\"dht11_temp_c\":%.1f,\"dht11_humi\":%.1f,"
         "\"bh1750_ready\":%d,\"bh1750_lux\":%.2f,\"soil_ready\":%d,\"soil_pct\":%.1f,\"soil_raw\":%d,"
+        "\"rain_ready\":%d,\"raining\":%d,\"rain_pct\":%.1f,\"rain_raw\":%d,"
         "\"pump_active\":%d,\"pump_left\":%lu}",
         s_seq,
         samples->pressure.ready ? 1 : 0,
@@ -168,6 +195,10 @@ static void log_samples(const app_samples_t *samples)
         samples->soil_moisture.ready ? 1 : 0,
         samples->soil_moisture.moisture_pct,
         samples->soil_moisture.raw,
+        samples->rain.ready ? 1 : 0,
+        samples->rain.is_raining ? 1 : 0,
+        samples->rain.rain_level_pct,
+        samples->rain.raw,
         samples->pump.active ? 1 : 0,
         (unsigned long)samples->pump.remaining_seconds
     );
@@ -194,10 +225,17 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_ret);
 
-    ESP_LOGI(APP_TAG, "Start 6 page garden demo");
+    ESP_LOGI(APP_TAG, "Start 7 page garden demo");
     ESP_LOGI(APP_TAG, "I2C: SDA=GPIO%d SCL=GPIO%d", I2C_SDA_GPIO, I2C_SCL_GPIO);
-    ESP_LOGI(APP_TAG, "DS18B20 on GPIO%d, DHT11 on GPIO%d, soil moisture on GPIO%d, page button on GPIO%d",
-             DS18B20_GPIO, DHT11_GPIO, SOIL_MOISTURE_GPIO, PAGE_BUTTON_GPIO);
+    ESP_LOGI(
+        APP_TAG,
+        "DS18B20 on GPIO%d, DHT11 on GPIO%d, soil moisture on GPIO%d, rain sensor on GPIO%d, page button on GPIO%d",
+        DS18B20_GPIO,
+        DHT11_GPIO,
+        SOIL_MOISTURE_GPIO,
+        RAIN_SENSOR_GPIO,
+        PAGE_BUTTON_GPIO
+    );
 
     ESP_ERROR_CHECK(pump_controller_init());
     page_button_init();
@@ -237,6 +275,12 @@ void app_main(void)
         ESP_LOGI(APP_TAG, "Soil moisture ADC ready on GPIO%d", SOIL_MOISTURE_GPIO);
     } else {
         ESP_LOGW(APP_TAG, "Soil moisture ADC init failed");
+    }
+
+    if (rain_sensor_init() == ESP_OK) {
+        ESP_LOGI(APP_TAG, "Rain sensor ADC ready on GPIO%d", RAIN_SENSOR_GPIO);
+    } else {
+        ESP_LOGW(APP_TAG, "Rain sensor ADC init failed");
     }
 
     sample_cache_t cache = {0};
@@ -313,6 +357,21 @@ void app_main(void)
             }
         }
 
+        if (rain_sensor_is_ready()) {
+            esp_err_t rain_ret = rain_sensor_read(&samples.rain);
+            if (rain_ret != ESP_OK) {
+                ESP_LOGW(APP_TAG, "Rain sensor read failed: %s", esp_err_to_name(rain_ret));
+                if (cache.filtered_rain.ready) {
+                    samples.rain = cache.filtered_rain;
+                } else if (cache.last_rain.ready) {
+                    samples.rain = cache.last_rain;
+                }
+            } else {
+                cache.last_rain = samples.rain;
+                apply_rain_filter(&cache, &samples.rain);
+            }
+        }
+
         pump_controller_tick();
         refresh_pump_state(&samples);
         log_samples(&samples);
@@ -324,12 +383,15 @@ void app_main(void)
 
             pump_state_t latest_pump = {0};
             pump_controller_get_state(&latest_pump);
-            if ((s_page_index % ui_pages_count()) == (ui_pages_count() - 1) &&
-                (latest_pump.active != samples.pump.active ||
-                 latest_pump.remaining_seconds != samples.pump.remaining_seconds ||
-                 latest_pump.command_received != samples.pump.command_received)) {
+            if (latest_pump.active != samples.pump.active ||
+                latest_pump.remaining_seconds != samples.pump.remaining_seconds ||
+                latest_pump.command_received != samples.pump.command_received ||
+                latest_pump.duration_seconds != samples.pump.duration_seconds) {
+                network_service_publish_pump_state(&latest_pump);
                 samples.pump = latest_pump;
-                render_active_page(&samples);
+                if ((s_page_index % ui_pages_count()) == (ui_pages_count() - 1)) {
+                    render_active_page(&samples);
+                }
             }
 
             if (page_button_was_pressed()) {

@@ -291,6 +291,54 @@ static void mqtt_publish_soil_moisture(const soil_moisture_sample_t *sample)
     esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_SOIL_MOISTURE, payload, 0, 0, 0);
 }
 
+static void mqtt_publish_rain_sensor(const rain_sensor_sample_t *sample)
+{
+    char payload[192];
+
+    if (!s_mqtt_connected || !sample->ready) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\",\"isRaining\":%s,\"rainLevel\":%.1f,\"adcRaw\":%d,\"voltage\":%.3f}",
+        MQTT_DEVICE_ID,
+        MQTT_DEVICE_ALIAS,
+        sample->is_raining ? "true" : "false",
+        sample->rain_level_pct,
+        sample->raw,
+        sample->voltage_v
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_RAIN_SENSOR, payload, 0, 0, 0);
+}
+
+void network_service_publish_pump_state(const pump_state_t *pump)
+{
+    char payload[256];
+
+    if (!s_mqtt_connected || pump == NULL) {
+        return;
+    }
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"type\":\"pump-state\",\"device\":\"%s\",\"alias\":\"%s\",\"active\":%s,"
+        "\"commandReceived\":%s,\"remainingSeconds\":%lu,\"durationSeconds\":%lu,"
+        "\"requestedBy\":\"%s\",\"issuedAt\":\"%s\"}",
+        MQTT_DEVICE_ID,
+        MQTT_DEVICE_ALIAS,
+        pump->active ? "true" : "false",
+        pump->command_received ? "true" : "false",
+        (unsigned long)pump->remaining_seconds,
+        (unsigned long)pump->duration_seconds,
+        pump->requested_by,
+        pump->issued_at
+    );
+    esp_mqtt_client_publish(s_mqtt_client, MQTT_TOPIC_PUMP_STATUS, payload, 0, 0, 0);
+}
+
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     (void)handler_args;
@@ -409,6 +457,8 @@ void network_service_publish_samples(const app_samples_t *samples)
     mqtt_publish_dht11(&samples->dht11);
     mqtt_publish_bh1750(&samples->bh1750);
     mqtt_publish_soil_moisture(&samples->soil_moisture);
+    mqtt_publish_rain_sensor(&samples->rain);
+    network_service_publish_pump_state(&samples->pump);
 }
 
 void network_service_format_status(char *wifi_buffer, size_t wifi_len, char *server_buffer, size_t server_len)

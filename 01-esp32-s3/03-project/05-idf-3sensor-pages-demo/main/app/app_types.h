@@ -43,6 +43,14 @@ typedef struct {
 } soil_moisture_sample_t;
 
 typedef struct {
+    bool ready;
+    bool is_raining;
+    int raw;
+    float voltage_v;
+    float rain_level_pct;
+} rain_sensor_sample_t;
+
+typedef struct {
     bool command_received;
     bool active;
     uint32_t duration_seconds;
@@ -69,6 +77,7 @@ typedef struct {
     dht11_sample_t dht11;
     bh1750_sample_t bh1750;
     soil_moisture_sample_t soil_moisture;
+    rain_sensor_sample_t rain;
     pump_state_t pump;
 } app_samples_t;
 
