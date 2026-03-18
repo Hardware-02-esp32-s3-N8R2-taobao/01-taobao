@@ -474,13 +474,16 @@ function getHistoryZoomStep(visibleCount) {
 
 function getCanvasSize(canvas) {
   const rect = canvas.getBoundingClientRect();
-  const width = Math.max(Math.round(rect.width || 520), 320);
-  const height = Math.max(Math.round(rect.height || 260), 220);
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
+  const cssWidth = Math.max(Math.round(rect.width || 520), 320);
+  const cssHeight = Math.max(Math.round(rect.height || 260), 220);
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const pixelWidth = Math.round(cssWidth * dpr);
+  const pixelHeight = Math.round(cssHeight * dpr);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
   }
-  return { width, height };
+  return { width: cssWidth, height: cssHeight, dpr };
 }
 
 function showTooltip(tooltipEl, metric, point, position) {
@@ -500,7 +503,8 @@ function hideTooltip(tooltipEl) {
 
 function drawMetricChart(metric, canvas, tooltipEl) {
   const context = canvas.getContext("2d");
-  const { width, height } = getCanvasSize(canvas);
+  const { width, height, dpr } = getCanvasSize(canvas);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
   const points = getVisibleHistoryPoints();
   const padding = { top: 18, right: 20, bottom: 38, left: 52 };
   const plotWidth = width - padding.left - padding.right;
@@ -656,7 +660,7 @@ function renderHistoryPanels() {
 
     canvas.addEventListener("mousemove", (event) => {
       const rect = canvas.getBoundingClientRect();
-      const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+      const x = ((event.clientX - rect.left) / rect.width) * width;
       const hitPoints = canvas._hitPoints || [];
       let nearest = null;
       let nearestDistance = Infinity;
@@ -675,7 +679,7 @@ function renderHistoryPanels() {
       }
       appState.hoverIndexByMetric[metric.key] = nearest.index;
       drawMetricChart(metric, canvas, tooltipEl);
-      showTooltip(tooltipEl, metric, nearest.point, { x: (nearest.x / canvas.width) * rect.width, y: 34 });
+      showTooltip(tooltipEl, metric, nearest.point, { x: (nearest.x / width) * rect.width, y: 34 });
     });
 
     historyPanelsEl.appendChild(panel);
@@ -686,10 +690,14 @@ function drawSimpleChart(context, canvas, seriesList, options = {}) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(Math.round(rect.width || canvas.width || 940), 320);
   const height = Math.max(Math.round(rect.height || canvas.height || 280), 220);
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const pixelWidth = Math.round(width * dpr);
+  const pixelHeight = Math.round(height * dpr);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
   }
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   context.clearRect(0, 0, width, height);
   const padding = { top: 18, right: 20, bottom: 28, left: 42 };
