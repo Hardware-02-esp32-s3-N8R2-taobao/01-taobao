@@ -6,6 +6,7 @@
 #include "esp_log.h"
 
 #include "app_config.h"
+#include "device_profile.h"
 #include "dht11_sensor.h"
 #include "network_service.h"
 
@@ -23,6 +24,7 @@ void telemetry_app_run(void)
         esp_err_t dht_ret = dht11_sensor_read(&sample);
         if (dht_ret != ESP_OK) {
             ESP_LOGW(TAG, "DHT11 read failed: %s", esp_err_to_name(dht_ret));
+            device_profile_update_dht11(false, sample.temperature_c, sample.humidity_pct);
         } else {
             ESP_LOGI(
                 TAG,
@@ -30,6 +32,7 @@ void telemetry_app_run(void)
                 sample.temperature_c,
                 sample.humidity_pct
             );
+            device_profile_update_dht11(sample.ready, sample.temperature_c, sample.humidity_pct);
         }
 
         if (sample.ready && network_service_is_wifi_ready() && network_service_is_mqtt_ready()) {
@@ -37,9 +40,9 @@ void telemetry_app_run(void)
                 payload,
                 sizeof(payload),
                 "{\"device\":\"%s\",\"alias\":\"%s\",\"source\":\"%s\",\"temperature\":%.1f,\"humidity\":%.1f,\"rssi\":%d,\"ip\":\"%s\"}",
-                APP_DEVICE_ID,
-                APP_DEVICE_ALIAS,
-                APP_DEVICE_SOURCE,
+                device_profile_device_id(),
+                device_profile_device_alias(),
+                device_profile_device_source(),
                 sample.temperature_c,
                 sample.humidity_pct,
                 network_service_get_rssi(),
@@ -47,8 +50,17 @@ void telemetry_app_run(void)
             );
 
             if (network_service_publish_json(APP_MQTT_TOPIC_TELEMETRY, payload) == ESP_OK) {
+                device_profile_update_publish(
+                    true,
+                    sample.temperature_c,
+                    sample.humidity_pct,
+                    network_service_get_rssi(),
+                    network_service_get_ip(),
+                    payload
+                );
                 ESP_LOGI(TAG, "publish ok: %s", payload);
             } else {
+                device_profile_update_publish(false, sample.temperature_c, sample.humidity_pct, network_service_get_rssi(), network_service_get_ip(), payload);
                 ESP_LOGW(TAG, "publish skipped, mqtt not ready");
             }
         } else {

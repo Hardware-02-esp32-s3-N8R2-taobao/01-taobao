@@ -2,11 +2,14 @@ idf_component_register(
     SRCS
         "app_main.c"
         "app/telemetry_app.c"
+        "app/device_profile.c"
+        "app/console_service.c"
         "dht11/dht11_sensor.c"
         "network/network_service.c"
     INCLUDE_DIRS
         "include"
     REQUIRES
+        json
         driver
         esp_event
         esp_netif

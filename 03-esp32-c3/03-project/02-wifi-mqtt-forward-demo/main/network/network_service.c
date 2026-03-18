@@ -14,6 +14,7 @@
 #include "nvs_flash.h"
 
 #include "app_config.h"
+#include "device_profile.h"
 
 #define TAG "network_service"
 #define WIFI_CONNECTED_BIT BIT0
@@ -33,10 +34,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch (event_id) {
     case MQTT_EVENT_CONNECTED:
         xEventGroupSetBits(s_event_group, MQTT_CONNECTED_BIT);
+        device_profile_update_mqtt(true);
         ESP_LOGI(TAG, "MQTT connected");
         break;
     case MQTT_EVENT_DISCONNECTED:
         xEventGroupClearBits(s_event_group, MQTT_CONNECTED_BIT);
+        device_profile_update_mqtt(false);
         ESP_LOGW(TAG, "MQTT disconnected");
         break;
     default:
@@ -77,6 +80,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
         xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
+        device_profile_update_wifi(false, NULL, event ? event->reason : -1);
+        device_profile_update_mqtt(false);
         ESP_LOGW(TAG, "WiFi disconnected, reason=%d, retry", event ? event->reason : -1);
         if (s_mqtt_client != NULL) {
             esp_mqtt_client_disconnect(s_mqtt_client);
@@ -86,6 +91,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
         s_ip_addr = event->ip_info.ip;
         xEventGroupSetBits(s_event_group, WIFI_CONNECTED_BIT);
+        device_profile_update_wifi(true, network_service_get_ip(), 0);
         ESP_LOGI(TAG, "WiFi connected, ip=" IPSTR, IP2STR(&s_ip_addr));
         mqtt_start();
     }
