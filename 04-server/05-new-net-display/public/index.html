@@ -393,6 +393,10 @@
         gap: 16px;
       }
 
+      .history-panels {
+        gap: 18px;
+      }
+
       .detail-stat,
       .info-card,
       .chart-card,
@@ -485,6 +489,10 @@
         margin-top: 14px;
       }
 
+      .history-panel .chart-wrap {
+        min-height: 320px;
+      }
+
       .chart-tip {
         position: absolute;
         top: 12px;
@@ -508,7 +516,10 @@
       }
 
       .history-panel {
-        grid-column: span 6;
+        grid-column: span 12;
+        padding: 20px 22px;
+        border-radius: 28px;
+        background: linear-gradient(180deg, rgba(245, 248, 253, 0.96), rgba(241, 245, 251, 0.92));
       }
 
       .history-panel-head,
@@ -522,6 +533,10 @@
       .history-panel-title,
       .detail-block-title {
         font-weight: 700;
+      }
+
+      .history-panel-title {
+        font-size: 18px;
       }
 
       .history-panel-meta,

@@ -197,13 +197,35 @@ function getSensorSnapshot(sensorKey) {
   };
 }
 
+function getDevicesStatusMap() {
+  const devices = appState.devicesStatus?.devices || [];
+  return new Map(devices.map((device) => [device.device, device]));
+}
+
+function getIotDevicePresence(catalog, sensors) {
+  const devicesMap = getDevicesStatusMap();
+  const matched =
+    devicesMap.get(catalog.id) ||
+    sensors
+      .map((sensor) => devicesMap.get(sensor.raw?.source))
+      .find(Boolean) ||
+    null;
+
+  const sensorOnline = sensors.some((sensor) => sensor.online);
+  return {
+    online: matched?.online ?? sensorOnline,
+    statusText: matched?.online ?? sensorOnline ? "在线" : "超时未上报",
+    lastSeenAgoSeconds: matched?.lastSeenAgoSeconds ?? null
+  };
+}
+
 function getDeviceSnapshot(deviceId) {
   const catalog = deviceCatalog[deviceId];
   if (!catalog) return null;
 
   if (catalog.type === "iot-device") {
     const sensors = catalog.sensors.map((sensorKey) => getSensorSnapshot(sensorKey));
-    const online = sensors.some((sensor) => sensor.online);
+    const presence = getIotDevicePresence(catalog, sensors);
     const lastUpdated = sensors
       .map((sensor) => sensor.updatedAt)
       .filter(Boolean)
@@ -212,7 +234,9 @@ function getDeviceSnapshot(deviceId) {
     return {
       id: deviceId,
       type: catalog.type,
-      online,
+      online: presence.online,
+      statusText: presence.statusText,
+      lastSeenAgoSeconds: presence.lastSeenAgoSeconds,
       updatedAt: lastUpdated,
       sensors,
       summaryMetrics: sensors.flatMap((sensor) => sensor.metrics).slice(0, 2)
@@ -306,6 +330,10 @@ function getStatusClass(snapshot) {
   return snapshot?.online ? "is-online" : "is-offline";
 }
 
+function getStatusText(snapshot) {
+  return snapshot?.statusText || (snapshot?.online ? "在线" : "离线");
+}
+
 function renderDeviceGrid() {
   const visibleDevices = getVisibleDevices();
   els.deviceGrid.innerHTML = visibleDevices
@@ -330,7 +358,7 @@ function renderDeviceGrid() {
           <div class="device-subtitle">${catalog.subtitle}</div>
           <div class="device-metrics">${metricHtml || '<div class="metric-pill"><div class="metric-label">当前数据</div><div class="metric-value">--</div></div>'}</div>
           <div class="device-meta">
-            <span class="device-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${snapshot.online ? "在线" : "离线"}</span>
+            <span class="device-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${getStatusText(snapshot)}</span>
             ${deviceMeta}
             <span>${snapshot.updatedAt ? `更新 ${formatTime(snapshot.updatedAt)}` : "等待数据"}</span>
           </div>
@@ -413,7 +441,7 @@ function buildMetricScale(metric, points) {
 
 function getHistoryGapThresholdMs() {
   const bucketMinutes = Number(appState.historyMeta.bucketMinutes || 10);
-  return Math.max(bucketMinutes * 60 * 1000 * 3, 20 * 60 * 1000);
+  return Math.max(bucketMinutes * 60 * 1000 * 3, 2 * 60 * 1000);
 }
 
 function getTimeLabel(tsMs, startTs, endTs) {
@@ -457,7 +485,10 @@ function getCanvasSize(canvas) {
 
 function showTooltip(tooltipEl, metric, point, position) {
   if (!tooltipEl) return;
-  tooltipEl.innerHTML = `<strong>${formatPointTime(point.tsMs)}</strong><br />${metric.label}：${point[metric.key]} ${metric.unit}<br />样本：${point.sampleCount || 0}`;
+  const valueText = metric.unit === "lux"
+    ? `${Math.round(Number(point[metric.key]))} ${metric.unit}`
+    : `${Number(point[metric.key]).toFixed(1)} ${metric.unit}`;
+  tooltipEl.innerHTML = `<strong>${formatPointTime(point.tsMs)}</strong><br />${valueText}`;
   tooltipEl.style.left = `${position.x}px`;
   tooltipEl.style.top = `${position.y}px`;
   tooltipEl.classList.add("visible");
@@ -533,6 +564,21 @@ function drawMetricChart(metric, canvas, tooltipEl) {
     context.fillStyle = metric.color || "#395dff";
     context.fill();
   });
+
+  const hoverIndex = appState.hoverIndexByMetric[metric.key];
+  if (hoverIndex != null && points[hoverIndex]?.[metric.key] != null) {
+    const hoverPoint = points[hoverIndex];
+    const hoverX = toX(hoverPoint.tsMs);
+    context.save();
+    context.strokeStyle = "rgba(67, 84, 111, 0.45)";
+    context.lineWidth = 1.25;
+    context.setLineDash([6, 6]);
+    context.beginPath();
+    context.moveTo(hoverX, padding.top);
+    context.lineTo(hoverX, padding.top + plotHeight);
+    context.stroke();
+    context.restore();
+  }
 
   context.fillStyle = "#7b6f62";
   context.font = "12px Segoe UI";
@@ -812,7 +858,7 @@ function renderDeviceSensorHistorySection(selectedSensorKey) {
     <section style="margin-top:20px;">
       <div class="detail-block-head">
         <div class="detail-block-title">当前传感器历史数据</div>
-        <div class="detail-helper">历史曲线跟随上面的传感器分页切换</div>
+        <div class="detail-helper">温度和湿度分行展示，时间轴可以看得更细</div>
       </div>
       <div class="detail-helper" style="margin-bottom:10px;">当前查看：${sensorCatalog[selectedSensorKey]?.title || "--"}</div>
       <div class="history-toolbar">
@@ -825,7 +871,7 @@ function renderDeviceSensorHistorySection(selectedSensorKey) {
       </div>
       <div class="detail-block-head" style="margin-bottom:12px;">
         <div class="detail-block-title" id="historyTitle">${sensorCatalog[selectedSensorKey]?.title || "--"} 历史曲线</div>
-        <div class="detail-helper" id="historyLegend"></div>
+        <div class="detail-helper" id="historyLegend">每个指标单独一张图</div>
       </div>
       <div class="history-panels" id="historyPanels"></div>
       <div class="chart-actions">
@@ -870,7 +916,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
       <div>
         <div class="detail-header-top">
           <div class="detail-icon">${catalog.icon}</div>
-          <div class="detail-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${snapshot.online ? "设备在线" : "设备离线"}</div>
+          <div class="detail-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${snapshot.online ? "设备在线" : "设备超时未上报"}</div>
         </div>
         <div class="detail-title">${catalog.title}</div>
         <div class="detail-subtitle">${catalog.subtitle}</div>
@@ -885,6 +931,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         <div class="info-list">
           <div class="info-row"><span class="info-label">设备 ID</span><strong>${catalog.id}</strong></div>
           <div class="info-row"><span class="info-label">挂载传感器</span><strong>${catalog.sensors.length} 个</strong></div>
+          <div class="info-row"><span class="info-label">在线判定</span><strong>${snapshot.online ? "90 秒内有消息，判定在线" : "超过 90 秒未见消息，判定离线"}</strong></div>
           <div class="info-row"><span class="info-label">最近更新时间</span><strong>${formatTime(snapshot.updatedAt)}</strong></div>
           <div class="info-row"><span class="info-label">页面模式</span><strong>先看设备，再看设备里的传感器</strong></div>
         </div>
