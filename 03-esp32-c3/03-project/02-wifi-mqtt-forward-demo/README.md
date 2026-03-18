@@ -39,7 +39,9 @@
 
 ## 3. WiFi 信息
 
-- SSID: `Ermao`
+当前 `ESP32-C3` 应使用以下 WiFi：
+
+- SSID: `ggg`
 - Password: `gf666666`
 
 ## 4. 公网服务器信息
@@ -106,21 +108,43 @@
 说明：
 
 - 这是公网 broker
-- 后续如果其他设备需要统一接入公网 MQTT，可直接用它
+- 但由于云服务器公网安全组当前没有放行 `1883` 和 `11883`
+- 外部设备不要再直接走公网 `1883` 或 `11883`
+- 已新增一条可公网访问的 WebSocket 入口：`ws://117.72.55.63/mqtt`
+- 这条入口由 `Nginx:80` 反代到公网机本地 `Mosquitto:9001`
 
 ### 8.2 当前 C3 工程实际连接的 MQTT
 
-本工程当前使用的是“公网只做转发”的链路：
+当前工程已经切换到“公网 80 口 WebSocket 接入 + 公网 broker 桥接到内网 broker”的链路：
 
-- MQTT URI: `mqtt://117.72.55.63:11883`
-- MQTT 用户名: 空
-- MQTT 密码: 空
+- MQTT URI: `ws://117.72.55.63/mqtt`
+- MQTT 用户名: `c3client`
+- MQTT 密码: `C3mqtt@2026`
 
 说明：
 
-- `117.72.55.63:11883` 不是独立 broker
-- 这个端口通过反向隧道转发到 `192.168.2.123:1883`
-- 因此 `ESP32-C3` 实际上是把数据送进内网项目自己的 MQTT 服务
+- `117.72.55.63:11883` 依然存在，但它是 `sshd` 暴露出来的反向隧道口，不是独立 broker
+- `117.72.55.63:11883 -> 公网服务器 localhost:11883 -> 反向 SSH 隧道 -> 192.168.2.123:1883`
+- 公网 `Mosquitto` 已新增桥接配置，把 `garden/#` 从公网 broker 转发到 `127.0.0.1:11883`
+- 因此现在的实际链路是：
+
+```text
+ESP32-C3
+  -> ws://117.72.55.63/mqtt
+  -> 公网服务器 Nginx :80
+  -> 公网服务器 Mosquitto :9001 (WebSocket)
+  -> 公网服务器 Mosquitto Bridge
+  -> 127.0.0.1:11883
+  -> 反向 SSH 隧道
+  -> 192.168.2.123:1883
+  -> 内网项目订阅并更新网页
+```
+
+结论：
+
+- 是的，C3 最终仍然是把数据送到公网入口
+- 然后由公网机转进内网服务器
+- 内网服务器上的项目 broker 负责被业务服务订阅并驱动页面刷新
 
 ## 9. MQTT 主题设计
 
@@ -141,30 +165,32 @@
 
 ```json
 {
-  "device": "esp32-c3-supermini",
-  "source": "esp32-c3-public",
+  "device": "yardHub",
+  "alias": "庭院1号设备",
+  "source": "yard-1-flower-c3",
   "temperature": 25.0,
   "humidity": 60.0,
   "rssi": -48,
-  "ip": "192.168.1.135",
-  "ts": 1
+  "ip": "192.168.1.135"
 }
 ```
 
 字段说明：
 
-- `device`: 设备名，固定为 `esp32-c3-supermini`
-- `source`: 来源标识，固定为 `esp32-c3-public`
+- `device`: 设备 ID，固定为 `yardHub`，用于让服务器识别为“庭院 1 号设备”
+- `alias`: 设备显示名，固定为 `庭院1号设备`
+- `source`: 来源标识，固定为 `yard-1-flower-c3`，用于区分这是庭院 1 号下的花花 DHT11 节点
 - `temperature`: 温度，单位摄氏度
 - `humidity`: 湿度，单位 `%RH`
 - `rssi`: 当前 WiFi 信号强度
 - `ip`: 板子当前 STA 模式拿到的局域网 IP
-- `ts`: 当前发布计数，从 `1` 开始递增
+- 当前固件不主动携带 `ts`
+- 服务器按收到消息的实际时间记录 `updatedAt`
 
 代码中的实际拼接格式为：
 
 ```c
-{"device":"esp32-c3-supermini","source":"esp32-c3-public","temperature":%.1f,"humidity":%.1f,"rssi":%d,"ip":"%s","ts":%lu}
+{"device":"yardHub","alias":"庭院1号设备","source":"yard-1-flower-c3","temperature":%.1f,"humidity":%.1f,"rssi":%d,"ip":"%s"}
 ```
 
 ## 11. 硬件接线
@@ -200,14 +226,54 @@
 
 关键配置来自 `main/include/app_config.h`：
 
-- `APP_WIFI_SSID = "Ermao"`
+- `APP_WIFI_SSID = "ggg"`
 - `APP_WIFI_PASSWORD = "gf666666"`
-- `APP_MQTT_URI = "mqtt://117.72.55.63:11883"`
-- `APP_MQTT_USERNAME = ""`
-- `APP_MQTT_PASSWORD = ""`
+- `APP_MQTT_URI = "ws://117.72.55.63/mqtt"`
+- `APP_MQTT_USERNAME = "c3client"`
+- `APP_MQTT_PASSWORD = "C3mqtt@2026"`
 - `APP_MQTT_TOPIC_TELEMETRY = "garden/flower/dht11"`
+- `APP_DEVICE_ID = "yardHub"`
+- `APP_DEVICE_ALIAS = "庭院1号设备"`
+- `APP_DEVICE_SOURCE = "yard-1-flower-c3"`
 - `APP_PUBLISH_INTERVAL_MS = 3000`
 - `APP_DHT11_GPIO = GPIO_NUM_4`
+
+## 13.1 端口拓扑梳理
+
+### A. C3 上报温湿度时
+
+公网入口与内网处理链路如下：
+
+- C3 MQTT 连接地址：`ws://117.72.55.63/mqtt`
+- 公网 HTTP/WebSocket 入口端口：`80`
+- 公网 Nginx 反代目标：`127.0.0.1:9001`
+- 公网 Mosquitto WebSocket 监听端口：`9001`
+- 公网 Mosquitto TCP 监听端口：`1883`
+- 公网到内网 MQTT 转发入口：`127.0.0.1:11883`
+- `11883` 对应的内网目标：`192.168.2.123:1883`
+- 内网项目 MQTT 服务端口：`1883`
+
+一句话理解：
+
+- C3 不是直接连内网机器
+- C3 先连公网 `80`
+- 公网机再把 MQTT 消息桥接到内网 `1883`
+
+### B. 手机公网访问网页时
+
+公网 HTTP 访问链路如下：
+
+- 手机访问地址：`http://117.72.55.63/`
+- 公网 Nginx 监听端口：`80`
+- 公网 Nginx 反代目标：`127.0.0.1:18080`
+- `18080` 对应的内网目标：`192.168.2.123:3000`
+- 内网项目 HTTP 服务端口：`3000`
+
+一句话理解：
+
+- 手机访问公网 `80`
+- 公网机通过反向 SSH 隧道把 HTTP 请求转到内网 `3000`
+- 真正生成页面的是内网服务器上的 Node 项目
 
 ## 14. 编译与烧录
 

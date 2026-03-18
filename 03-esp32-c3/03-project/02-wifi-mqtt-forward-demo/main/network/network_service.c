@@ -44,27 +44,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
-{
-    (void)arg;
-    (void)event_data;
-
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
-        ESP_LOGW(TAG, "WiFi disconnected, retry");
-        esp_wifi_connect();
-    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
-        s_ip_addr = event->ip_info.ip;
-        xEventGroupSetBits(s_event_group, WIFI_CONNECTED_BIT);
-        ESP_LOGI(TAG, "WiFi connected, ip=" IPSTR, IP2STR(&s_ip_addr));
-    }
-}
-
 static void mqtt_start(void)
 {
+    if (s_mqtt_client != NULL) {
+        esp_mqtt_client_reconnect(s_mqtt_client);
+        return;
+    }
+
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = APP_MQTT_URI,
     };
@@ -80,6 +66,29 @@ static void mqtt_start(void)
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
     ESP_ERROR_CHECK(esp_mqtt_client_register_event(s_mqtt_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL));
     ESP_ERROR_CHECK(esp_mqtt_client_start(s_mqtt_client));
+}
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    (void)arg;
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
+        xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
+        ESP_LOGW(TAG, "WiFi disconnected, reason=%d, retry", event ? event->reason : -1);
+        if (s_mqtt_client != NULL) {
+            esp_mqtt_client_disconnect(s_mqtt_client);
+        }
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
+        s_ip_addr = event->ip_info.ip;
+        xEventGroupSetBits(s_event_group, WIFI_CONNECTED_BIT);
+        ESP_LOGI(TAG, "WiFi connected, ip=" IPSTR, IP2STR(&s_ip_addr));
+        mqtt_start();
+    }
 }
 
 esp_err_t network_service_start(void)
@@ -100,15 +109,19 @@ esp_err_t network_service_start(void)
     wifi_config_t wifi_config = {0};
     memcpy(wifi_config.sta.ssid, APP_WIFI_SSID, strlen(APP_WIFI_SSID));
     memcpy(wifi_config.sta.password, APP_WIFI_PASSWORD, strlen(APP_WIFI_PASSWORD));
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wifi_config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
+    wifi_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+    wifi_config.sta.failure_retry_cnt = 10;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
-    mqtt_start();
     return ESP_OK;
 }
 

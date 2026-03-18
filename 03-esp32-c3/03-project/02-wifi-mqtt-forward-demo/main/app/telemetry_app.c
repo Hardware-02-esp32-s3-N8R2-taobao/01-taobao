@@ -13,7 +13,6 @@
 
 void telemetry_app_run(void)
 {
-    uint32_t counter = 0;
     char payload[256];
     dht11_sample_t sample = {0};
 
@@ -37,17 +36,18 @@ void telemetry_app_run(void)
             snprintf(
                 payload,
                 sizeof(payload),
-                "{\"device\":\"esp32-c3-supermini\",\"source\":\"esp32-c3-public\",\"temperature\":%.1f,\"humidity\":%.1f,\"rssi\":%d,\"ip\":\"%s\",\"ts\":%lu}",
+                "{\"device\":\"%s\",\"alias\":\"%s\",\"source\":\"%s\",\"temperature\":%.1f,\"humidity\":%.1f,\"rssi\":%d,\"ip\":\"%s\"}",
+                APP_DEVICE_ID,
+                APP_DEVICE_ALIAS,
+                APP_DEVICE_SOURCE,
                 sample.temperature_c,
                 sample.humidity_pct,
                 network_service_get_rssi(),
-                network_service_get_ip(),
-                (unsigned long)(counter + 1)
+                network_service_get_ip()
             );
 
             if (network_service_publish_json(APP_MQTT_TOPIC_TELEMETRY, payload) == ESP_OK) {
                 ESP_LOGI(TAG, "publish ok: %s", payload);
-                counter++;
             } else {
                 ESP_LOGW(TAG, "publish skipped, mqtt not ready");
             }
