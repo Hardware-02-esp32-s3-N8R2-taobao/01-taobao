@@ -1,0 +1,16 @@
+[Unit]
+Description=NetDisplay Garden Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zerozero
+WorkingDirectory=/home/zerozero/01-code/05-new-net-display
+Environment=PATH=/home/zerozero/.nvm/versions/node/v24.14.0/bin:/home/zerozero/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/zerozero/.nvm/versions/node/v24.14.0/bin/node /home/zerozero/01-code/05-new-net-display/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

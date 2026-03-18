@@ -1,0 +1,12 @@
+cloudflared.log
+cloudflared.err.log
+cloudflared.pid
+cloudflared-runtime.log
+.cache/
+node_modules/
+server.out.log
+server.err.log
+server.log
+public-url.txt
+cloudflared-url.txt
+data/
