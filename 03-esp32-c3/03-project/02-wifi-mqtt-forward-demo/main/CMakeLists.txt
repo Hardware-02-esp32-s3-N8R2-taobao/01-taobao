@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "app/telemetry_app.c"
+        "dht11/dht11_sensor.c"
+        "network/network_service.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        driver
+        esp_event
+        esp_netif
+        esp_wifi
+        mqtt
+        nvs_flash
+)

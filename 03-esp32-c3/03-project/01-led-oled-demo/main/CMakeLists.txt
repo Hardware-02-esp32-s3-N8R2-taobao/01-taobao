@@ -1,0 +1,9 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "app/ui_status.c"
+        "led/led_driver.c"
+        "oled/oled_ssd1306.c"
+    INCLUDE_DIRS
+        "include"
+)
