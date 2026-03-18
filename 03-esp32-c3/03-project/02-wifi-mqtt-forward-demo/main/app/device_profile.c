@@ -15,6 +15,15 @@
 
 #define TAG "device_profile"
 #define DEVICE_PROFILE_NAMESPACE "device_cfg"
+#define WIFI_MAX_ENTRIES 8
+
+typedef struct {
+    char ssid[33];
+    char password[65];
+} wifi_entry_t;
+
+static wifi_entry_t s_wifi_entries[WIFI_MAX_ENTRIES];
+static int s_wifi_count = 0;
 
 #define DEFAULT_DEVICE_NAME   "庭院1号"
 #define DEFAULT_DEVICE_ALIAS  "庭院1号设备"
@@ -125,8 +134,6 @@ static const char *chip_model_to_text(esp_chip_model_t model)
         return "ESP32-C6";
     case CHIP_ESP32H2:
         return "ESP32-H2";
-    case CHIP_ESP32P4:
-        return "ESP32-P4";
     default:
         return "ESP32";
     }
@@ -194,6 +201,50 @@ static void build_hardware_object(cJSON *root)
     cJSON_AddStringToObject(hardware, "mac", s_state.mac);
 }
 
+static void load_wifi_list_from_nvs(nvs_handle_t handle)
+{
+    char json[1024] = {0};
+    size_t required = sizeof(json);
+    if (nvs_get_str(handle, "wifi_list", json, &required) != ESP_OK || json[0] == '\0') {
+        /* default: single entry from app_config.h */
+        strlcpy(s_wifi_entries[0].ssid, APP_WIFI_SSID, sizeof(s_wifi_entries[0].ssid));
+        strlcpy(s_wifi_entries[0].password, APP_WIFI_PASSWORD, sizeof(s_wifi_entries[0].password));
+        s_wifi_count = 1;
+        return;
+    }
+
+    cJSON *arr = cJSON_Parse(json);
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(arr);
+        strlcpy(s_wifi_entries[0].ssid, APP_WIFI_SSID, sizeof(s_wifi_entries[0].ssid));
+        strlcpy(s_wifi_entries[0].password, APP_WIFI_PASSWORD, sizeof(s_wifi_entries[0].password));
+        s_wifi_count = 1;
+        return;
+    }
+
+    s_wifi_count = 0;
+    int n = cJSON_GetArraySize(arr);
+    for (int i = 0; i < n && i < WIFI_MAX_ENTRIES; i++) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        cJSON *ssid = cJSON_GetObjectItemCaseSensitive(item, "ssid");
+        cJSON *pw   = cJSON_GetObjectItemCaseSensitive(item, "password");
+        if (cJSON_IsString(ssid) && ssid->valuestring[0] != '\0') {
+            strlcpy(s_wifi_entries[s_wifi_count].ssid, ssid->valuestring, sizeof(s_wifi_entries[0].ssid));
+            strlcpy(s_wifi_entries[s_wifi_count].password,
+                    cJSON_IsString(pw) ? pw->valuestring : "",
+                    sizeof(s_wifi_entries[0].password));
+            s_wifi_count++;
+        }
+    }
+    cJSON_Delete(arr);
+
+    if (s_wifi_count == 0) {
+        strlcpy(s_wifi_entries[0].ssid, APP_WIFI_SSID, sizeof(s_wifi_entries[0].ssid));
+        strlcpy(s_wifi_entries[0].password, APP_WIFI_PASSWORD, sizeof(s_wifi_entries[0].password));
+        s_wifi_count = 1;
+    }
+}
+
 esp_err_t device_profile_init(void)
 {
     memset(&s_state, 0, sizeof(s_state));
@@ -205,29 +256,46 @@ esp_err_t device_profile_init(void)
     set_default_strings();
     populate_hardware_info();
 
+    /* Initialize NVS here so subsequent callers (network_service) can use it */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_err = nvs_flash_init();
+    }
+    if (nvs_err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_flash_init failed: %s", esp_err_to_name(nvs_err));
+    }
+
     nvs_handle_t handle;
     if (nvs_open(DEVICE_PROFILE_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
         load_nvs_string(handle, "device_name", s_state.device_name, sizeof(s_state.device_name));
         load_nvs_string(handle, "device_alias", s_state.device_alias, sizeof(s_state.device_alias));
         load_nvs_string(handle, "device_source", s_state.device_source, sizeof(s_state.device_source));
         load_nvs_string(handle, "sensors_csv", s_state.sensors_csv, sizeof(s_state.sensors_csv));
+        load_wifi_list_from_nvs(handle);
         nvs_close(handle);
+    } else {
+        /* NVS open failed, use compile-time defaults */
+        strlcpy(s_wifi_entries[0].ssid, APP_WIFI_SSID, sizeof(s_wifi_entries[0].ssid));
+        strlcpy(s_wifi_entries[0].password, APP_WIFI_PASSWORD, sizeof(s_wifi_entries[0].password));
+        s_wifi_count = 1;
     }
 
     ESP_LOGI(
         TAG,
-        "config loaded: deviceName=%s alias=%s sensors=%s chip=%s",
+        "config loaded: deviceName=%s alias=%s sensors=%s chip=%s wifi_entries=%d",
         s_state.device_name,
         s_state.device_alias,
         s_state.sensors_csv,
-        s_state.chip_model
+        s_state.chip_model,
+        s_wifi_count
     );
     return ESP_OK;
 }
 
 const char *device_profile_device_id(void)
 {
-    return APP_DEVICE_ID;
+    return s_state.device_name;
 }
 
 const char *device_profile_device_name(void)
@@ -356,6 +424,82 @@ void device_profile_build_options_json(char *buffer, size_t buffer_size)
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
     cJSON_free(printed);
     cJSON_Delete(root);
+}
+
+int device_profile_get_wifi_count(void)
+{
+    return s_wifi_count;
+}
+
+bool device_profile_get_wifi_entry(int index, char *ssid, size_t ssid_size, char *password, size_t pw_size)
+{
+    if (index < 0 || index >= s_wifi_count) {
+        return false;
+    }
+    strlcpy(ssid, s_wifi_entries[index].ssid, ssid_size);
+    strlcpy(password, s_wifi_entries[index].password, pw_size);
+    return true;
+}
+
+void device_profile_get_wifi_list_json(char *buffer, size_t buffer_size)
+{
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < s_wifi_count; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "ssid", s_wifi_entries[i].ssid);
+        cJSON_AddStringToObject(item, "password", s_wifi_entries[i].password);
+        cJSON_AddItemToArray(arr, item);
+    }
+    char *printed = cJSON_PrintUnformatted(arr);
+    snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "[]");
+    cJSON_free(printed);
+    cJSON_Delete(arr);
+}
+
+esp_err_t device_profile_set_wifi_list_json(const char *json_text, char *message, size_t message_size)
+{
+    cJSON *arr = cJSON_Parse(json_text);
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(arr);
+        snprintf(message, message_size, "invalid json array");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    wifi_entry_t new_entries[WIFI_MAX_ENTRIES];
+    int new_count = 0;
+    int n = cJSON_GetArraySize(arr);
+    for (int i = 0; i < n && i < WIFI_MAX_ENTRIES; i++) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        cJSON *ssid = cJSON_GetObjectItemCaseSensitive(item, "ssid");
+        cJSON *pw   = cJSON_GetObjectItemCaseSensitive(item, "password");
+        if (cJSON_IsString(ssid) && ssid->valuestring[0] != '\0') {
+            strlcpy(new_entries[new_count].ssid, ssid->valuestring, sizeof(new_entries[0].ssid));
+            strlcpy(new_entries[new_count].password,
+                    cJSON_IsString(pw) ? pw->valuestring : "",
+                    sizeof(new_entries[0].password));
+            new_count++;
+        }
+    }
+    cJSON_Delete(arr);
+
+    if (new_count == 0) {
+        snprintf(message, message_size, "no valid entries");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memcpy(s_wifi_entries, new_entries, new_count * sizeof(wifi_entry_t));
+    s_wifi_count = new_count;
+
+    nvs_handle_t handle;
+    if (nvs_open(DEVICE_PROFILE_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_str(handle, "wifi_list", json_text);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+
+    snprintf(message, message_size, "wifi list saved (%d entries)", new_count);
+    ESP_LOGI(TAG, "wifi list updated: %d entries", new_count);
+    return ESP_OK;
 }
 
 esp_err_t device_profile_apply_config_json(const char *json_text, char *message, size_t message_size)

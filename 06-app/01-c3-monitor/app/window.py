@@ -30,6 +30,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._thread: QtCore.QThread | None = None
         self._reader: SerialReader | None = None
         self._sensor_checks: dict[str, QtWidgets.QCheckBox] = {}
+        self._last_wifi_list: list[dict] = []
 
         self._build_ui()
         self.refresh_ports()
@@ -43,6 +44,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(14)
 
+        # ── Header ───────────────────────────────────────────────────────
         header = QtWidgets.QFrame()
         header.setObjectName("headerCard")
         header_layout = QtWidgets.QHBoxLayout(header)
@@ -77,87 +79,51 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         header_layout.addLayout(controls)
         layout.addWidget(header)
 
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.setObjectName("mainTabs")
+        layout.addWidget(self.tab_widget, 1)
+
+        # ── Tab 1: 监控 ──────────────────────────────────────────────────
+        monitor_tab = QtWidgets.QWidget()
+        monitor_layout = QtWidgets.QVBoxLayout(monitor_tab)
+        monitor_layout.setContentsMargins(0, 12, 0, 0)
+        monitor_layout.setSpacing(12)
+
         status_grid = QtWidgets.QGridLayout()
         status_grid.setHorizontalSpacing(12)
         status_grid.setVerticalSpacing(12)
-        self.serial_card = self._create_status_card("串口状态")
-        self.boot_card = self._create_status_card("启动状态")
         self.wifi_card = self._create_status_card("WiFi 状态")
         self.mqtt_card = self._create_status_card("服务器 / MQTT")
         self.sensor_card = self._create_status_card("传感器状态")
         self.publish_card = self._create_status_card("最近一次上报")
-        cards = [self.serial_card, self.boot_card, self.wifi_card, self.mqtt_card, self.sensor_card, self.publish_card]
+        cards = [self.wifi_card, self.mqtt_card, self.sensor_card, self.publish_card]
         for index, card in enumerate(cards):
-            status_grid.addWidget(card["frame"], index // 3, index % 3)
-        layout.addLayout(status_grid)
+            status_grid.addWidget(card["frame"], index // 2, index % 2)
+        monitor_layout.addLayout(status_grid)
 
-        config_frame = QtWidgets.QFrame()
-        config_frame.setObjectName("panelCard")
-        config_layout = QtWidgets.QVBoxLayout(config_frame)
-        config_layout.setContentsMargins(16, 14, 16, 14)
-        config_layout.setSpacing(12)
-
-        config_head = QtWidgets.QHBoxLayout()
-        config_title = QtWidgets.QLabel("设备配置与硬件信息")
-        config_title.setObjectName("panelTitle")
-        self.query_btn = QtWidgets.QPushButton("读取设备配置")
-        self.save_btn = QtWidgets.QPushButton("保存配置")
-        config_head.addWidget(config_title)
-        config_head.addStretch(1)
-        config_head.addWidget(self.query_btn)
-        config_head.addWidget(self.save_btn)
-        config_layout.addLayout(config_head)
-
-        info_grid = QtWidgets.QGridLayout()
-        info_grid.setHorizontalSpacing(16)
-        info_grid.setVerticalSpacing(10)
-
-        self.device_name_combo = QtWidgets.QComboBox()
-        self.device_name_combo.setEditable(True)
-        self.device_alias_edit = QtWidgets.QLineEdit()
-        self.device_source_edit = QtWidgets.QLineEdit()
-        self.device_id_label = QtWidgets.QLabel("--")
-        self.hardware_label = QtWidgets.QLabel("--")
-        self.hardware_meta_label = QtWidgets.QLabel("--")
-        self.hardware_meta_label.setWordWrap(True)
-
-        info_grid.addWidget(QtWidgets.QLabel("设备名称"), 0, 0)
-        info_grid.addWidget(self.device_name_combo, 0, 1)
-        info_grid.addWidget(QtWidgets.QLabel("显示别名"), 0, 2)
-        info_grid.addWidget(self.device_alias_edit, 0, 3)
-        info_grid.addWidget(QtWidgets.QLabel("设备来源"), 1, 0)
-        info_grid.addWidget(self.device_source_edit, 1, 1)
-        info_grid.addWidget(QtWidgets.QLabel("设备 ID"), 1, 2)
-        info_grid.addWidget(self.device_id_label, 1, 3)
-        info_grid.addWidget(QtWidgets.QLabel("芯片型号"), 2, 0)
-        info_grid.addWidget(self.hardware_label, 2, 1)
-        info_grid.addWidget(QtWidgets.QLabel("硬件细节"), 2, 2)
-        info_grid.addWidget(self.hardware_meta_label, 2, 3)
-        config_layout.addLayout(info_grid)
-
-        sensor_title = QtWidgets.QLabel("挂载传感器")
-        sensor_title.setObjectName("subTitle")
-        config_layout.addWidget(sensor_title)
-        self.sensor_checks_wrap = QtWidgets.QFrame()
-        self.sensor_checks_layout = QtWidgets.QHBoxLayout(self.sensor_checks_wrap)
-        self.sensor_checks_layout.setContentsMargins(0, 0, 0, 0)
-        self.sensor_checks_layout.setSpacing(12)
-        config_layout.addWidget(self.sensor_checks_wrap)
-
-        layout.addWidget(config_frame)
-
-        lower_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        lower_split.setChildrenCollapsible(False)
-
-        alert_panel = QtWidgets.QFrame()
-        alert_panel.setObjectName("panelCard")
-        alert_layout = QtWidgets.QVBoxLayout(alert_panel)
-        alert_layout.setContentsMargins(16, 14, 16, 14)
-        alert_title = QtWidgets.QLabel("关键事件")
-        alert_title.setObjectName("panelTitle")
-        self.alert_list = QtWidgets.QListWidget()
-        alert_layout.addWidget(alert_title)
-        alert_layout.addWidget(self.alert_list, 1)
+        # Hardware info panel (moved from 设备配置)
+        hw_panel = QtWidgets.QFrame()
+        hw_panel.setObjectName("panelCard")
+        hw_layout = QtWidgets.QVBoxLayout(hw_panel)
+        hw_layout.setContentsMargins(16, 14, 16, 14)
+        hw_layout.setSpacing(8)
+        hw_title = QtWidgets.QLabel("硬件信息")
+        hw_title.setObjectName("panelTitle")
+        hw_layout.addWidget(hw_title)
+        hw_info_row = QtWidgets.QHBoxLayout()
+        hw_info_row.setSpacing(24)
+        self.hw_chip_label = QtWidgets.QLabel("芯片：--")
+        self.hw_chip_label.setObjectName("pageSubtitle")
+        self.hw_device_id_label = QtWidgets.QLabel("设备ID：--")
+        self.hw_device_id_label.setObjectName("pageSubtitle")
+        self.hw_meta_label = QtWidgets.QLabel("--")
+        self.hw_meta_label.setObjectName("pageSubtitle")
+        self.hw_meta_label.setWordWrap(True)
+        hw_info_row.addWidget(self.hw_chip_label)
+        hw_info_row.addWidget(self.hw_device_id_label)
+        hw_info_row.addWidget(self.hw_meta_label, 1)
+        hw_layout.addLayout(hw_info_row)
+        monitor_layout.addWidget(hw_panel)
 
         log_panel = QtWidgets.QFrame()
         log_panel.setObjectName("panelCard")
@@ -174,12 +140,95 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.log_edit.setReadOnly(True)
         log_layout.addLayout(log_head)
         log_layout.addWidget(self.log_edit, 1)
+        monitor_layout.addWidget(log_panel, 1)
 
-        lower_split.addWidget(alert_panel)
-        lower_split.addWidget(log_panel)
-        lower_split.setSizes([320, 820])
-        layout.addWidget(lower_split, 1)
+        self.tab_widget.addTab(monitor_tab, "监控")
 
+        # ── Tab 2: 设备配置 ───────────────────────────────────────────────
+        config_tab = QtWidgets.QWidget()
+        config_tab_layout = QtWidgets.QVBoxLayout(config_tab)
+        config_tab_layout.setContentsMargins(0, 12, 0, 0)
+        config_tab_layout.setSpacing(12)
+
+        config_frame = QtWidgets.QFrame()
+        config_frame.setObjectName("panelCard")
+        config_layout = QtWidgets.QVBoxLayout(config_frame)
+        config_layout.setContentsMargins(16, 14, 16, 14)
+        config_layout.setSpacing(12)
+
+        config_head = QtWidgets.QHBoxLayout()
+        config_title = QtWidgets.QLabel("设备配置")
+        config_title.setObjectName("panelTitle")
+        self.query_btn = QtWidgets.QPushButton("读取设备配置")
+        self.save_btn = QtWidgets.QPushButton("保存配置")
+        config_head.addWidget(config_title)
+        config_head.addStretch(1)
+        config_head.addWidget(self.query_btn)
+        config_head.addWidget(self.save_btn)
+        config_layout.addLayout(config_head)
+
+        name_row = QtWidgets.QHBoxLayout()
+        name_row.setSpacing(12)
+        name_label = QtWidgets.QLabel("设备名称")
+        name_label.setFixedWidth(80)
+        self.device_name_combo = QtWidgets.QComboBox()
+        self.device_name_combo.setEditable(True)
+        name_row.addWidget(name_label)
+        name_row.addWidget(self.device_name_combo, 1)
+        config_layout.addLayout(name_row)
+
+        sensor_title = QtWidgets.QLabel("挂载传感器")
+        sensor_title.setObjectName("subTitle")
+        config_layout.addWidget(sensor_title)
+        self.sensor_checks_wrap = QtWidgets.QFrame()
+        self.sensor_checks_layout = QtWidgets.QHBoxLayout(self.sensor_checks_wrap)
+        self.sensor_checks_layout.setContentsMargins(0, 0, 0, 0)
+        self.sensor_checks_layout.setSpacing(12)
+        config_layout.addWidget(self.sensor_checks_wrap)
+
+        # WiFi config section (merged from former WiFi tab)
+        wifi_divider = QtWidgets.QFrame()
+        wifi_divider.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        wifi_divider.setStyleSheet("color: #dbe4f0;")
+        config_layout.addWidget(wifi_divider)
+
+        wifi_head = QtWidgets.QHBoxLayout()
+        wifi_panel_title = QtWidgets.QLabel("WiFi 配置")
+        wifi_panel_title.setObjectName("subTitle")
+        self.wifi_read_btn = QtWidgets.QPushButton("读取 WiFi")
+        self.wifi_send_btn = QtWidgets.QPushButton("发送到设备")
+        wifi_head.addWidget(wifi_panel_title)
+        wifi_head.addStretch(1)
+        wifi_head.addWidget(self.wifi_read_btn)
+        wifi_head.addWidget(self.wifi_send_btn)
+        config_layout.addLayout(wifi_head)
+
+        wifi_hint = QtWidgets.QLabel("设备启动后将按顺序尝试连接，直到成功为止。断开后自动轮询下一条记录。")
+        wifi_hint.setObjectName("pageSubtitle")
+        config_layout.addWidget(wifi_hint)
+
+        self.wifi_table = QtWidgets.QTableWidget(0, 2)
+        self.wifi_table.setHorizontalHeaderLabels(["WiFi 名称 (SSID)", "密码"])
+        self.wifi_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.wifi_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.wifi_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.wifi_table.verticalHeader().setDefaultSectionSize(38)
+        self.wifi_table.setMaximumHeight(200)
+        config_layout.addWidget(self.wifi_table)
+
+        wifi_row_btns = QtWidgets.QHBoxLayout()
+        self.wifi_add_btn = QtWidgets.QPushButton("＋ 添加")
+        self.wifi_del_btn = QtWidgets.QPushButton("－ 删除选中行")
+        wifi_row_btns.addWidget(self.wifi_add_btn)
+        wifi_row_btns.addWidget(self.wifi_del_btn)
+        wifi_row_btns.addStretch(1)
+        config_layout.addLayout(wifi_row_btns)
+        config_layout.addStretch(1)
+
+        config_tab_layout.addWidget(config_frame, 1)
+        self.tab_widget.addTab(config_tab, "设备配置")
+
+        # ── Signal connections ────────────────────────────────────────────
         self.statusBar().showMessage("准备就绪")
 
         self.refresh_btn.clicked.connect(self.refresh_ports)
@@ -188,6 +237,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.clear_log_btn.clicked.connect(self.log_edit.clear)
         self.query_btn.clicked.connect(self.query_device_state)
         self.save_btn.clicked.connect(self.save_device_config)
+        self.wifi_read_btn.clicked.connect(self._request_wifi_list)
+        self.wifi_send_btn.clicked.connect(self.send_wifi_list)
+        self.wifi_add_btn.clicked.connect(self._add_wifi_row)
+        self.wifi_del_btn.clicked.connect(self._del_wifi_row)
 
         self.setStyleSheet(
             """
@@ -211,6 +264,22 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
                 font-family: Consolas, 'Courier New', monospace;
                 font-size: 13px;
             }
+            QTableWidget {
+                background: #f8fbff;
+                border: 1px solid #dbe4f0;
+                border-radius: 12px;
+                font-size: 14px;
+                gridline-color: #dbe4f0;
+            }
+            QHeaderView::section {
+                background: #eef3fb;
+                border: none;
+                border-bottom: 1px solid #dbe4f0;
+                padding: 6px 12px;
+                font-size: 13px;
+                font-weight: 600;
+                color: #183153;
+            }
             QPushButton, QComboBox, QLineEdit {
                 min-height: 36px;
                 border-radius: 12px;
@@ -219,6 +288,28 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
                 padding: 0 12px;
             }
             QPushButton:hover { background: #ebf3ff; }
+            QTabWidget#mainTabs::pane {
+                border: none;
+                background: transparent;
+            }
+            QTabWidget#mainTabs > QTabBar::tab {
+                min-width: 120px;
+                min-height: 38px;
+                padding: 0 24px;
+                font-size: 15px;
+                font-weight: 600;
+                color: #55708d;
+                background: #dbe4f0;
+                border-radius: 10px 10px 0 0;
+                margin-right: 4px;
+            }
+            QTabWidget#mainTabs > QTabBar::tab:selected {
+                background: white;
+                color: #183153;
+            }
+            QTabWidget#mainTabs > QTabBar::tab:hover:!selected {
+                background: #c8d8ec;
+            }
             """
         )
 
@@ -327,14 +418,53 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         sensors = [name for name, checkbox in self._sensor_checks.items() if checkbox.isChecked()]
         if not sensors:
             sensors = ["dht11"]
+        device_name = self.device_name_combo.currentText().strip() or "庭院1号"
         payload = {
-            "deviceName": self.device_name_combo.currentText().strip() or "庭院1号",
-            "deviceAlias": self.device_alias_edit.text().strip() or "庭院1号设备",
-            "deviceSource": self.device_source_edit.text().strip() or "yard-1-flower-c3",
+            "deviceName": device_name,
+            "deviceAlias": device_name + "设备",
+            "deviceSource": device_name,
             "sensors": sensors,
         }
         self._send_command(f"SET_CONFIG {json.dumps(payload, ensure_ascii=False)}")
         QtCore.QTimer.singleShot(800, self.query_device_state)
+
+    def _request_wifi_list(self) -> None:
+        self._send_command("GET_WIFI_LIST")
+
+    def send_wifi_list(self) -> None:
+        entries = []
+        for row in range(self.wifi_table.rowCount()):
+            ssid_item = self.wifi_table.item(row, 0)
+            pw_item = self.wifi_table.item(row, 1)
+            ssid = ssid_item.text().strip() if ssid_item else ""
+            pw = pw_item.text().strip() if pw_item else ""
+            if ssid:
+                entries.append({"ssid": ssid, "password": pw})
+        if not entries:
+            self.statusBar().showMessage("WiFi列表为空，请至少添加一条记录")
+            return
+        self._send_command(f"SET_WIFI_LIST {json.dumps(entries, ensure_ascii=False)}")
+        self.statusBar().showMessage(f"已发送 {len(entries)} 条 WiFi 配置")
+
+    def _add_wifi_row(self) -> None:
+        row = self.wifi_table.rowCount()
+        self.wifi_table.insertRow(row)
+        self.wifi_table.setItem(row, 0, QtWidgets.QTableWidgetItem(""))
+        self.wifi_table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
+        self.wifi_table.editItem(self.wifi_table.item(row, 0))
+
+    def _del_wifi_row(self) -> None:
+        rows = sorted({idx.row() for idx in self.wifi_table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.wifi_table.removeRow(row)
+
+    def _populate_wifi_table(self, entries: list[dict]) -> None:
+        self.wifi_table.setRowCount(0)
+        for entry in entries:
+            row = self.wifi_table.rowCount()
+            self.wifi_table.insertRow(row)
+            self.wifi_table.setItem(row, 0, QtWidgets.QTableWidgetItem(entry.get("ssid", "")))
+            self.wifi_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.get("password", "")))
 
     def _send_command(self, text: str) -> None:
         if self._reader is None:
@@ -343,16 +473,6 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.command_requested.emit(text)
 
     def _render_state(self, state: dict[str, Any]) -> None:
-        self._set_card(
-            self.serial_card,
-            "已连接" if state["serial_connected"] else "未连接",
-            f"串口：{state['port_name']}\n波特率：{state['baudrate']}\n最近日志：{state['last_seen_at'] or '--'}",
-        )
-        self._set_card(
-            self.boot_card,
-            state["boot_mode"],
-            f"启动细节：{state['boot_detail'] or '--'}\n最后一行：{state['last_line'] or '--'}",
-        )
         wifi = state["wifi"]
         self._set_card(
             self.wifi_card,
@@ -377,31 +497,33 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             publish["status"],
             (
                 f"设备：{publish['alias']} ({publish['device']})\n"
-                f"来源：{publish['source']}\n"
                 f"温度：{fmt_value(publish['temperature'], ' °C')}  湿度：{fmt_value(publish['humidity'], ' %RH')}\n"
                 f"RSSI：{fmt_value(publish['rssi'])}  IP：{publish['ip']}\n"
                 f"更新时间：{publish['updated_at'] or '--'}"
             ),
         )
 
-        self.alert_list.clear()
-        for item in state["alerts"]:
-            self.alert_list.addItem(item)
-
+        # Hardware info in monitor tab
         config = state["config"]
-        options = state["options"]
-        self._sync_combo(self.device_name_combo, options["device_names"], config["device_name"])
-        self.device_alias_edit.setText(config["device_alias"])
-        self.device_source_edit.setText(config["device_source"])
-        self.device_id_label.setText(config["device_id"])
-
         hardware = state["hardware"]
-        self.hardware_label.setText(hardware["chip_model"])
-        self.hardware_meta_label.setText(
-            f"target={hardware['target']}  cores={hardware['cores'] or '--'}  rev={hardware['revision'] or '--'}  mac={hardware['mac']}"
+        self.hw_chip_label.setText(f"芯片：{hardware['chip_model']}")
+        self.hw_device_id_label.setText(f"设备ID：{config['device_id']}")
+        self.hw_meta_label.setText(
+            f"target={hardware['target']}  cores={hardware['cores'] or '--'}  "
+            f"rev={hardware['revision'] or '--'}  mac={hardware['mac']}"
         )
 
+        # Device config tab
+        options = state["options"]
+        self._sync_combo(self.device_name_combo, options["device_names"], config["device_name"])
         self._sync_sensor_checks(options["sensor_types"], config["sensors"])
+
+        wifi_list = state.get("wifi_list", [])
+        if wifi_list and wifi_list != self._last_wifi_list:
+            self._last_wifi_list = wifi_list
+            self._populate_wifi_table(wifi_list)
+            self.tab_widget.setCurrentIndex(1)
+            self.statusBar().showMessage(f"已读取 {len(wifi_list)} 条 WiFi 配置")
 
     def _sync_combo(self, combo: QtWidgets.QComboBox, items: list[str], current_text: str) -> None:
         current_items = [combo.itemText(i) for i in range(combo.count())]

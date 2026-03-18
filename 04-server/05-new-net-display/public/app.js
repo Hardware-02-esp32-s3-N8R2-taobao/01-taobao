@@ -1,8 +1,9 @@
 const roomConfigs = [
   { id: "all", name: "全屋", description: "查看全部设备" },
   { id: "yard", name: "庭院", description: "庭院节点和植物相关设备" },
-  { id: "aquarium", name: "鱼缸区", description: "鱼缸和水体监测设备" },
-  { id: "station", name: "气象角", description: "环境站和气象相关设备" },
+  { id: "study", name: "书房", description: "书房温湿度监测" },
+  { id: "office", name: "办公室", description: "办公室温湿度监测" },
+  { id: "bedroom", name: "卧室", description: "卧室温湿度监测" },
   { id: "server", name: "机柜", description: "网关和服务运行状态" },
   { id: "outdoor", name: "户外", description: "外部天气和室外数据" }
 ];
@@ -45,38 +46,49 @@ const sensorCatalog = {
 };
 
 const deviceCatalog = {
-  yardHub: {
-    id: "yardHub",
-    title: "庭院 1 号设备",
-    subtitle: "植物与光照综合节点",
+  "庭院1号": {
+    id: "庭院1号",
+    title: "庭院 1 号",
+    subtitle: "庭院温湿度节点",
     room: "yard",
     type: "iot-device",
     icon: "🪴",
     accentClass: "accent-flower",
-    sensors: ["flower", "light"],
-    summary: "这是一个设备下挂多个传感器的标准形态。后面继续接土壤湿度、CO2、继电器，都可以继续挂在这个设备下面。"
+    sensors: ["flower"],
+    summary: "庭院 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
-  aquariumHub: {
-    id: "aquariumHub",
-    title: "鱼缸 1 号设备",
-    subtitle: "鱼缸监测节点",
-    room: "aquarium",
+  "书房1号": {
+    id: "书房1号",
+    title: "书房 1 号",
+    subtitle: "书房温湿度节点",
+    room: "study",
     type: "iot-device",
-    icon: "🐠",
-    accentClass: "accent-fish",
-    sensors: ["fish"],
-    summary: "鱼缸设备先接了水温，后面再加水位、PH、TDS 时不用改页面结构。"
+    icon: "📚",
+    accentClass: "accent-flower",
+    sensors: ["flower"],
+    summary: "书房 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
-  climateHub: {
-    id: "climateHub",
-    title: "环境 1 号设备",
-    subtitle: "气压与环境参考节点",
-    room: "station",
+  "办公室1号": {
+    id: "办公室1号",
+    title: "办公室 1 号",
+    subtitle: "办公室温湿度节点",
+    room: "office",
     type: "iot-device",
-    icon: "🛰️",
-    accentClass: "accent-climate",
-    sensors: ["climate"],
-    summary: "环境类设备可以继续接更多传感器，统一进这个设备详情页。"
+    icon: "💼",
+    accentClass: "accent-flower",
+    sensors: ["flower"],
+    summary: "办公室 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
+  },
+  "卧室1号": {
+    id: "卧室1号",
+    title: "卧室 1 号",
+    subtitle: "卧室温湿度节点",
+    room: "bedroom",
+    type: "iot-device",
+    icon: "🛏️",
+    accentClass: "accent-flower",
+    sensors: ["flower"],
+    summary: "卧室 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
   server: {
     id: "server",
