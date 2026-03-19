@@ -126,6 +126,16 @@ const latestMetricRowsStmt = db.prepare(`
   )
 `);
 
+const latestMetricRowsByDeviceStmt = db.prepare(`
+  SELECT sensor_key, metric_key, value, unit, source, topic, recorded_at
+  FROM metric_readings
+  WHERE id IN (
+    SELECT MAX(id)
+    FROM metric_readings
+    GROUP BY source, sensor_key, metric_key
+  )
+`);
+
 const selectLatestLegacyStmt = db.prepare(`
   SELECT temperature, humidity, source, recorded_at AS updatedAt
   FROM sensor_readings
@@ -186,7 +196,12 @@ function buildDefaultLatestSensors() {
   };
 }
 
+function createDefaultSensorState(sensorKey) {
+  return { ...buildDefaultLatestSensors()[sensorKey] };
+}
+
 let latestSensors = loadLatestSensors();
+let latestSensorsByDevice = loadLatestSensorsByDevice();
 let flowerDemoMode = latestSensors.flower.source === "demo-simulator";
 
 function sendJson(res, statusCode, data) {
@@ -481,6 +496,27 @@ function persistMetricValue(sensorKey, metricKey, value, meta) {
   );
 }
 
+function getOrCreateDeviceSensors(deviceName) {
+  if (!deviceName) {
+    return null;
+  }
+  if (!latestSensorsByDevice[deviceName]) {
+    latestSensorsByDevice[deviceName] = {};
+  }
+  return latestSensorsByDevice[deviceName];
+}
+
+function getOrCreateDeviceSensorState(deviceName, sensorKey) {
+  const deviceSensors = getOrCreateDeviceSensors(deviceName);
+  if (!deviceSensors) {
+    return createDefaultSensorState(sensorKey);
+  }
+  if (!deviceSensors[sensorKey]) {
+    deviceSensors[sensorKey] = createDefaultSensorState(sensorKey);
+  }
+  return deviceSensors[sensorKey];
+}
+
 function recordSensorPayload(sensorKey, payload, meta) {
   const config = SENSOR_CONFIG[sensorKey];
   if (!config) {
@@ -488,9 +524,16 @@ function recordSensorPayload(sensorKey, payload, meta) {
   }
 
   const updatedAt = new Date(normalizeTs(payload.ts || payload.timestamp || meta.updatedAt)).toISOString();
+  const deviceName = payload.device || meta.device || meta.source || "mqtt-client";
   const next = {
     ...latestSensors[sensorKey],
-    source: meta.source,
+    source: deviceName,
+    topic: meta.topic,
+    updatedAt
+  };
+  const deviceNext = {
+    ...getOrCreateDeviceSensorState(deviceName, sensorKey),
+    source: deviceName,
     topic: meta.topic,
     updatedAt
   };
@@ -498,11 +541,13 @@ function recordSensorPayload(sensorKey, payload, meta) {
   config.metrics.forEach((metric) => {
     const value = Number(payload[metric.key]);
     if (Number.isFinite(value)) {
-      next[metric.key] = Number(value.toFixed(metric.unit === "hPa" ? 1 : 1));
+      const roundedValue = Number(value.toFixed(metric.unit === "hPa" ? 1 : 1));
+      next[metric.key] = roundedValue;
+      deviceNext[metric.key] = roundedValue;
       persistMetricValue(sensorKey, metric.key, next[metric.key], {
         unit: metric.unit,
         topic: meta.topic,
-        source: meta.source,
+        source: deviceName,
         updatedAt
       });
     }
@@ -510,10 +555,12 @@ function recordSensorPayload(sensorKey, payload, meta) {
 
   if (sensorKey === "climate") {
     next.pressureState = getPressureState(next.pressure);
+    deviceNext.pressureState = getPressureState(deviceNext.pressure);
   }
 
   latestSensors[sensorKey] = next;
-  return next;
+  latestSensorsByDevice[deviceName][sensorKey] = deviceNext;
+  return deviceNext;
 }
 
 function loadLatestSensors() {
@@ -544,6 +591,38 @@ function loadLatestSensors() {
   return sensors;
 }
 
+function loadLatestSensorsByDevice() {
+  const devices = {};
+  const rows = latestMetricRowsByDeviceStmt.all();
+
+  rows.forEach((row) => {
+    const deviceName = row.source;
+    if (!deviceName) {
+      return;
+    }
+    if (!devices[deviceName]) {
+      devices[deviceName] = {};
+    }
+    if (!devices[deviceName][row.sensor_key]) {
+      devices[deviceName][row.sensor_key] = createDefaultSensorState(row.sensor_key);
+    }
+
+    const sensor = devices[deviceName][row.sensor_key];
+    sensor[row.metric_key] = row.value;
+    sensor.source = deviceName;
+    sensor.topic = row.topic;
+    sensor.updatedAt = row.recorded_at;
+  });
+
+  Object.values(devices).forEach((deviceSensors) => {
+    if (deviceSensors.climate) {
+      deviceSensors.climate.pressureState = getPressureState(deviceSensors.climate.pressure);
+    }
+  });
+
+  return devices;
+}
+
 function migrateLegacyFlowerHistory() {
   db.exec(`
     INSERT OR IGNORE INTO metric_readings
@@ -572,6 +651,7 @@ function buildLatestResponse() {
     source: flower.source,
     updatedAt: flower.updatedAt,
     sensors: latestSensors,
+    deviceSensors: latestSensorsByDevice,
     mqtt: {
       port: mqttStatus.port,
       lastMessageAt: mqttStatus.lastMessageAt,
@@ -758,9 +838,20 @@ function resolveSeriesConfig(parsedUrl) {
 function getSensorHistory(parsedUrl) {
   const window = resolveHistoryWindow(parsedUrl);
   const series = resolveSeriesConfig(parsedUrl);
+  const deviceNames = parsedUrl.searchParams
+    .getAll("device")
+    .flatMap((value) => String(value || "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
   const metricKeys = series.metrics.map((metric) => metric.key);
   const bucketMs = window.bucketMinutes * 60 * 1000;
   const placeholders = metricKeys.map(() => "?").join(", ");
+  const deviceClause = deviceNames.length
+    ? `AND source IN (${deviceNames.map(() => "?").join(", ")})`
+    : "";
+  const historyParams = deviceNames.length
+    ? [series.key, ...metricKeys, ...deviceNames, window.startTs, window.endTs, bucketMs]
+    : [series.key, ...metricKeys, window.startTs, window.endTs, bucketMs];
 
   const rows = db.prepare(`
     SELECT
@@ -771,11 +862,12 @@ function getSensorHistory(parsedUrl) {
     FROM metric_readings
     WHERE sensor_key = ?
       AND metric_key IN (${placeholders})
+      ${deviceClause}
       AND ts_ms >= ?
       AND ts_ms < ?
     GROUP BY CAST(ts_ms / ? AS INTEGER), metric_key
     ORDER BY tsMs ASC
-  `).all(series.key, ...metricKeys, window.startTs, window.endTs, bucketMs);
+  `).all(...historyParams);
 
   const pointsByTs = new Map();
   rows.forEach((row) => {
@@ -788,6 +880,10 @@ function getSensorHistory(parsedUrl) {
     pointsByTs.set(row.tsMs, existing);
   });
 
+  const statsParams = deviceNames.length
+    ? [series.key, ...metricKeys, ...deviceNames, window.startTs, window.endTs]
+    : [series.key, ...metricKeys, window.startTs, window.endTs];
+
   const statsRows = db.prepare(`
     SELECT
       metric_key AS metricKey,
@@ -798,10 +894,11 @@ function getSensorHistory(parsedUrl) {
     FROM metric_readings
     WHERE sensor_key = ?
       AND metric_key IN (${placeholders})
+      ${deviceClause}
       AND ts_ms >= ?
       AND ts_ms < ?
     GROUP BY metric_key
-  `).all(series.key, ...metricKeys, window.startTs, window.endTs);
+  `).all(...statsParams);
 
   const stats = {};
   series.metrics.forEach((metric) => {
@@ -818,8 +915,10 @@ function getSensorHistory(parsedUrl) {
 
   return {
     mode: window.mode,
-    label: `${series.label} · ${window.label}`,
+    label: `${deviceNames[0] ? `${deviceNames[0]} · ` : ""}${series.label} · ${window.label}`,
     series: series.key,
+    device: deviceNames[0] || null,
+    devices: deviceNames,
     startTs: window.startTs,
     endTs: window.endTs,
     bucketMinutes: window.bucketMinutes,

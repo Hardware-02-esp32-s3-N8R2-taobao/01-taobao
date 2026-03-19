@@ -46,48 +46,56 @@ const sensorCatalog = {
 };
 
 const deviceCatalog = {
-  "庭院1号": {
-    id: "庭院1号",
+  "yard-01": {
+    id: "yard-01",
     title: "庭院 1 号",
     subtitle: "庭院温湿度节点",
     room: "yard",
     type: "iot-device",
     icon: "🪴",
     accentClass: "accent-flower",
-    sensors: ["flower"],
+    matchIds: ["yard-01", "庭院1号", "yardHub"],
+    historyDevices: ["yard-01", "庭院1号", "yardHub"],
+    sensors: [{ key: "flower", title: "花花温湿度", subtitle: "DHT11 空气温湿度", icon: "🌼", metricLabels: { temperature: "花花温度", humidity: "花花湿度" } }],
     summary: "庭院 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
-  "书房1号": {
-    id: "书房1号",
+  "study-01": {
+    id: "study-01",
     title: "书房 1 号",
     subtitle: "书房温湿度节点",
     room: "study",
     type: "iot-device",
     icon: "📚",
     accentClass: "accent-flower",
-    sensors: ["flower"],
+    matchIds: ["study-01", "书房1号"],
+    historyDevices: ["study-01", "书房1号"],
+    sensors: [{ key: "flower", title: "温湿度", subtitle: "DHT11 空气温湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "书房 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
-  "办公室1号": {
-    id: "办公室1号",
+  "office-01": {
+    id: "office-01",
     title: "办公室 1 号",
     subtitle: "办公室温湿度节点",
     room: "office",
     type: "iot-device",
     icon: "💼",
     accentClass: "accent-flower",
-    sensors: ["flower"],
+    matchIds: ["office-01", "办公室1号"],
+    historyDevices: ["office-01", "办公室1号"],
+    sensors: [{ key: "flower", title: "温湿度", subtitle: "DHT11 空气温湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "办公室 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
-  "卧室1号": {
-    id: "卧室1号",
+  "bedroom-01": {
+    id: "bedroom-01",
     title: "卧室 1 号",
     subtitle: "卧室温湿度节点",
     room: "bedroom",
     type: "iot-device",
     icon: "🛏️",
     accentClass: "accent-flower",
-    sensors: ["flower"],
+    matchIds: ["bedroom-01", "卧室1号"],
+    historyDevices: ["bedroom-01", "卧室1号"],
+    sensors: [{ key: "flower", title: "温湿度", subtitle: "DHT11 空气温湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "卧室 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
   server: {
@@ -191,15 +199,36 @@ function isRecentSensorUpdate(updatedAt) {
   return Number.isFinite(tsMs) && Date.now() - tsMs <= SENSOR_ONLINE_WINDOW_MS;
 }
 
-function getSensorSnapshot(sensorKey) {
-  const sensor = appState.latestSensor?.sensors?.[sensorKey] || {};
-  const catalog = sensorCatalog[sensorKey];
+function normalizeSensorRef(sensorRef) {
+  if (typeof sensorRef === "string") {
+    return { key: sensorRef };
+  }
+  return sensorRef || { key: "" };
+}
+
+function getDeviceMatchIds(catalog) {
+  return catalog?.matchIds?.length ? catalog.matchIds : [catalog?.id].filter(Boolean);
+}
+
+function getSensorSnapshot(sensorRef, deviceId) {
+  const ref = normalizeSensorRef(sensorRef);
+  const sensorKey = ref.key;
+  const catalog = deviceCatalog[deviceId];
+  const matchedSensor = getDeviceMatchIds(catalog)
+    .map((matchId) => appState.latestSensor?.deviceSensors?.[matchId]?.[sensorKey])
+    .find(Boolean);
+  const sensor = matchedSensor || appState.latestSensor?.sensors?.[sensorKey] || {};
+  const sensorDef = sensorCatalog[sensorKey];
   return {
     key: sensorKey,
-    title: catalog.title,
-    subtitle: catalog.subtitle,
-    icon: catalog.icon,
-    metrics: catalog.metrics.map((metric) => ({ ...metric, value: sensor[metric.key] ?? null })),
+    title: ref.title || sensorDef.title,
+    subtitle: ref.subtitle || sensorDef.subtitle,
+    icon: ref.icon || sensorDef.icon,
+    metrics: sensorDef.metrics.map((metric) => ({
+      ...metric,
+      label: ref.metricLabels?.[metric.key] || metric.label,
+      value: sensor[metric.key] ?? null
+    })),
     updatedAt: sensor.updatedAt,
     topic: sensor.topic || "--",
     source: sensor.source && sensor.source !== "waiting-for-mqtt" ? sensor.source : "等待设备上报",
@@ -209,6 +238,14 @@ function getSensorSnapshot(sensorKey) {
   };
 }
 
+function getActiveSensorSnapshot() {
+  if (!appState.activeDeviceId || !appState.activeSensorKey) {
+    return null;
+  }
+  const snapshot = getDeviceSnapshot(appState.activeDeviceId);
+  return snapshot?.sensors?.find((sensor) => sensor.key === appState.activeSensorKey) || null;
+}
+
 function getDevicesStatusMap() {
   const devices = appState.devicesStatus?.devices || [];
   return new Map(devices.map((device) => [device.device, device]));
@@ -216,11 +253,10 @@ function getDevicesStatusMap() {
 
 function getIotDevicePresence(catalog, sensors) {
   const devicesMap = getDevicesStatusMap();
-  const matched =
-    devicesMap.get(catalog.id) ||
-    sensors
-      .map((sensor) => devicesMap.get(sensor.raw?.source))
-      .find(Boolean) ||
+  const matched = getDeviceMatchIds(catalog)
+    .map((id) => devicesMap.get(id))
+    .find(Boolean) ||
+    sensors.map((sensor) => devicesMap.get(sensor.raw?.source)).find(Boolean) ||
     null;
 
   const sensorOnline = sensors.some((sensor) => sensor.online);
@@ -236,7 +272,7 @@ function getDeviceSnapshot(deviceId) {
   if (!catalog) return null;
 
   if (catalog.type === "iot-device") {
-    const sensors = catalog.sensors.map((sensorKey) => getSensorSnapshot(sensorKey));
+    const sensors = catalog.sensors.map((sensorRef) => getSensorSnapshot(sensorRef, deviceId));
     const presence = getIotDevicePresence(catalog, sensors);
     const lastUpdated = sensors
       .map((sensor) => sensor.updatedAt)
@@ -380,7 +416,11 @@ function renderDeviceGrid() {
     .join("");
 
   els.deviceGrid.querySelectorAll("[data-open-device]").forEach((button) => {
-    button.addEventListener("click", () => openDevice(button.dataset.openDevice));
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDevice(button.dataset.openDevice);
+    });
   });
 }
 
@@ -394,8 +434,8 @@ function renderOverview() {
   renderDeviceGrid();
 }
 
-function getHistoryCacheKey(sensorKey, query) {
-  return `${sensorKey}:${query.date || query.range}`;
+function getHistoryCacheKey(deviceId, sensorKey, query) {
+  return `${deviceId}:${sensorKey}:${query.date || query.range}`;
 }
 
 function getVisibleHistoryPoints() {
@@ -414,7 +454,8 @@ function updateHistoryHeader(data) {
   const summaryEl = document.getElementById("historySummary");
   const legendEl = document.getElementById("historyLegend");
   if (!titleEl || !summaryEl || !legendEl) return;
-  titleEl.textContent = data.label || "传感器历史曲线";
+  const activeSensor = getActiveSensorSnapshot();
+  titleEl.textContent = activeSensor ? `${activeSensor.title} 历史曲线` : (data.label || "传感器历史曲线");
   summaryEl.textContent = (appState.historyMeta.metrics || []).map((metric) => {
     const stats = data.stats?.[metric.key];
     if (!stats?.sampleCount) return `${metric.label}：等待上报`;
@@ -424,7 +465,12 @@ function updateHistoryHeader(data) {
 }
 
 function renderHistoryLoading(sensorKey) {
-  appState.historyMeta = { metrics: sensorCatalog[sensorKey]?.metrics || [], bucketMinutes: 10, stats: {} };
+  const activeSensor = getActiveSensorSnapshot();
+  appState.historyMeta = {
+    metrics: activeSensor?.metrics || sensorCatalog[sensorKey]?.metrics || [],
+    bucketMinutes: 10,
+    stats: {}
+  };
   appState.historyPoints = [];
   appState.historyViewStart = 0;
   appState.historyViewEnd = 0;
@@ -772,14 +818,16 @@ function drawSimpleChart(context, canvas, seriesList, options = {}) {
   });
 }
 
-async function refreshSensorHistory(sensorKey) {
+async function refreshSensorHistory(deviceId, sensorKey) {
   renderHistoryLoading(sensorKey);
   const params = new URLSearchParams();
   params.set("series", sensorKey);
+  const catalog = deviceCatalog[deviceId];
+  (catalog?.historyDevices || [deviceId]).forEach((matchId) => params.append("device", matchId));
   if (appState.historyQuery.date) params.set("date", appState.historyQuery.date);
   else params.set("range", appState.historyQuery.range);
 
-  const cacheKey = getHistoryCacheKey(sensorKey, appState.historyQuery);
+  const cacheKey = getHistoryCacheKey(deviceId, sensorKey, appState.historyQuery);
   let data = appState.historyCache.get(cacheKey);
   if (!data) {
     data = await fetchJson(`/api/sensor/history?${params.toString()}`);
@@ -799,9 +847,10 @@ function getDevicePages(catalog, snapshot) {
     key: `sensor:${sensor.key}`,
     label: `${sensor.icon} ${sensor.title}`,
     kind: "sensor",
-    sensorKey: sensor.key
+    sensorKey: sensor.key,
+    sensorTitle: sensor.title
   }));
-  const controlPages = catalog.id === "yardHub"
+  const controlPages = catalog.id === "yard-01"
     ? [{ key: "control:pump", label: "🧯 水泵控制", kind: "control", controlKey: "pump" }]
     : [];
   return [...sensorPages, ...controlPages];
@@ -869,8 +918,8 @@ function renderDevicePages(snapshot, catalog, selectedPageKey) {
   `;
 }
 
-function renderDeviceSensorHistorySection(selectedSensorKey) {
-  if (!selectedSensorKey) {
+function renderDeviceSensorHistorySection(selectedSensor) {
+  if (!selectedSensor?.key) {
     return "";
   }
 
@@ -880,7 +929,7 @@ function renderDeviceSensorHistorySection(selectedSensorKey) {
         <div class="detail-block-title">当前传感器历史数据</div>
         <div class="detail-helper">温度和湿度分行展示，时间轴可以看得更细</div>
       </div>
-      <div class="detail-helper" style="margin-bottom:10px;">当前查看：${sensorCatalog[selectedSensorKey]?.title || "--"}</div>
+      <div class="detail-helper" style="margin-bottom:10px;">当前查看：${selectedSensor.title || sensorCatalog[selectedSensor.key]?.title || "--"}</div>
       <div class="history-toolbar">
         <button class="range-btn ${appState.historyQuery.range === "1h" && !appState.historyQuery.date ? "active" : ""}" data-range="1h">最近1小时</button>
         <button class="range-btn ${appState.historyQuery.range === "24h" && !appState.historyQuery.date ? "active" : ""}" data-range="24h">最近24小时</button>
@@ -890,7 +939,7 @@ function renderDeviceSensorHistorySection(selectedSensorKey) {
         <button class="range-btn" id="applyDateBtn">查看指定日期</button>
       </div>
       <div class="detail-block-head" style="margin-bottom:12px;">
-        <div class="detail-block-title" id="historyTitle">${sensorCatalog[selectedSensorKey]?.title || "--"} 历史曲线</div>
+        <div class="detail-block-title" id="historyTitle">${selectedSensor.title || sensorCatalog[selectedSensor.key]?.title || "--"} 历史曲线</div>
         <div class="detail-helper" id="historyLegend">每个指标单独一张图</div>
       </div>
       <div class="history-panels" id="historyPanels"></div>
@@ -904,7 +953,7 @@ function renderDeviceSensorHistorySection(selectedSensorKey) {
 }
 
 function renderPumpControlSection(deviceId) {
-  if (deviceId !== "yardHub") {
+  if (deviceId !== "yard-01") {
     return "";
   }
 
@@ -931,6 +980,9 @@ function renderPumpControlSection(deviceId) {
 function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
   const pages = getDevicePages(catalog, snapshot);
   const selectedPageKey = appState.activeDevicePageKey || pages[0]?.key || null;
+  const selectedSensor = selectedPageKey?.startsWith("sensor:")
+    ? snapshot.sensors.find((sensor) => sensor.key === appState.activeSensorKey) || snapshot.sensors[0] || null
+    : null;
   return `
     <div class="detail-topbar">
       <div>
@@ -968,7 +1020,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
     </section>
 
     ${renderDevicePages(snapshot, catalog, selectedPageKey)}
-    ${selectedPageKey?.startsWith("sensor:") ? renderDeviceSensorHistorySection(appState.activeSensorKey) : ""}
+    ${selectedPageKey?.startsWith("sensor:") ? renderDeviceSensorHistorySection(selectedSensor) : ""}
   `;
 }
 
@@ -1091,7 +1143,7 @@ function bindIoTDeviceEvents(deviceId) {
       }
       renderDeviceDetail(deviceId);
       if (appState.activeDevicePageKey.startsWith("sensor:")) {
-        await refreshSensorHistory(appState.activeSensorKey);
+        await refreshSensorHistory(deviceId, appState.activeSensorKey);
       }
     });
   });
@@ -1101,7 +1153,7 @@ function bindIoTDeviceEvents(deviceId) {
       appState.historyQuery = { range: button.dataset.range, date: "" };
       renderDeviceDetail(deviceId);
       if (appState.activeSensorKey) {
-        await refreshSensorHistory(appState.activeSensorKey);
+        await refreshSensorHistory(deviceId, appState.activeSensorKey);
       }
     });
   });
@@ -1112,7 +1164,7 @@ function bindIoTDeviceEvents(deviceId) {
     appState.historyQuery = { ...appState.historyQuery, date: value };
     renderDeviceDetail(deviceId);
     if (appState.activeSensorKey) {
-      await refreshSensorHistory(appState.activeSensorKey);
+      await refreshSensorHistory(deviceId, appState.activeSensorKey);
     }
   });
 
@@ -1220,7 +1272,7 @@ function renderDeviceDetail(deviceId) {
     els.detailPanel.innerHTML = renderIoTDeviceDetail(deviceId, catalog, snapshot);
     bindIoTDeviceEvents(deviceId);
     if (appState.activeDevicePageKey?.startsWith("sensor:") && appState.activeSensorKey) {
-      refreshSensorHistory(appState.activeSensorKey).catch(() => {
+      refreshSensorHistory(deviceId, appState.activeSensorKey).catch(() => {
         const summary = document.getElementById("historySummary");
         if (summary) summary.textContent = "历史数据读取失败，请稍后再试。";
       });
@@ -1240,7 +1292,19 @@ function renderDeviceDetail(deviceId) {
 }
 
 function openDevice(deviceId) {
-  location.hash = `device=${deviceId}`;
+  if (!deviceCatalog[deviceId]) return;
+  renderDeviceDetail(deviceId);
+  const nextHash = `#device=${encodeURIComponent(deviceId)}`;
+  if (location.hash !== nextHash) {
+    location.hash = nextHash.slice(1);
+  }
+}
+
+function resolveDeviceId(routeId) {
+  if (deviceCatalog[routeId]) {
+    return routeId;
+  }
+  return Object.keys(deviceCatalog).find((deviceId) => getDeviceMatchIds(deviceCatalog[deviceId]).includes(routeId)) || null;
 }
 
 function closeDetail() {
@@ -1255,9 +1319,15 @@ function closeDetail() {
 function syncRoute() {
   const hash = location.hash.replace(/^#/, "");
   if (hash.startsWith("device=")) {
-    const deviceId = hash.split("=")[1];
-    if (deviceCatalog[deviceId]) {
-      renderDeviceDetail(deviceId);
+    let deviceId = hash.split("=")[1];
+    try {
+      deviceId = decodeURIComponent(deviceId);
+    } catch (error) {
+      // Keep the raw hash value so old/non-encoded routes still have a chance to match.
+    }
+    const resolvedDeviceId = resolveDeviceId(deviceId);
+    if (resolvedDeviceId) {
+      renderDeviceDetail(resolvedDeviceId);
       return;
     }
   }

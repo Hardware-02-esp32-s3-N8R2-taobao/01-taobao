@@ -22,11 +22,17 @@ typedef struct {
     char password[65];
 } wifi_entry_t;
 
+typedef struct {
+    const char *name;
+    const char *device_id;
+    const char *alias;
+    const char *source;
+} device_option_t;
+
 static wifi_entry_t s_wifi_entries[WIFI_MAX_ENTRIES];
 static int s_wifi_count = 0;
 
 #define DEFAULT_DEVICE_NAME   "庭院1号"
-#define DEFAULT_DEVICE_ALIAS  "庭院1号设备"
 #define DEFAULT_SENSOR_LIST   "dht11"
 
 typedef struct {
@@ -53,11 +59,11 @@ typedef struct {
 static device_profile_state_t s_state;
 static SemaphoreHandle_t s_lock;
 
-static const char *s_device_name_options[] = {
-    "庭院1号",
-    "卧室1号",
-    "书房1号",
-    "办公室1号",
+static const device_option_t s_device_options[] = {
+    { "庭院1号", "yard-01", "庭院1号设备", "yard-01-dht11" },
+    { "卧室1号", "bedroom-01", "卧室1号设备", "bedroom-01-dht11" },
+    { "书房1号", "study-01", "书房1号设备", "study-01-dht11" },
+    { "办公室1号", "office-01", "办公室1号设备", "office-01-dht11" },
 };
 
 static const char *s_sensor_type_options[] = {
@@ -71,6 +77,29 @@ static const char *s_sensor_type_options[] = {
     "rain_sensor",
 };
 
+static const device_option_t *find_device_option(const char *device_name)
+{
+    if (device_name == NULL || device_name[0] == '\0') {
+        return &s_device_options[0];
+    }
+
+    for (size_t i = 0; i < sizeof(s_device_options) / sizeof(s_device_options[0]); i++) {
+        if (strcmp(s_device_options[i].name, device_name) == 0) {
+            return &s_device_options[i];
+        }
+    }
+
+    return &s_device_options[0];
+}
+
+static void apply_device_option_defaults(const device_option_t *option)
+{
+    const device_option_t *selected = option != NULL ? option : &s_device_options[0];
+    snprintf(s_state.device_name, sizeof(s_state.device_name), "%s", selected->name);
+    snprintf(s_state.device_alias, sizeof(s_state.device_alias), "%s", selected->alias);
+    snprintf(s_state.device_source, sizeof(s_state.device_source), "%s", selected->source);
+}
+
 static void profile_lock(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -83,9 +112,7 @@ static void profile_unlock(void)
 
 static void set_default_strings(void)
 {
-    snprintf(s_state.device_name, sizeof(s_state.device_name), "%s", DEFAULT_DEVICE_NAME);
-    snprintf(s_state.device_alias, sizeof(s_state.device_alias), "%s", DEFAULT_DEVICE_ALIAS);
-    snprintf(s_state.device_source, sizeof(s_state.device_source), "%s", APP_DEVICE_SOURCE);
+    apply_device_option_defaults(find_device_option(DEFAULT_DEVICE_NAME));
     snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", DEFAULT_SENSOR_LIST);
     snprintf(s_state.wifi_ssid, sizeof(s_state.wifi_ssid), "%s", APP_WIFI_SSID);
     snprintf(s_state.wifi_ip, sizeof(s_state.wifi_ip), "0.0.0.0");
@@ -184,7 +211,7 @@ static void append_json_string_array(cJSON *parent, const char *name, const char
 
 static void build_config_object(cJSON *root)
 {
-    cJSON_AddStringToObject(root, "deviceId", APP_DEVICE_ID);
+    cJSON_AddStringToObject(root, "deviceId", device_profile_device_id());
     cJSON_AddStringToObject(root, "deviceName", s_state.device_name);
     cJSON_AddStringToObject(root, "deviceAlias", s_state.device_alias);
     cJSON_AddStringToObject(root, "deviceSource", s_state.device_source);
@@ -295,7 +322,7 @@ esp_err_t device_profile_init(void)
 
 const char *device_profile_device_id(void)
 {
-    return s_state.device_name;
+    return find_device_option(s_state.device_name)->device_id;
 }
 
 const char *device_profile_device_name(void)
@@ -412,9 +439,16 @@ void device_profile_build_options_json(char *buffer, size_t buffer_size)
     cJSON *root = cJSON_CreateObject();
     cJSON *device_names = cJSON_AddArrayToObject(root, "deviceNames");
     cJSON *sensor_types = cJSON_AddArrayToObject(root, "sensorTypes");
+    cJSON *device_profiles = cJSON_AddArrayToObject(root, "deviceProfiles");
 
-    for (size_t i = 0; i < sizeof(s_device_name_options) / sizeof(s_device_name_options[0]); i++) {
-        cJSON_AddItemToArray(device_names, cJSON_CreateString(s_device_name_options[i]));
+    for (size_t i = 0; i < sizeof(s_device_options) / sizeof(s_device_options[0]); i++) {
+        cJSON_AddItemToArray(device_names, cJSON_CreateString(s_device_options[i].name));
+        cJSON *profile = cJSON_CreateObject();
+        cJSON_AddStringToObject(profile, "deviceName", s_device_options[i].name);
+        cJSON_AddStringToObject(profile, "deviceId", s_device_options[i].device_id);
+        cJSON_AddStringToObject(profile, "deviceAlias", s_device_options[i].alias);
+        cJSON_AddStringToObject(profile, "deviceSource", s_device_options[i].source);
+        cJSON_AddItemToArray(device_profiles, profile);
     }
     for (size_t i = 0; i < sizeof(s_sensor_type_options) / sizeof(s_sensor_type_options[0]); i++) {
         cJSON_AddItemToArray(sensor_types, cJSON_CreateString(s_sensor_type_options[i]));
@@ -514,16 +548,31 @@ esp_err_t device_profile_apply_config_json(const char *json_text, char *message,
     cJSON *device_alias = cJSON_GetObjectItemCaseSensitive(root, "deviceAlias");
     cJSON *device_source = cJSON_GetObjectItemCaseSensitive(root, "deviceSource");
     cJSON *sensors = cJSON_GetObjectItemCaseSensitive(root, "sensors");
+    bool device_name_updated = false;
+    bool device_alias_updated = false;
+    bool device_source_updated = false;
 
     profile_lock();
     if (cJSON_IsString(device_name) && device_name->valuestring[0] != '\0') {
         snprintf(s_state.device_name, sizeof(s_state.device_name), "%s", device_name->valuestring);
+        device_name_updated = true;
     }
     if (cJSON_IsString(device_alias) && device_alias->valuestring[0] != '\0') {
         snprintf(s_state.device_alias, sizeof(s_state.device_alias), "%s", device_alias->valuestring);
+        device_alias_updated = true;
     }
     if (cJSON_IsString(device_source) && device_source->valuestring[0] != '\0') {
         snprintf(s_state.device_source, sizeof(s_state.device_source), "%s", device_source->valuestring);
+        device_source_updated = true;
+    }
+    if (device_name_updated && (!device_alias_updated || !device_source_updated)) {
+        const device_option_t *selected = find_device_option(s_state.device_name);
+        if (!device_alias_updated) {
+            snprintf(s_state.device_alias, sizeof(s_state.device_alias), "%s", selected->alias);
+        }
+        if (!device_source_updated) {
+            snprintf(s_state.device_source, sizeof(s_state.device_source), "%s", selected->source);
+        }
     }
     if (cJSON_IsArray(sensors)) {
         s_state.sensors_csv[0] = '\0';
