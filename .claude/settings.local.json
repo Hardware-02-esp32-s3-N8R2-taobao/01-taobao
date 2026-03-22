@@ -1,8 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Skill(update-config)",
-      "Skill(update-config:*)"
-    ]
+      "Bash(powershell -Command \"Invoke-WebRequest -Uri ''https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe'' -OutFile \"\"$env:TEMP\\\\python-installer.exe\"\" -UseBasicParsing; Write-Host ''Download complete.''\")",
+      "Bash(powershell -Command \"Add-Type -AssemblyName System.Net.Http; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \\(New-Object System.Net.WebClient\\).DownloadFile\\(''https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe'', ''C:\\\\Windows\\\\Temp\\\\python-installer.exe''\\); Write-Host ''Done''\")",
+      "Bash(powershell -Command \"Start-Process ''C:\\\\Windows\\\\Temp\\\\python-installer.exe'' -ArgumentList ''/quiet InstallAllUsers=1 PrependPath=1 Include_test=0'' -Wait; Write-Host ''Python installation complete.''\")",
+      "Bash(cmd /c python --version)",
+      "Bash(cmd /c py --version)",
+      "Bash(\"C:\\\\Program Files\\\\Python312\\\\python.exe\" -c \"from app.window import C3MonitorWindow; print\\(''import OK''\\)\")"
+    ],
+    "defaultMode": "bypassPermissions"
   }
 }
