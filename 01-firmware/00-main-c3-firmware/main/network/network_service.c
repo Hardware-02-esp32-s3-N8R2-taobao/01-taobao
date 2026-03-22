@@ -109,7 +109,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             sizeof(event_json),
             "{\"connected\":true,\"broker\":\"%s\",\"topic\":\"%s\"}",
             APP_MQTT_URI,
-            APP_MQTT_TOPIC_TELEMETRY
+            device_profile_mqtt_topic()
         );
         console_service_emit_event("mqtt", event_json);
         break;
@@ -121,7 +121,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             sizeof(event_json),
             "{\"connected\":false,\"broker\":\"%s\",\"topic\":\"%s\"}",
             APP_MQTT_URI,
-            APP_MQTT_TOPIC_TELEMETRY
+            device_profile_mqtt_topic()
         );
         console_service_emit_event("mqtt", event_json);
         break;

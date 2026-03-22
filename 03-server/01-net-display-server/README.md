@@ -80,7 +80,7 @@ ESP32 传感器
 |------|------|------|
 | GET | `/` | 前端仪表盘 |
 | GET | `/api/sensor/latest` | 所有传感器最新值 |
-| GET | `/api/sensor/history` | 历史曲线（`?series=flower&range=24h`） |
+| GET | `/api/sensor/history` | 历史曲线（`?series=dht11&range=24h`） |
 | GET | `/api/devices/status` | 设备在线状态 |
 | GET | `/api/server/status` | 服务器 CPU / 内存实时状态 |
 | GET | `/api/server/history` | 服务器遥测历史 |
@@ -128,7 +128,7 @@ ssh root@117.72.55.63 "systemctl restart yard-display"
 
 ## ESP32 接入
 
-- **MQTT**（推荐）：连接 `117.72.55.63:1884`，推送到 `garden/flower/dht11` 等主题，详见 `docs/mqtt-topics.md`
+- **MQTT**（推荐）：连接 `117.72.55.63:1884`，推送到 `device/<deviceId>`，例如 `device/study-01`
 - **HTTP**：POST 到 `http://117.72.55.63/api/sensor/update`
 
 ---

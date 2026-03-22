@@ -10,7 +10,7 @@
 #define APP_MQTT_URI             "mqtt://117.72.55.63:1884"
 #define APP_MQTT_USERNAME        ""
 #define APP_MQTT_PASSWORD        ""
-#define APP_MQTT_TOPIC_TELEMETRY "garden/flower/dht11"
+#define APP_MQTT_TOPIC_PREFIX    "device"
 
 #define APP_DEVICE_ID            "yard-01"
 #define APP_DEVICE_ALIAS         "庭院 1 号"

@@ -45,7 +45,7 @@ def default_state() -> dict[str, Any]:
         "mqtt": {
             "status": "未连接",
             "broker": "mqtt://117.72.55.63:1884",
-            "topic": "garden/flower/dht11",
+            "topic": "device/yard-01",
             "updated_at": "",
         },
         "sensor": {

@@ -9,37 +9,37 @@ const roomConfigs = [
 ];
 
 const sensorCatalog = {
-  flower: {
-    key: "flower",
-    title: "花花环境",
-    subtitle: "DHT11 空气温湿度",
+  dht11: {
+    key: "dht11",
+    title: "DHT11 温湿度",
+    subtitle: "空气温度与相对湿度",
     icon: "🌼",
     metrics: [
-      { key: "temperature", label: "花花温度", unit: "°C", color: "#ff8a65" },
-      { key: "humidity", label: "花花湿度", unit: "%RH", color: "#5ea6ff" }
+      { key: "temperature", label: "温度", unit: "°C", color: "#ff8a65" },
+      { key: "humidity", label: "湿度", unit: "%RH", color: "#5ea6ff" }
     ]
   },
-  fish: {
-    key: "fish",
-    title: "鱼鱼水温",
-    subtitle: "DS18B20 鱼缸水温",
+  ds18b20: {
+    key: "ds18b20",
+    title: "DS18B20 温度",
+    subtitle: "单总线温度传感器",
     icon: "🐟",
-    metrics: [{ key: "temperature", label: "鱼鱼温度", unit: "°C", color: "#49bf8f" }]
+    metrics: [{ key: "temperature", label: "温度", unit: "°C", color: "#49bf8f" }]
   },
-  climate: {
-    key: "climate",
-    title: "气压环境",
-    subtitle: "BMP280 温度与气压",
+  bmp280: {
+    key: "bmp280",
+    title: "BMP280 环境数据",
+    subtitle: "温度与气压",
     icon: "🎈",
     metrics: [
       { key: "temperature", label: "BMP280 温度", unit: "°C", color: "#ff9966" },
       { key: "pressure", label: "气压", unit: "hPa", color: "#8368ff" }
     ]
   },
-  light: {
-    key: "light",
-    title: "光照监测",
-    subtitle: "BH1750 光照",
+  bh1750: {
+    key: "bh1750",
+    title: "BH1750 光照",
+    subtitle: "环境照度",
     icon: "💡",
     metrics: [{ key: "illuminance", label: "光照", unit: "lux", color: "#f4ba41" }]
   }
@@ -54,9 +54,9 @@ const deviceCatalog = {
     type: "iot-device",
     icon: "🪴",
     accentClass: "accent-flower",
-    matchIds: ["yard-01", "庭院1号"],
-    historyDevices: ["yard-01", "庭院1号", "yardHub"],
-    sensors: [{ key: "flower", title: "花花温湿度", subtitle: "DHT11 空气温湿度", icon: "🌼", metricLabels: { temperature: "花花温度", humidity: "花花湿度" } }],
+    matchIds: ["yard-01"],
+    historyDevices: ["yard-01"],
+    sensors: [{ key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌼", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "庭院 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
   "study-01": {
@@ -67,9 +67,9 @@ const deviceCatalog = {
     type: "iot-device",
     icon: "📚",
     accentClass: "accent-flower",
-    matchIds: ["study-01", "书房1号"],
-    historyDevices: ["study-01", "书房1号"],
-    sensors: [{ key: "flower", title: "温湿度", subtitle: "DHT11 空气温湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
+    matchIds: ["study-01"],
+    historyDevices: ["study-01"],
+    sensors: [{ key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "书房 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
   "office-01": {
@@ -80,9 +80,9 @@ const deviceCatalog = {
     type: "iot-device",
     icon: "💼",
     accentClass: "accent-flower",
-    matchIds: ["office-01", "办公室1号"],
-    historyDevices: ["office-01", "办公室1号"],
-    sensors: [{ key: "flower", title: "温湿度", subtitle: "DHT11 空气温湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
+    matchIds: ["office-01"],
+    historyDevices: ["office-01"],
+    sensors: [{ key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "办公室 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
   "bedroom-01": {
@@ -93,9 +93,9 @@ const deviceCatalog = {
     type: "iot-device",
     icon: "🛏️",
     accentClass: "accent-flower",
-    matchIds: ["bedroom-01", "卧室1号"],
-    historyDevices: ["bedroom-01", "卧室1号"],
-    sensors: [{ key: "flower", title: "温湿度", subtitle: "DHT11 空气温湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
+    matchIds: ["bedroom-01"],
+    historyDevices: ["bedroom-01"],
+    sensors: [{ key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
     summary: "卧室 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
   },
   server: {
@@ -125,14 +125,14 @@ const SENSOR_ONLINE_WINDOW_MS = 90 * 1000;
 
 // 传感器异常阈值 — 超出范围时在设备卡片和详情页展示告警标记
 const ALERT_THRESHOLDS = {
-  flower: {
+  dht11: {
     temperature: { warnHigh: 35, alertHigh: 40, warnLow: 5, alertLow: 0 },
     humidity:    { warnHigh: 90, alertHigh: 95, warnLow: 20, alertLow: 10 }
   },
-  fish: {
+  ds18b20: {
     temperature: { warnHigh: 30, alertHigh: 35, warnLow: 10, alertLow: 5 }
   },
-  climate: {
+  bmp280: {
     temperature: { warnHigh: 40, alertHigh: 50, warnLow: -5, alertLow: -10 }
   }
 };
@@ -238,6 +238,35 @@ function getDeviceMatchIds(catalog) {
   return catalog?.matchIds?.length ? catalog.matchIds : [catalog?.id].filter(Boolean);
 }
 
+function buildDynamicSensorRefs(deviceId, catalog) {
+  const matchIds = getDeviceMatchIds(catalog);
+  const sensorKeys = new Set();
+
+  matchIds.forEach((matchId) => {
+    const sensors = appState.latestSensor?.deviceSensors?.[matchId];
+    if (sensors && typeof sensors === "object") {
+      Object.keys(sensors).forEach((sensorKey) => {
+        if (sensorCatalog[sensorKey]) {
+          sensorKeys.add(sensorKey);
+        }
+      });
+    }
+  });
+
+  const deviceStatus = getDevicesStatusMap().get(deviceId);
+  (deviceStatus?.sensors || []).forEach((sensorKey) => {
+    if (sensorCatalog[sensorKey]) {
+      sensorKeys.add(sensorKey);
+    }
+  });
+
+  if (sensorKeys.size === 0) {
+    return catalog?.sensors || [];
+  }
+
+  return Array.from(sensorKeys).map((sensorKey) => ({ key: sensorKey }));
+}
+
 function getSensorSnapshot(sensorRef, deviceId) {
   const ref = normalizeSensorRef(sensorRef);
   const sensorKey = ref.key;
@@ -301,7 +330,8 @@ function getDeviceSnapshot(deviceId) {
   if (!catalog) return null;
 
   if (catalog.type === "iot-device") {
-    const sensors = catalog.sensors.map((sensorRef) => getSensorSnapshot(sensorRef, deviceId));
+    const sensorRefs = buildDynamicSensorRefs(deviceId, catalog);
+    const sensors = sensorRefs.map((sensorRef) => getSensorSnapshot(sensorRef, deviceId));
     const presence = getIotDevicePresence(catalog, sensors);
     const lastUpdated = sensors
       .map((sensor) => sensor.updatedAt)
@@ -439,7 +469,7 @@ function renderDeviceGrid() {
         `;
       }).join("");
       const deviceMeta = catalog.type === "iot-device"
-        ? `<span>${catalog.sensors.length} 个传感器</span>`
+        ? `<span>${snapshot.sensors.length} 个传感器</span>`
         : `<span>${catalog.type === "server" ? "系统设备" : "服务设备"}</span>`;
       const alertBadge = getDeviceAlertBadge(snapshot);
       return `
@@ -1151,7 +1181,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         <div class="detail-block-title">设备总览</div>
         <div class="info-list">
           <div class="info-row"><span class="info-label">设备 ID</span><strong>${catalog.id}</strong></div>
-          <div class="info-row"><span class="info-label">挂载传感器</span><strong>${catalog.sensors.length} 个</strong></div>
+          <div class="info-row"><span class="info-label">挂载传感器</span><strong>${snapshot.sensors.length} 个</strong></div>
           <div class="info-row"><span class="info-label">在线判定</span><strong>${snapshot.online ? "90 秒内有消息，判定在线" : "超过 90 秒未见消息，判定离线"}</strong></div>
           <div class="info-row"><span class="info-label">最近更新时间</span><strong>${formatTime(snapshot.updatedAt)}</strong></div>
           <div class="info-row"><span class="info-label">页面模式</span><strong>先看设备，再看设备里的传感器</strong></div>

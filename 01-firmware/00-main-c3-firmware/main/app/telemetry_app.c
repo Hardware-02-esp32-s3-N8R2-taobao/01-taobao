@@ -20,6 +20,7 @@ void telemetry_app_run(void)
 {
     char payload[512];
     char event_json[768];
+    const char *topic = NULL;
     dht11_sample_t sample = {0};
 
     dht11_sensor_init(APP_DHT11_GPIO);
@@ -46,6 +47,7 @@ void telemetry_app_run(void)
             console_service_emit_event("sensor", event_json);
         }
 
+        topic = device_profile_mqtt_topic();
         if (sample.ready && network_service_is_wifi_ready() && network_service_is_mqtt_ready()) {
             snprintf(
                 payload,
@@ -60,7 +62,7 @@ void telemetry_app_run(void)
                 sample.humidity_pct
             );
 
-            if (network_service_publish_json(APP_MQTT_TOPIC_TELEMETRY, payload) == ESP_OK) {
+            if (network_service_publish_json(topic, payload) == ESP_OK) {
                 device_profile_update_publish(
                     true,
                     sample.temperature_c,
@@ -72,7 +74,7 @@ void telemetry_app_run(void)
                     event_json,
                     sizeof(event_json),
                     "{\"ready\":true,\"topic\":\"%s\",\"payload\":%s}",
-                    APP_MQTT_TOPIC_TELEMETRY,
+                    topic,
                     payload
                 );
                 console_service_emit_event("publish", event_json);
@@ -82,7 +84,7 @@ void telemetry_app_run(void)
                     event_json,
                     sizeof(event_json),
                     "{\"ready\":false,\"topic\":\"%s\",\"reason\":\"mqtt not ready\"}",
-                    APP_MQTT_TOPIC_TELEMETRY
+                    topic
                 );
                 console_service_emit_event("publish", event_json);
             }

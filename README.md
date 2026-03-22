@@ -148,7 +148,7 @@ YD-ESP32-S3/
 
 当前主固件已使用过的 MQTT 主题：
 
-- `garden/flower/dht11`
+- `device/<deviceId>`
 
 当前主固件实际连接的 MQTT 入口：
 

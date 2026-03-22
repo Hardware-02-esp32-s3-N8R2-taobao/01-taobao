@@ -20,60 +20,46 @@ const DEVICE_ONLINE_WINDOW_MS = 90 * 1000;
 const SERVER_HISTORY_LIMIT = 1440;             // 保留 24 小时（24 × 60）
 
 const SENSOR_CONFIG = {
-  flower: {
-    label: "花花环境",
+  dht11: {
+    label: "DHT11 温湿度",
     metrics: [
-      { key: "temperature", label: "花花温度", unit: "°C", color: "#f08b3e", axis: "left" },
-      { key: "humidity", label: "花花湿度", unit: "%RH", color: "#38a9d9", axis: "right" }
+      { key: "temperature", label: "温度", unit: "°C", color: "#f08b3e", axis: "left" },
+      { key: "humidity", label: "湿度", unit: "%RH", color: "#38a9d9", axis: "right" }
     ]
   },
-  fish: {
-    label: "鱼鱼温度",
-    metrics: [{ key: "temperature", label: "鱼鱼温度", unit: "°C", color: "#20b77a", axis: "left" }]
+  ds18b20: {
+    label: "DS18B20 温度",
+    metrics: [{ key: "temperature", label: "温度", unit: "°C", color: "#20b77a", axis: "left" }]
   },
-  climate: {
-    label: "气压站",
+  bmp280: {
+    label: "BMP280 环境数据",
     metrics: [
       { key: "temperature", label: "BMP280 温度", unit: "°C", color: "#ff8b5c", axis: "left" },
       { key: "pressure", label: "气压", unit: "hPa", color: "#6f73ff", axis: "right" }
     ]
   },
-  light: {
-    label: "光照站",
+  bh1750: {
+    label: "BH1750 光照",
     metrics: [{ key: "illuminance", label: "光照", unit: "lux", color: "#f5b728", axis: "left" }]
   }
 };
 
-const MQTT_TOPIC_CONFIG = {
-  "garden/flower/dht11": { sensorKey: "flower", fields: ["temperature", "humidity"] },
-  "garden/fish/ds18b20": { sensorKey: "fish", fields: ["temperature"] },
-  "garden/climate/bmp280": { sensorKey: "climate", fields: ["temperature", "pressure"] },
-  "garden/light/bh1750": { sensorKey: "light", fields: ["illuminance"] }
-};
-const SENSOR_PAYLOAD_ALIASES = {
-  flower: ["flower", "dht11"],
-  fish: ["fish", "ds18b20"],
-  climate: ["climate", "bmp280", "bme280", "bmp180"],
-  light: ["light", "bh1750"]
+const MQTT_DEVICE_TOPIC_PREFIX = "device/";
+const SENSOR_TYPE_TO_KEY = {
+  dht11: "dht11",
+  ds18b20: "ds18b20",
+  bmp280: "bmp280",
+  bh1750: "bh1750"
 };
 const DEVICE_ID_ALIASES = {
   "yard-01": "yard-01",
   "yard01": "yard-01",
-  "yardhub": "yard-01",
-  "庭院1号": "yard-01",
-  "庭院 1 号": "yard-01",
   "study-01": "study-01",
   "study01": "study-01",
-  "书房1号": "study-01",
-  "书房 1 号": "study-01",
   "office-01": "office-01",
   "office01": "office-01",
-  "办公室1号": "office-01",
-  "办公室 1 号": "office-01",
   "bedroom-01": "bedroom-01",
-  "bedroom01": "bedroom-01",
-  "卧室1号": "bedroom-01",
-  "卧室 1 号": "bedroom-01"
+  "bedroom01": "bedroom-01"
 };
 const DEVICE_ALIAS_BY_ID = {
   "yard-01": "庭院 1 号",
@@ -97,18 +83,6 @@ if (!fs.existsSync(dataDir)) {
 
 const db = new DatabaseSync(dbPath);
 db.exec(`
-  CREATE TABLE IF NOT EXISTS sensor_readings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts_ms INTEGER NOT NULL,
-    recorded_at TEXT NOT NULL,
-    recorded_day TEXT NOT NULL,
-    temperature REAL NOT NULL,
-    humidity REAL NOT NULL,
-    source TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_sensor_ts ON sensor_readings(ts_ms);
-  CREATE INDEX IF NOT EXISTS idx_sensor_day ON sensor_readings(recorded_day);
-
   CREATE TABLE IF NOT EXISTS metric_readings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts_ms INTEGER NOT NULL,
@@ -127,20 +101,10 @@ db.exec(`
   ON metric_readings(ts_ms, sensor_key, metric_key, source, topic);
 `);
 
-const insertLegacyReadingStmt = db.prepare(`
-  INSERT INTO sensor_readings (ts_ms, recorded_at, recorded_day, temperature, humidity, source)
-  VALUES (?, ?, ?, ?, ?, ?)
-`);
-
 const insertMetricReadingStmt = db.prepare(`
   INSERT OR IGNORE INTO metric_readings
   (ts_ms, recorded_at, recorded_day, sensor_key, metric_key, value, unit, topic, source)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`);
-
-const deleteOldLegacyStmt = db.prepare(`
-  DELETE FROM sensor_readings
-  WHERE ts_ms < ?
 `);
 
 const deleteOldMetricStmt = db.prepare(`
@@ -168,13 +132,6 @@ const latestMetricRowsByDeviceStmt = db.prepare(`
   )
 `);
 
-const selectLatestLegacyStmt = db.prepare(`
-  SELECT temperature, humidity, source, recorded_at AS updatedAt
-  FROM sensor_readings
-  ORDER BY ts_ms DESC
-  LIMIT 1
-`);
-
 const mqttStatus = {
   port: MQTT_PORT,
   startedAt: new Date().toISOString(),
@@ -187,37 +144,36 @@ const serverHistory = [];
 let lastCpuSnapshot = os.cpus().map((cpu) => ({ ...cpu.times }));
 
 function buildDefaultLatestSensors() {
-  const now = new Date().toISOString();
   return {
-    flower: {
-      label: SENSOR_CONFIG.flower.label,
-      temperature: 26.3,
-      humidity: 61.5,
-      source: "demo-simulator",
-      topic: "demo/flower",
-      updatedAt: now
-    },
-    fish: {
-      label: SENSOR_CONFIG.fish.label,
+    dht11: {
+      label: SENSOR_CONFIG.dht11.label,
       temperature: null,
+      humidity: null,
       source: "waiting-for-mqtt",
-      topic: "garden/fish/ds18b20",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}dht11-01`,
       updatedAt: null
     },
-    climate: {
-      label: SENSOR_CONFIG.climate.label,
+    ds18b20: {
+      label: SENSOR_CONFIG.ds18b20.label,
+      temperature: null,
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}ds18b20-01`,
+      updatedAt: null
+    },
+    bmp280: {
+      label: SENSOR_CONFIG.bmp280.label,
       temperature: null,
       pressure: null,
       pressureState: "等待气压值",
       source: "waiting-for-mqtt",
-      topic: "garden/climate/bmp280",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}bmp280-01`,
       updatedAt: null
     },
-    light: {
-      label: SENSOR_CONFIG.light.label,
+    bh1750: {
+      label: SENSOR_CONFIG.bh1750.label,
       illuminance: null,
       source: "waiting-for-mqtt",
-      topic: "garden/light/bh1750",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}bh1750-01`,
       updatedAt: null
     }
   };
@@ -242,7 +198,6 @@ function getDeviceAlias(deviceId, payloadAlias) {
 
 let latestSensors = loadLatestSensors();
 let latestSensorsByDevice = loadLatestSensorsByDevice();
-let flowerDemoMode = latestSensors.flower.source === "demo-simulator";
 
 // Shared gzip helper: returns compressed Buffer or null if client doesn't accept gzip
 function tryGzip(content, acceptEncoding) {
@@ -515,18 +470,6 @@ function normalizeTs(tsValue) {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
-function persistLegacyFlowerReading(reading) {
-  const tsMs = normalizeTs(reading.updatedAt);
-  insertLegacyReadingStmt.run(
-    tsMs,
-    reading.updatedAt,
-    toShanghaiDay(tsMs),
-    reading.temperature,
-    reading.humidity,
-    reading.source
-  );
-}
-
 function persistMetricValue(sensorKey, metricKey, value, meta) {
   const tsMs = normalizeTs(meta.updatedAt);
   insertMetricReadingStmt.run(
@@ -540,6 +483,10 @@ function persistMetricValue(sensorKey, metricKey, value, meta) {
     meta.topic,
     meta.source
   );
+}
+
+function canonicalizeSensorKey(rawSensorKey) {
+  return SENSOR_TYPE_TO_KEY[String(rawSensorKey || "").trim()] || null;
 }
 
 function getOrCreateDeviceSensors(deviceName) {
@@ -572,15 +519,21 @@ function resolveSensorPayload(sensorKey, payload) {
     return payload;
   }
 
-  const aliases = SENSOR_PAYLOAD_ALIASES[sensorKey] || [sensorKey];
-  for (const alias of aliases) {
-    const candidate = payload.sensors[alias];
-    if (candidate && typeof candidate === "object") {
-      return candidate;
-    }
+  const candidate = payload.sensors[sensorKey];
+  return candidate && typeof candidate === "object" ? candidate : {};
+}
+
+function parseMqttDeviceTopic(topic) {
+  if (typeof topic !== "string" || !topic.startsWith(MQTT_DEVICE_TOPIC_PREFIX)) {
+    return null;
   }
 
-  return payload;
+  const suffix = topic.slice(MQTT_DEVICE_TOPIC_PREFIX.length).trim();
+  if (!suffix || suffix.includes("/")) {
+    return null;
+  }
+
+  return canonicalizeDeviceId(suffix);
 }
 
 function recordSensorPayload(sensorKey, payload, meta) {
@@ -620,7 +573,7 @@ function recordSensorPayload(sensorKey, payload, meta) {
     }
   });
 
-  if (sensorKey === "climate") {
+  if (sensorKey === "bmp280") {
     next.pressureState = getPressureState(next.pressure);
     deviceNext.pressureState = getPressureState(deviceNext.pressure);
   }
@@ -635,7 +588,8 @@ function loadLatestSensors() {
   const rows = latestMetricRowsStmt.all();
 
   rows.forEach((row) => {
-    const sensor = sensors[row.sensor_key];
+    const sensorKey = canonicalizeSensorKey(row.sensor_key);
+    const sensor = sensors[sensorKey];
     if (!sensor) {
       return;
     }
@@ -645,16 +599,7 @@ function loadLatestSensors() {
     sensor.updatedAt = row.recorded_at;
   });
 
-  const legacy = selectLatestLegacyStmt.get();
-  if (legacy && !rows.some((row) => row.sensor_key === "flower")) {
-    sensors.flower.temperature = legacy.temperature;
-    sensors.flower.humidity = legacy.humidity;
-    sensors.flower.source = legacy.source;
-    sensors.flower.topic = "legacy/http";
-    sensors.flower.updatedAt = legacy.updatedAt;
-  }
-
-  sensors.climate.pressureState = getPressureState(sensors.climate.pressure);
+  sensors.bmp280.pressureState = getPressureState(sensors.bmp280.pressure);
   return sensors;
 }
 
@@ -664,17 +609,21 @@ function loadLatestSensorsByDevice() {
 
   rows.forEach((row) => {
     const deviceName = row.source;
+    const sensorKey = canonicalizeSensorKey(row.sensor_key);
     if (!deviceName) {
+      return;
+    }
+    if (!sensorKey) {
       return;
     }
     if (!devices[deviceName]) {
       devices[deviceName] = {};
     }
-    if (!devices[deviceName][row.sensor_key]) {
-      devices[deviceName][row.sensor_key] = createDefaultSensorState(row.sensor_key);
+    if (!devices[deviceName][sensorKey]) {
+      devices[deviceName][sensorKey] = createDefaultSensorState(sensorKey);
     }
 
-    const sensor = devices[deviceName][row.sensor_key];
+    const sensor = devices[deviceName][sensorKey];
     sensor[row.metric_key] = row.value;
     sensor.source = deviceName;
     sensor.topic = row.topic;
@@ -682,41 +631,36 @@ function loadLatestSensorsByDevice() {
   });
 
   Object.values(devices).forEach((deviceSensors) => {
-    if (deviceSensors.climate) {
-      deviceSensors.climate.pressureState = getPressureState(deviceSensors.climate.pressure);
+    if (deviceSensors.bmp280) {
+      deviceSensors.bmp280.pressureState = getPressureState(deviceSensors.bmp280.pressure);
     }
   });
 
   return devices;
 }
 
-function migrateLegacyFlowerHistory() {
+function purgeObsoleteData() {
   db.exec(`
-    INSERT OR IGNORE INTO metric_readings
-    (ts_ms, recorded_at, recorded_day, sensor_key, metric_key, value, unit, topic, source)
-    SELECT ts_ms, recorded_at, recorded_day, 'flower', 'temperature', temperature, '°C', 'legacy/http', source
-    FROM sensor_readings;
-
-    INSERT OR IGNORE INTO metric_readings
-    (ts_ms, recorded_at, recorded_day, sensor_key, metric_key, value, unit, topic, source)
-    SELECT ts_ms, recorded_at, recorded_day, 'flower', 'humidity', humidity, '%RH', 'legacy/http', source
-    FROM sensor_readings;
+    DELETE FROM metric_readings
+    WHERE sensor_key IN ('flower', 'fish', 'climate', 'light')
+       OR topic IN ('legacy/http', 'http/api/sensor/update', 'demo/dht11')
+       OR source = 'demo-simulator';
   `);
+  db.exec(`DROP TABLE IF EXISTS sensor_readings;`);
 }
 
 function cleanupOldReadings() {
   const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  deleteOldLegacyStmt.run(cutoff);
   deleteOldMetricStmt.run(cutoff);
 }
 
 function buildLatestResponse() {
-  const flower = latestSensors.flower;
+  const dht11 = latestSensors.dht11;
   return {
-    temperature: flower.temperature,
-    humidity: flower.humidity,
-    source: flower.source,
-    updatedAt: flower.updatedAt,
+    temperature: dht11.temperature,
+    humidity: dht11.humidity,
+    source: dht11.source,
+    updatedAt: dht11.updatedAt,
     sensors: latestSensors,
     deviceSensors: latestSensorsByDevice,
     mqtt: {
@@ -727,44 +671,6 @@ function buildLatestResponse() {
     },
     devices: getDevicesStatus()
   };
-}
-
-function makeDemoFlowerReading() {
-  const baseTemp = Number.isFinite(latestSensors.flower.temperature) ? latestSensors.flower.temperature : 26.3;
-  const baseHumidity = Number.isFinite(latestSensors.flower.humidity) ? latestSensors.flower.humidity : 61.5;
-  const nextTemperature = Math.max(10, Math.min(40, baseTemp + (Math.random() - 0.5) * 0.6));
-  const nextHumidity = Math.max(20, Math.min(95, baseHumidity + (Math.random() - 0.5) * 1.4));
-  const updatedAt = new Date().toISOString();
-
-  latestSensors.flower = {
-    ...latestSensors.flower,
-    temperature: Number(nextTemperature.toFixed(1)),
-    humidity: Number(nextHumidity.toFixed(1)),
-    source: "demo-simulator",
-    topic: "demo/flower",
-    updatedAt
-  };
-
-  persistLegacyFlowerReading(latestSensors.flower);
-  persistMetricValue("flower", "temperature", latestSensors.flower.temperature, {
-    unit: "°C",
-    topic: "demo/flower",
-    source: "demo-simulator",
-    updatedAt
-  });
-  persistMetricValue("flower", "humidity", latestSensors.flower.humidity, {
-    unit: "%RH",
-    topic: "demo/flower",
-    source: "demo-simulator",
-    updatedAt
-  });
-}
-
-function updateDemoReading() {
-  if (!flowerDemoMode) {
-    return;
-  }
-  makeDemoFlowerReading();
 }
 
 function getLocalIpAddresses() {
@@ -863,7 +769,7 @@ function resolveHistoryWindow(parsedUrl) {
 }
 
 function resolveSeriesConfig(parsedUrl) {
-  const seriesKey = parsedUrl.searchParams.get("series") || "flower";
+  const seriesKey = canonicalizeSensorKey(parsedUrl.searchParams.get("series") || "dht11");
   const config = SENSOR_CONFIG[seriesKey];
   if (!config) {
     throw new Error("invalid series");
@@ -1030,7 +936,7 @@ function handleGatewayPing(payloadBuffer, clientId) {
 function publishPumpCommand(durationSeconds) {
   const payload = {
     type: "pump-command",
-    device: "yardHub",
+    device: "yard-01",
     action: "pulse",
     durationSeconds,
     topic: YARD_PUMP_CONTROL_TOPIC,
@@ -1052,50 +958,14 @@ function publishPumpCommand(durationSeconds) {
   return payload;
 }
 
-function handleLegacyHttpPayload(payload) {
-  const temperature = Number(payload.temperature);
-  const humidity = Number(payload.humidity);
-  if (!Number.isFinite(temperature) || !Number.isFinite(humidity)) {
-    throw new Error("temperature and humidity must be numbers");
-  }
-
-  const updatedAt = new Date().toISOString();
-  const source = payload.source || "esp32-http";
-  latestSensors.flower = {
-    ...latestSensors.flower,
-    temperature: Number(temperature.toFixed(1)),
-    humidity: Number(humidity.toFixed(1)),
-    source,
-    topic: "http/api/sensor/update",
-    updatedAt
-  };
-  flowerDemoMode = false;
-
-  persistLegacyFlowerReading(latestSensors.flower);
-  persistMetricValue("flower", "temperature", latestSensors.flower.temperature, {
-    unit: "°C",
-    topic: "http/api/sensor/update",
-    source,
-    updatedAt
-  });
-  persistMetricValue("flower", "humidity", latestSensors.flower.humidity, {
-    unit: "%RH",
-    topic: "http/api/sensor/update",
-    source,
-    updatedAt
-  });
-
-  return latestSensors.flower;
-}
-
 function handleMqttPacket(topic, payloadBuffer, clientId) {
   if (topic === GATEWAY_PING_TOPIC) {
     handleGatewayPing(payloadBuffer, clientId);
     return;
   }
 
-  const config = MQTT_TOPIC_CONFIG[topic];
-  if (!config) {
+  const topicDevice = parseMqttDeviceTopic(topic);
+  if (!topicDevice) {
     return;
   }
 
@@ -1107,46 +977,55 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
     return;
   }
 
-  const source = canonicalizeDeviceId(payload.device || clientId || "mqtt-client");
+  const source = canonicalizeDeviceId(payload.device || topicDevice || clientId || "mqtt-client");
+  const payloadSensors = payload.sensors && typeof payload.sensors === "object" ? payload.sensors : {};
+  const sensorEntries = Object.entries(payloadSensors)
+    .map(([sensorType, sensorPayload]) => ({
+      sensorType,
+      sensorKey: SENSOR_TYPE_TO_KEY[sensorType],
+      sensorPayload
+    }))
+    .filter(({ sensorKey, sensorPayload }) => sensorKey && sensorPayload && typeof sensorPayload === "object");
+
+  if (sensorEntries.length === 0) {
+    return;
+  }
+
+  const deviceSensorKeys = new Set();
   rememberDevice(source, {
     alias: getDeviceAlias(source, payload.alias),
     clientId: clientId || source,
     lastTopic: topic,
-    sensorKey: config.sensorKey,
     source: "sensor-mqtt"
   });
-  const reading = recordSensorPayload(config.sensorKey, payload, {
-    source,
-    topic,
-    updatedAt: new Date().toISOString()
-  });
 
-  if (config.sensorKey === "flower") {
-    flowerDemoMode = false;
-    if (Number.isFinite(reading.temperature) && Number.isFinite(reading.humidity)) {
-      persistLegacyFlowerReading({
-        temperature: reading.temperature,
-        humidity: reading.humidity,
-        source,
-        updatedAt: reading.updatedAt
-      });
-    }
-  }
+  sensorEntries.forEach(({ sensorKey, sensorType }) => {
+    const reading = recordSensorPayload(sensorKey, payload, {
+      source,
+      topic,
+      updatedAt: new Date().toISOString()
+    });
+    deviceSensorKeys.add(sensorKey);
+
+    rememberDevice(source, {
+      alias: getDeviceAlias(source, payload.alias),
+      clientId: clientId || source,
+      lastTopic: topic,
+      sensorKey,
+      source: `sensor-mqtt:${sensorType}`
+    });
+  });
 
   mqttStatus.lastMessageAt = new Date().toISOString();
   mqttStatus.lastTopic = topic;
   mqttStatus.lastClientId = clientId || source;
 }
 
-migrateLegacyFlowerHistory();
-
-if (!latestSensors.flower.updatedAt) {
-  makeDemoFlowerReading();
-}
-
+purgeObsoleteData();
+latestSensors = loadLatestSensors();
+latestSensorsByDevice = loadLatestSensorsByDevice();
 cleanupOldReadings();
 sampleServerTelemetry();
-setInterval(updateDemoReading, 3000);
 setInterval(cleanupOldReadings, 12 * 60 * 60 * 1000);
 setInterval(sampleServerTelemetry, SERVER_SAMPLE_INTERVAL_MS);
 setInterval(() => {
@@ -1219,11 +1098,12 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && parsedUrl.pathname === "/api/mqtt/status") {
     sendJson(res, 200, {
       ...mqttStatus,
-      topics: Object.entries(MQTT_TOPIC_CONFIG).map(([topic, config]) => ({
-        topic,
-        sensorKey: config.sensorKey,
-        fields: config.fields
-      })),
+      topics: [
+        {
+          pattern: `${MQTT_DEVICE_TOPIC_PREFIX}<deviceId>`,
+          description: "每个设备一个 MQTT 主题，设备数据通过 payload.sensors 逐个展开解析"
+        }
+      ],
       gatewayTopics: {
         ping: GATEWAY_PING_TOPIC,
         statusPrefix: GATEWAY_STATUS_PREFIX,
@@ -1270,28 +1150,6 @@ const server = http.createServer((req, res) => {
           detail: error.message
         })
       );
-    return;
-  }
-
-  if (req.method === "POST" && parsedUrl.pathname === "/api/sensor/update") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk;
-    });
-    req.on("end", () => {
-      try {
-        const payload = JSON.parse(body || "{}");
-        const reading = handleLegacyHttpPayload(payload);
-        sendJson(res, 200, {
-          message: "ok",
-          data: reading
-        });
-      } catch (error) {
-        sendJson(res, 400, {
-          message: error.message || "invalid json payload"
-        });
-      }
-    });
     return;
   }
 

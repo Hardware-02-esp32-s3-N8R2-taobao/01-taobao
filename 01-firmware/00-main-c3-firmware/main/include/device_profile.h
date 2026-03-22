@@ -17,6 +17,7 @@ esp_err_t device_profile_init(void);
 const char *device_profile_device_name(void);
 const char *device_profile_device_id(void);
 const char *device_profile_device_alias(void);
+const char *device_profile_mqtt_topic(void);
 
 void device_profile_update_wifi(bool connected, const char *ssid, const char *ip, int disconnect_reason);
 void device_profile_update_mqtt(bool connected);

@@ -312,6 +312,13 @@ const char *device_profile_device_alias(void)
     return find_device_option(s_state.device_name)->device_alias;
 }
 
+const char *device_profile_mqtt_topic(void)
+{
+    static char topic[96];
+    snprintf(topic, sizeof(topic), "%s/%s", APP_MQTT_TOPIC_PREFIX, device_profile_device_id());
+    return topic;
+}
+
 void device_profile_update_wifi(bool connected, const char *ssid, const char *ip, int disconnect_reason)
 {
     profile_lock();
@@ -388,7 +395,7 @@ void device_profile_build_status_json(char *buffer, size_t buffer_size)
     cJSON *mqtt = cJSON_AddObjectToObject(root, "mqtt");
     cJSON_AddBoolToObject(mqtt, "connected", s_state.mqtt_connected);
     cJSON_AddStringToObject(mqtt, "broker", APP_MQTT_URI);
-    cJSON_AddStringToObject(mqtt, "topic", APP_MQTT_TOPIC_TELEMETRY);
+    cJSON_AddStringToObject(mqtt, "topic", device_profile_mqtt_topic());
 
     cJSON *sensor = cJSON_AddObjectToObject(root, "dht11");
     cJSON_AddBoolToObject(sensor, "ready", s_state.dht11_ready);
