@@ -32,6 +32,12 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._last_wifi_list: list[dict] = []
         self._last_auto_refresh_at = "--"
         self._initial_load_done = False
+        self._pending_config_save = False
+        self._pending_config_name = ""
+        self._config_form_dirty = False
+        self._wifi_form_dirty = False
+        self._updating_config_form = False
+        self._updating_wifi_form = False
         self._status_poll_timer = QtCore.QTimer(self)
         self._status_poll_timer.setInterval(2500)
         self._status_poll_timer.timeout.connect(self._handle_auto_status_poll)
@@ -187,6 +193,14 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         name_row.addWidget(self.device_name_combo, 1)
         config_layout.addLayout(name_row)
 
+        self.config_summary_label = QtWidgets.QLabel("当前配置：--")
+        self.config_summary_label.setObjectName("pageSubtitle")
+        config_layout.addWidget(self.config_summary_label)
+
+        self.config_result_label = QtWidgets.QLabel("最近操作：--")
+        self.config_result_label.setObjectName("pageSubtitle")
+        config_layout.addWidget(self.config_result_label)
+
         sensor_title = QtWidgets.QLabel("挂载传感器")
         sensor_title.setObjectName("subTitle")
         config_layout.addWidget(sensor_title)
@@ -248,13 +262,19 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.disconnect_btn.clicked.connect(self.disconnect_serial)
         self.auto_refresh_check.toggled.connect(self._toggle_auto_refresh)
         self.clear_log_btn.clicked.connect(self.log_edit.clear)
-        self.query_btn.clicked.connect(self.query_device_state)
+        self.query_btn.clicked.connect(self.read_device_config)
         self.save_btn.clicked.connect(self.save_device_config)
         self.wifi_read_btn.clicked.connect(self._request_wifi_list)
         self.wifi_scan_btn.clicked.connect(self._scan_wifi)
         self.wifi_send_btn.clicked.connect(self.send_wifi_list)
         self.wifi_add_btn.clicked.connect(self._add_wifi_row)
         self.wifi_del_btn.clicked.connect(self._del_wifi_row)
+        self.wifi_table.itemChanged.connect(self._mark_wifi_form_dirty)
+
+        combo_line_edit = self.device_name_combo.lineEdit()
+        if combo_line_edit is not None:
+            combo_line_edit.textEdited.connect(self._mark_config_form_dirty)
+        self.device_name_combo.activated.connect(lambda _index: self._mark_config_form_dirty())
 
         self.setStyleSheet(
             """
@@ -418,6 +438,25 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if cleaned:
             self.log_edit.appendPlainText(cleaned)
         result = self._parser.parse_line(line)
+        if cleaned.startswith("APP_OK:"):
+            self.statusBar().showMessage("设备已确认操作成功")
+            if self._pending_config_save:
+                config = result.state["config"]
+                message = f"设备配置已保存：{config['device_name']} ({config['device_id']})"
+                self.config_result_label.setText(f"最近操作：{message}")
+                QtWidgets.QMessageBox.information(self, "保存成功", message)
+                self._pending_config_save = False
+                self._pending_config_name = ""
+        elif cleaned.startswith("APP_ERROR:"):
+            self.statusBar().showMessage("设备返回错误，请查看日志")
+            if self._pending_config_save:
+                self.config_result_label.setText("最近操作：保存失败，请查看串口日志")
+                QtWidgets.QMessageBox.warning(self, "保存失败", "设备返回错误，请查看串口日志。")
+                self._pending_config_save = False
+                self._pending_config_name = ""
+        elif cleaned.startswith("APP_CONFIG:"):
+            config = result.state["config"]
+            self.statusBar().showMessage(f"当前设备已更新为：{config['device_name']} ({config['device_id']})")
         if result.changed:
             self._render_state(result.state)
 
@@ -430,10 +469,19 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if self._reader is None:
             return
         self._initial_load_done = True
+        self._config_form_dirty = False
+        self._wifi_form_dirty = False
         QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_CONFIG"))
         QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_OPTIONS"))
         QtCore.QTimer.singleShot(360, lambda: self._send_command("GET_WIFI_LIST"))
         QtCore.QTimer.singleShot(540, self.query_device_state)
+
+    def read_device_config(self) -> None:
+        self._config_form_dirty = False
+        self._wifi_form_dirty = False
+        self.config_result_label.setText("最近操作：已请求读取设备配置")
+        self._refresh_device_config_views()
+        QtCore.QTimer.singleShot(600, self.query_device_state)
 
     def _refresh_device_config_views(self) -> None:
         if self._reader is None:
@@ -476,7 +524,12 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             "deviceAlias": device_name + "设备",
             "sensors": sensors,
         }
+        self._pending_config_save = True
+        self._pending_config_name = device_name
+        self._config_form_dirty = False
+        self.config_result_label.setText(f"最近操作：正在保存 {device_name}")
         self._send_command(f"SET_CONFIG {json.dumps(payload, ensure_ascii=False)}")
+        self.statusBar().showMessage(f"正在发送设备配置：{device_name}")
         QtCore.QTimer.singleShot(800, self._refresh_device_config_views)
         QtCore.QTimer.singleShot(1200, self.query_device_state)
 
@@ -496,6 +549,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage("WiFi列表为空，请至少添加一条记录")
             return
         self._send_command(f"SET_WIFI_LIST {json.dumps(entries, ensure_ascii=False)}")
+        self._wifi_form_dirty = False
+        self.config_result_label.setText(f"最近操作：已发送 {len(entries)} 条 WiFi 配置")
         self.statusBar().showMessage(f"已发送 {len(entries)} 条 WiFi 配置")
         QtCore.QTimer.singleShot(1200, self._refresh_device_config_views)
         QtCore.QTimer.singleShot(1800, self.query_device_state)
@@ -509,25 +564,31 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.wifi_table.insertRow(row)
         self.wifi_table.setItem(row, 0, QtWidgets.QTableWidgetItem(""))
         self.wifi_table.setItem(row, 1, QtWidgets.QTableWidgetItem(""))
+        self._wifi_form_dirty = True
         self.wifi_table.editItem(self.wifi_table.item(row, 0))
 
     def _del_wifi_row(self) -> None:
         rows = sorted({idx.row() for idx in self.wifi_table.selectedIndexes()}, reverse=True)
         for row in rows:
             self.wifi_table.removeRow(row)
+        if rows:
+            self._wifi_form_dirty = True
 
     def _populate_wifi_table(self, entries: list[dict]) -> None:
+        self._updating_wifi_form = True
         self.wifi_table.setRowCount(0)
         for entry in entries:
             row = self.wifi_table.rowCount()
             self.wifi_table.insertRow(row)
             self.wifi_table.setItem(row, 0, QtWidgets.QTableWidgetItem(entry.get("ssid", "")))
             self.wifi_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.get("password", "")))
+        self._updating_wifi_form = False
 
     def _send_command(self, text: str) -> None:
         if self._reader is None:
             self.statusBar().showMessage("串口尚未连接")
             return
+        self.log_edit.appendPlainText(f">>> {text}")
         self.command_requested.emit(text)
 
     def _render_state(self, state: dict[str, Any]) -> None:
@@ -585,15 +646,19 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
         # Device config tab
         options = state["options"]
-        self._sync_combo(self.device_name_combo, options["device_names"], config["device_name"])
-        self._sync_sensor_checks(options["sensor_types"], config["sensors"])
+        if not self._config_form_dirty:
+            self._sync_combo(self.device_name_combo, options["device_names"], config["device_name"])
+            self._sync_sensor_checks(options["sensor_types"], config["sensors"])
+        self.config_summary_label.setText(
+            f"当前配置：{config['device_name']}  |  设备ID：{config['device_id']}  |  传感器：{', '.join(config['sensors']) if config['sensors'] else '--'}"
+        )
 
         wifi_list = state.get("wifi_list", [])
         if wifi_list and wifi_list != self._last_wifi_list:
             self._last_wifi_list = wifi_list
-            self._populate_wifi_table(wifi_list)
-            self.tab_widget.setCurrentIndex(1)
-            self.statusBar().showMessage(f"已读取 {len(wifi_list)} 条 WiFi 配置")
+            if not self._wifi_form_dirty:
+                self._populate_wifi_table(wifi_list)
+                self.statusBar().showMessage(f"已读取 {len(wifi_list)} 条 WiFi 配置")
 
         wifi_scan = state.get("wifi_scan", [])
         if wifi_scan:
@@ -606,6 +671,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
                 self.statusBar().showMessage(f"设备扫描结果：{preview}")
 
     def _sync_combo(self, combo: QtWidgets.QComboBox, items: list[str], current_text: str) -> None:
+        self._updating_config_form = True
         current_items = [combo.itemText(i) for i in range(combo.count())]
         if current_items != items:
             combo.blockSignals(True)
@@ -617,8 +683,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             combo.setCurrentIndex(index)
         else:
             combo.setEditText(current_text)
+        self._updating_config_form = False
 
     def _sync_sensor_checks(self, sensor_types: list[str], selected: list[str]) -> None:
+        self._updating_config_form = True
         while self.sensor_checks_layout.count():
             item = self.sensor_checks_layout.takeAt(0)
             widget = item.widget()
@@ -629,10 +697,24 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         for name in sensor_types:
             checkbox = QtWidgets.QCheckBox(name)
             checkbox.setChecked(name in selected)
+            checkbox.stateChanged.connect(self._mark_config_form_dirty)
             self._sensor_checks[name] = checkbox
             self.sensor_checks_layout.addWidget(checkbox)
 
         self.sensor_checks_layout.addStretch(1)
+        self._updating_config_form = False
+
+    def _mark_config_form_dirty(self, *_args: object) -> None:
+        if self._updating_config_form:
+            return
+        self._config_form_dirty = True
+        self.config_result_label.setText("最近操作：本地配置已修改，等待保存")
+
+    def _mark_wifi_form_dirty(self, *_args: object) -> None:
+        if self._updating_wifi_form:
+            return
+        self._wifi_form_dirty = True
+        self.config_result_label.setText("最近操作：本地 WiFi 配置已修改，等待发送")
 
     def _set_card(self, card: dict[str, Any], value: str, meta: str) -> None:
         card["value"].setText(value)
