@@ -1,0 +1,20 @@
+[Unit]
+Description=Yard Display - Smart Home Dashboard
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/yard-display
+Environment=PORT=3000
+Environment=MQTT_PORT=1884
+Environment=PUBLIC_IP=117.72.55.63
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

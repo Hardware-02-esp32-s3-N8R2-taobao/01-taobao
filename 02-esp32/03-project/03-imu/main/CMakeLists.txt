@@ -1,9 +1,0 @@
-idf_component_register(
-    SRCS
-        "main.c"
-        "icm42688.c"
-        "imu_app.c"
-        "imu_shell.c"
-    INCLUDE_DIRS
-        "."
-)

@@ -1,4 +1,0 @@
-cmake_minimum_required(VERSION 3.16)
-
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(yd_esp32s3_rgb_demo)

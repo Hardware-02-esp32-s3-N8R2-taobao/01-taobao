@@ -1,0 +1,13 @@
+{
+  "machines": {
+    "gg-e7c941c681f7": {
+      "projectPath": "F:\\01-dev-board\\06-esp32s3\\YD-ESP32-S3",
+      "notes": "per-machine tool overrides",
+      "idfPath": "D:\\02-software-stash-cache\\02-esp32-idf\\frameworks\\esp-idf-v5.1.2",
+      "idfPythonEnvPath": "D:\\02-software-stash-cache\\02-esp32-idf\\python_env\\idf5.1_py3.11_env",
+      "idfPyPath": "D:\\02-software-stash-cache\\02-esp32-idf\\frameworks\\esp-idf-v5.1.2\\tools\\idf.py",
+      "nodePath": "",
+      "cloudflaredPath": ""
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.profiles.windows": {
+    "PowerShell": {
+      "source": "PowerShell"
+    }
+  },
+  "terminal.integrated.automationProfile.windows": {
+    "source": "PowerShell"
+  },
+  "terminal.integrated.cwd": "${workspaceFolder}",
+  "cmake.sourceDirectory": "${workspaceFolder}/01-firmware/00-main-c3-firmware"
+}
