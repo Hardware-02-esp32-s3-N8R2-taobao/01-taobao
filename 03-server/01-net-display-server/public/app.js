@@ -392,6 +392,10 @@ function getVisibleDevices() {
 
 function getOnlineDeviceCount() {
   return Object.keys(deviceCatalog)
+    .filter((deviceId) => {
+      const type = deviceCatalog[deviceId].type;
+      return type !== "server" && type !== "weather";
+    })
     .map((deviceId) => getDeviceSnapshot(deviceId))
     .filter((snapshot) => snapshot?.online).length;
 }
@@ -425,13 +429,7 @@ function renderRoomOverview() {
   const humidityItems = allSensorMetrics.filter((item) => item.unit === "%RH" || item.unit === "%");
   const lightItems = allSensorMetrics.filter((item) => item.unit === "lux");
 
-  const iotOnlineCount = visibleDevices
-    .filter(({ catalog }) => catalog.type !== "server" && catalog.type !== "weather")
-    .filter(({ snapshot }) => snapshot.online).length;
-
-  els.roomOverview.innerHTML = `
-    <article class="mini-card"><div class="mini-card-label">在线设备</div><div class="mini-card-value">${iotOnlineCount}</div></article>
-  `;
+  els.roomOverview.innerHTML = ``;
 }
 
 function getStatusClass(snapshot) {
@@ -483,7 +481,7 @@ function renderDeviceGrid() {
           <div class="device-subtitle">${catalog.subtitle}</div>
           <div class="device-metrics">${metricHtml || '<div class="metric-pill"><div class="metric-label">当前数据</div><div class="metric-value">--</div></div>'}</div>
           <div class="device-meta">
-            <span class="device-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${getStatusText(snapshot)}</span>
+            ${catalog.type === "iot-device" ? `<span class="device-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${getStatusText(snapshot)}</span>` : ""}
             ${deviceMeta}
             <span>${snapshot.updatedAt ? `更新 ${formatTime(snapshot.updatedAt)}` : "等待数据"}</span>
           </div>
@@ -1199,7 +1197,7 @@ function renderServerDetail(catalog, snapshot) {
       <div>
         <div class="detail-header-top">
           <div class="detail-icon">${catalog.icon}</div>
-          <div class="detail-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${snapshot.online ? "运行中" : "未读取到状态"}</div>
+          <div class="detail-status"></div>
         </div>
         <div class="detail-title">${catalog.title}</div>
         <div class="detail-subtitle">${catalog.subtitle}</div>
@@ -1266,7 +1264,7 @@ function renderWeatherDetail(catalog, snapshot) {
       <div>
         <div class="detail-header-top">
           <div class="detail-icon">${catalog.icon}</div>
-          <div class="detail-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${snapshot.online ? "服务可用" : "天气服务未返回"}</div>
+          <div class="detail-status"></div>
         </div>
         <div class="detail-title">${catalog.title}</div>
         <div class="detail-subtitle">${escapeHtml(weather.location || catalog.subtitle)}</div>
