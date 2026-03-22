@@ -43,6 +43,9 @@ static int s_wifi_count = 0;
 typedef struct {
     char device_name[32];
     char sensors_csv[96];
+    char sensors_json[1536];
+    int sensors_ready_count;
+    int sensors_total_count;
     char fw_version[32];
     bool wifi_connected;
     char wifi_ssid[33];
@@ -76,9 +79,7 @@ static const char *s_sensor_type_options[] = {
     "dht11",
     "ds18b20",
     "bh1750",
-    "bmp180",
     "bmp280",
-    "bme280",
     "soil_moisture",
     "rain_sensor",
 };
@@ -112,6 +113,7 @@ static void set_default_strings(void)
 {
     snprintf(s_state.device_name, sizeof(s_state.device_name), "%s", DEFAULT_DEVICE_NAME);
     snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", DEFAULT_SENSOR_LIST);
+    snprintf(s_state.sensors_json, sizeof(s_state.sensors_json), "%s", "{}");
     snprintf(s_state.fw_version, sizeof(s_state.fw_version), "%s", APP_FIRMWARE_VERSION);
     snprintf(s_state.wifi_ssid, sizeof(s_state.wifi_ssid), "--");
     snprintf(s_state.wifi_ip, sizeof(s_state.wifi_ip), "0.0.0.0");
@@ -275,6 +277,28 @@ static void build_config_object(cJSON *root)
     append_json_string_array(root, "sensors", s_state.sensors_csv);
 }
 
+static bool csv_contains_sensor(const char *csv, const char *sensor_type)
+{
+    if (csv == NULL || sensor_type == NULL || sensor_type[0] == '\0') {
+        return false;
+    }
+
+    char local_copy[96];
+    snprintf(local_copy, sizeof(local_copy), "%s", csv);
+
+    char *token = strtok(local_copy, ",");
+    while (token != NULL) {
+        while (*token == ' ') {
+            token++;
+        }
+        if (strcmp(token, sensor_type) == 0) {
+            return true;
+        }
+        token = strtok(NULL, ",");
+    }
+    return false;
+}
+
 static void build_hardware_object(cJSON *root)
 {
     cJSON *hardware = cJSON_AddObjectToObject(root, "hardware");
@@ -433,17 +457,40 @@ void device_profile_update_dht11(bool ready, float temperature_c, float humidity
     profile_unlock();
 }
 
-void device_profile_update_publish(bool ready, float temperature_c, float humidity_pct, int rssi, const char *payload)
+void device_profile_update_sensor_snapshot(const char *json_text, int ready_count, int total_count)
+{
+    profile_lock();
+    snprintf(
+        s_state.sensors_json,
+        sizeof(s_state.sensors_json),
+        "%s",
+        (json_text != NULL && json_text[0] != '\0') ? json_text : "{}"
+    );
+    s_state.sensors_ready_count = ready_count;
+    s_state.sensors_total_count = total_count;
+    profile_unlock();
+}
+
+void device_profile_update_publish(bool ready, int rssi, const char *payload)
 {
     profile_lock();
     s_state.publish.ready = ready;
-    s_state.publish.temperature_c = temperature_c;
-    s_state.publish.humidity_pct = humidity_pct;
+    s_state.publish.temperature_c = s_state.dht11_temperature_c;
+    s_state.publish.humidity_pct = s_state.dht11_humidity_pct;
     s_state.publish.rssi = rssi;
     if (payload != NULL && payload[0] != '\0') {
         snprintf(s_state.publish.payload, sizeof(s_state.publish.payload), "%s", payload);
     }
     profile_unlock();
+}
+
+bool device_profile_has_sensor(const char *sensor_type)
+{
+    bool enabled = false;
+    profile_lock();
+    enabled = csv_contains_sensor(s_state.sensors_csv, sensor_type);
+    profile_unlock();
+    return enabled;
 }
 
 void device_profile_build_config_json(char *buffer, size_t buffer_size)
@@ -477,10 +524,20 @@ void device_profile_build_status_json(char *buffer, size_t buffer_size)
     cJSON_AddStringToObject(mqtt, "broker", APP_MQTT_URI);
     cJSON_AddStringToObject(mqtt, "topic", device_profile_mqtt_topic());
 
+    cJSON_AddNumberToObject(root, "sensorReadyCount", s_state.sensors_ready_count);
+    cJSON_AddNumberToObject(root, "sensorTotalCount", s_state.sensors_total_count);
+
     cJSON *sensor = cJSON_AddObjectToObject(root, "dht11");
     cJSON_AddBoolToObject(sensor, "ready", s_state.dht11_ready);
     cJSON_AddNumberToObject(sensor, "temperature", s_state.dht11_temperature_c);
     cJSON_AddNumberToObject(sensor, "humidity", s_state.dht11_humidity_pct);
+
+    cJSON *sensors_data = cJSON_Parse(s_state.sensors_json);
+    if (!cJSON_IsObject(sensors_data)) {
+        cJSON_Delete(sensors_data);
+        sensors_data = cJSON_CreateObject();
+    }
+    cJSON_AddItemToObject(root, "sensorsData", sensors_data);
 
     cJSON *publish = cJSON_AddObjectToObject(root, "publish");
     cJSON_AddBoolToObject(publish, "ready", s_state.publish.ready);
@@ -489,6 +546,7 @@ void device_profile_build_status_json(char *buffer, size_t buffer_size)
     cJSON_AddNumberToObject(publish, "temperature", s_state.publish.temperature_c);
     cJSON_AddNumberToObject(publish, "humidity", s_state.publish.humidity_pct);
     cJSON_AddNumberToObject(publish, "rssi", s_state.publish.rssi);
+    cJSON_AddStringToObject(publish, "payload", s_state.publish.payload);
 
     char *printed = cJSON_PrintUnformatted(root);
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");

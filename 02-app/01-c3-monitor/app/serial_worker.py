@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import queue
 import threading
 
 import serial
@@ -26,6 +27,8 @@ class SerialReader(QtCore.QObject):
         self._serial: serial.Serial | None = None
         self._stop_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
+        self._write_queue: queue.Queue[bytes] = queue.Queue()
+        self._rx_buffer = bytearray()
 
     @property
     def port_name(self) -> str:
@@ -50,6 +53,10 @@ class SerialReader(QtCore.QObject):
     @QtCore.Slot()
     def stop(self) -> None:
         self._stop_event.set()
+        try:
+            self._write_queue.put_nowait(b"")
+        except Exception:
+            pass
         if self._serial is not None:
             try:
                 self._serial.close()
@@ -59,7 +66,7 @@ class SerialReader(QtCore.QObject):
 
     def _read_loop(self) -> None:
         try:
-            self._serial = serial.Serial(port=None, baudrate=self._baudrate, timeout=0.3)
+            self._serial = serial.Serial(port=None, baudrate=self._baudrate, timeout=0.05, write_timeout=0.5)
             self._serial.dtr = False
             self._serial.rts = False
             self._serial.port = self._port_name
@@ -76,12 +83,37 @@ class SerialReader(QtCore.QObject):
                 ser = self._serial
                 if ser is None:
                     break
-                raw = ser.readline()
+                while True:
+                    try:
+                        payload = self._write_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if not payload:
+                        continue
+                    try:
+                        ser.write(payload)
+                        ser.flush()
+                    except Exception as exc:
+                        self.error_occurred.emit(str(exc))
+                        self.stop()
+                        break
+                try:
+                    waiting = ser.in_waiting
+                except Exception:
+                    waiting = 0
+                raw = ser.read(waiting or 1)
                 if not raw:
                     continue
-                text = raw.decode("utf-8", errors="ignore").rstrip("\r\n")
-                if text:
-                    self.line_received.emit(text)
+                self._rx_buffer.extend(raw)
+                while True:
+                    newline_index = self._rx_buffer.find(b"\n")
+                    if newline_index < 0:
+                        break
+                    line = self._rx_buffer[:newline_index]
+                    del self._rx_buffer[: newline_index + 1]
+                    text = line.decode("utf-8", errors="ignore").rstrip("\r")
+                    if text:
+                        self.line_received.emit(text)
         except Exception as exc:
             self.error_occurred.emit(str(exc))
         finally:
@@ -99,8 +131,7 @@ class SerialReader(QtCore.QObject):
             return
         try:
             payload = (text.rstrip("\r\n") + "\n").encode("utf-8")
-            self._serial.write(payload)
-            self._serial.flush()
+            self._write_queue.put_nowait(payload)
         except Exception as exc:
             self.error_occurred.emit(str(exc))
             self.stop()

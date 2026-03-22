@@ -97,81 +97,85 @@ static void console_task(void *arg)
     (void)arg;
     char line[1024] = {0};
     size_t line_len = 0;
-    uint8_t ch = 0;
+    uint8_t buffer[64];
 
     while (1) {
-        int read_len = usb_serial_jtag_read_bytes(&ch, 1, pdMS_TO_TICKS(50));
+        int read_len = usb_serial_jtag_read_bytes(buffer, sizeof(buffer), pdMS_TO_TICKS(20));
         if (read_len <= 0) {
             continue;
         }
 
-        if (ch == '\r') {
-            continue;
-        }
+        for (int i = 0; i < read_len; ++i) {
+            uint8_t ch = buffer[i];
 
-        if (ch != '\n' && line_len < sizeof(line) - 1) {
-            line[line_len++] = (char)ch;
-            line[line_len] = '\0';
-            continue;
-        }
+            if (ch == '\r') {
+                continue;
+            }
 
-        if (line_len == 0) {
-            continue;
-        }
+            if (ch != '\n' && line_len < sizeof(line) - 1) {
+                line[line_len++] = (char)ch;
+                line[line_len] = '\0';
+                continue;
+            }
 
-        if (strcmp(line, "GET_STATUS") == 0) {
-            emit_json_line("APP_STATUS", device_profile_build_status_json);
-        } else if (strcmp(line, "GET_CONFIG") == 0) {
-            emit_json_line("APP_CONFIG", device_profile_build_config_json);
-        } else if (strcmp(line, "GET_OPTIONS") == 0) {
-            emit_json_line("APP_OPTIONS", device_profile_build_options_json);
-        } else if (strncmp(line, "SET_CONFIG ", 11) == 0) {
-            char message[96];
-            char response[160];
-            esp_err_t ret = device_profile_apply_config_json(line + 11, message, sizeof(message));
-            if (ret == ESP_OK) {
-                snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
-                usb_write_text(response);
+            if (line_len == 0) {
+                continue;
+            }
+
+            if (strcmp(line, "GET_STATUS") == 0) {
+                emit_json_line("APP_STATUS", device_profile_build_status_json);
+            } else if (strcmp(line, "GET_CONFIG") == 0) {
                 emit_json_line("APP_CONFIG", device_profile_build_config_json);
-                emit_json_line("APP_STATUS", device_profile_build_status_json);
-            } else {
-                snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+            } else if (strcmp(line, "GET_OPTIONS") == 0) {
+                emit_json_line("APP_OPTIONS", device_profile_build_options_json);
+            } else if (strncmp(line, "SET_CONFIG ", 11) == 0) {
+                char message[96];
+                char response[160];
+                esp_err_t ret = device_profile_apply_config_json(line + 11, message, sizeof(message));
+                if (ret == ESP_OK) {
+                    snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                    emit_json_line("APP_CONFIG", device_profile_build_config_json);
+                    emit_json_line("APP_STATUS", device_profile_build_status_json);
+                } else {
+                    snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                }
+            } else if (strcmp(line, "GET_WIFI_LIST") == 0) {
+                char json[1024];
+                char response[1088];
+                device_profile_get_wifi_list_json(json, sizeof(json));
+                snprintf(response, sizeof(response), "APP_WIFI_LIST:%s\n", json);
                 usb_write_text(response);
+            } else if (strncmp(line, "SET_WIFI_LIST ", 14) == 0) {
+                char message[96];
+                char response[160];
+                esp_err_t ret = device_profile_set_wifi_list_json(line + 14, message, sizeof(message));
+                if (ret == ESP_OK) {
+                    snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                    emit_wifi_list_line();
+                    network_service_reload_wifi_list();
+                    emit_json_line("APP_STATUS", device_profile_build_status_json);
+                } else {
+                    snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                }
+            } else if (strcmp(line, "SCAN_WIFI") == 0) {
+                char json[2048];
+                char response[2112];
+                network_service_get_scan_json(json, sizeof(json));
+                snprintf(response, sizeof(response), "APP_EVENT:{\"type\":\"wifi_scan\",\"data\":%s}\n", json);
+                usb_write_text(response);
+            } else if (strcmp(line, "HELP") == 0) {
+                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"SCAN_WIFI\"]}\n");
+            } else if (line[0] != '\0') {
+                usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
             }
-        } else if (strcmp(line, "GET_WIFI_LIST") == 0) {
-            char json[1024];
-            char response[1088];
-            device_profile_get_wifi_list_json(json, sizeof(json));
-            snprintf(response, sizeof(response), "APP_WIFI_LIST:%s\n", json);
-            usb_write_text(response);
-        } else if (strncmp(line, "SET_WIFI_LIST ", 14) == 0) {
-            char message[96];
-            char response[160];
-            esp_err_t ret = device_profile_set_wifi_list_json(line + 14, message, sizeof(message));
-            if (ret == ESP_OK) {
-                snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
-                usb_write_text(response);
-                emit_wifi_list_line();
-                network_service_reload_wifi_list();
-                emit_json_line("APP_STATUS", device_profile_build_status_json);
-            } else {
-                snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
-                usb_write_text(response);
-            }
-        } else if (strcmp(line, "SCAN_WIFI") == 0) {
-            char json[2048];
-            char response[2112];
-            network_service_get_scan_json(json, sizeof(json));
-            snprintf(response, sizeof(response), "APP_EVENT:{\"type\":\"wifi_scan\",\"data\":%s}\n", json);
-            usb_write_text(response);
-        } else if (strcmp(line, "HELP") == 0) {
-            usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"SCAN_WIFI\"]}\n");
-        } else if (line[0] != '\0') {
-            usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
-        }
 
-        line_len = 0;
-        line[0] = '\0';
+            line_len = 0;
+            line[0] = '\0';
+        }
     }
 }
 

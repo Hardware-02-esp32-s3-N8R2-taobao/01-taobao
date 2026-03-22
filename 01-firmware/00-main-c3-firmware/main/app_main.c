@@ -1,4 +1,6 @@
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "console_service.h"
 #include "device_profile.h"
@@ -6,6 +8,13 @@
 #include "telemetry_app.h"
 
 #define TAG "app_main"
+
+static void telemetry_task(void *arg)
+{
+    (void)arg;
+    telemetry_app_run();
+    vTaskDelete(NULL);
+}
 
 void app_main(void)
 {
@@ -21,5 +30,6 @@ void app_main(void)
     ESP_ERROR_CHECK(device_profile_init());
     ESP_ERROR_CHECK(console_service_start());
     ESP_ERROR_CHECK(network_service_start());
-    telemetry_app_run();
+    BaseType_t ok = xTaskCreate(telemetry_task, "telemetry_task", 12288, NULL, 5, NULL);
+    ESP_ERROR_CHECK(ok == pdPASS ? ESP_OK : ESP_FAIL);
 }

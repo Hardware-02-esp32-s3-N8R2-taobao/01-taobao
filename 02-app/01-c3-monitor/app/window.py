@@ -18,6 +18,38 @@ def fmt_value(value: Any, unit: str = "") -> str:
     return f"{value}{unit}"
 
 
+def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
+    if sensor_key == "dht11":
+        return [
+            f"DHT11 温度：{fmt_value(reading.get('temperature'), ' °C')}",
+            f"DHT11 湿度：{fmt_value(reading.get('humidity'), ' %RH')}",
+        ]
+    if sensor_key == "ds18b20":
+        return [f"DS18B20 温度：{fmt_value(reading.get('temperature'), ' °C')}"]
+    if sensor_key == "bh1750":
+        return [f"BH1750 光照：{fmt_value(reading.get('illuminance'), ' lux')}"]
+    if sensor_key == "bmp280":
+        model = str(reading.get("model") or "bmp280").upper()
+        lines = [
+            f"{model} 温度：{fmt_value(reading.get('temperature'), ' °C')}",
+            f"{model} 气压：{fmt_value(reading.get('pressure'), ' hPa')}",
+        ]
+        if reading.get("humidity") is not None:
+            lines.append(f"{model} 湿度：{fmt_value(reading.get('humidity'), ' %RH')}")
+        return lines
+    if sensor_key == "soil_moisture":
+        return [
+            f"土壤湿度原始值：{fmt_value(reading.get('raw'))}",
+            f"土壤湿度百分比：{fmt_value(reading.get('percent'), ' %')}",
+        ]
+    if sensor_key == "rain_sensor":
+        return [
+            f"雨水原始值：{fmt_value(reading.get('raw'))}",
+            f"雨水百分比：{fmt_value(reading.get('percent'), ' %')}",
+        ]
+    return [f"{sensor_key}：{json.dumps(reading, ensure_ascii=False)}"]
+
+
 class C3MonitorWindow(QtWidgets.QMainWindow):
     command_requested = QtCore.Signal(str)
 
@@ -154,6 +186,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         log_head.addWidget(self.clear_log_btn)
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.document().setMaximumBlockCount(800)
         log_layout.addLayout(log_head)
         log_layout.addWidget(self.log_edit, 1)
         monitor_layout.addWidget(log_panel, 1)
@@ -261,6 +294,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.connect_btn.clicked.connect(self.connect_serial)
         self.disconnect_btn.clicked.connect(self.disconnect_serial)
         self.auto_refresh_check.toggled.connect(self._toggle_auto_refresh)
+        self.tab_widget.currentChanged.connect(self._handle_tab_changed)
         self.clear_log_btn.clicked.connect(self.log_edit.clear)
         self.query_btn.clicked.connect(self.read_device_config)
         self.save_btn.clicked.connect(self.save_device_config)
@@ -421,16 +455,25 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._render_state(state)
         self.statusBar().showMessage(message)
         if connected:
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
             QtCore.QTimer.singleShot(2500, self._initial_device_load)
             self._update_auto_refresh_timers()
         else:
+            self.connect_btn.setEnabled(True)
+            self.disconnect_btn.setEnabled(False)
             self._status_poll_timer.stop()
             self.auto_refresh_label.setText("自动刷新：--")
             self._initial_load_done = False
+            if "连接失败" in message or "拒绝访问" in message or "could not open port" in message:
+                self.log_edit.appendPlainText(f"!!! {message}")
+                self.config_result_label.setText(f"最近操作：{message}")
 
     @QtCore.Slot(str)
     def _handle_error(self, message: str) -> None:
         self.statusBar().showMessage(f"串口错误：{message}")
+        self.log_edit.appendPlainText(f"!!! 串口错误：{message}")
+        self.config_result_label.setText(f"最近操作：串口错误：{message}")
 
     @QtCore.Slot(str)
     def _handle_serial_line(self, line: str) -> None:
@@ -444,14 +487,12 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
                 config = result.state["config"]
                 message = f"设备配置已保存：{config['device_name']} ({config['device_id']})"
                 self.config_result_label.setText(f"最近操作：{message}")
-                QtWidgets.QMessageBox.information(self, "保存成功", message)
                 self._pending_config_save = False
                 self._pending_config_name = ""
         elif cleaned.startswith("APP_ERROR:"):
             self.statusBar().showMessage("设备返回错误，请查看日志")
             if self._pending_config_save:
                 self.config_result_label.setText("最近操作：保存失败，请查看串口日志")
-                QtWidgets.QMessageBox.warning(self, "保存失败", "设备返回错误，请查看串口日志。")
                 self._pending_config_save = False
                 self._pending_config_name = ""
         elif cleaned.startswith("APP_CONFIG:"):
@@ -511,8 +552,16 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     def _handle_auto_status_poll(self) -> None:
         if not self._initial_load_done:
             return
+        if self.tab_widget.currentIndex() != 0:
+            return
         self._mark_auto_refresh()
         self.query_device_state()
+
+    def _handle_tab_changed(self, index: int) -> None:
+        if index == 1 and self._reader is not None:
+            self._config_form_dirty = False
+            self._wifi_form_dirty = False
+            self.read_device_config()
 
     def save_device_config(self) -> None:
         sensors = [name for name, checkbox in self._sensor_checks.items() if checkbox.isChecked()]
@@ -530,8 +579,6 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.config_result_label.setText(f"最近操作：正在保存 {device_name}")
         self._send_command(f"SET_CONFIG {json.dumps(payload, ensure_ascii=False)}")
         self.statusBar().showMessage(f"正在发送设备配置：{device_name}")
-        QtCore.QTimer.singleShot(800, self._refresh_device_config_views)
-        QtCore.QTimer.singleShot(1200, self.query_device_state)
 
     def _request_wifi_list(self) -> None:
         self._send_command("GET_WIFI_LIST")
@@ -552,8 +599,6 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._wifi_form_dirty = False
         self.config_result_label.setText(f"最近操作：已发送 {len(entries)} 条 WiFi 配置")
         self.statusBar().showMessage(f"已发送 {len(entries)} 条 WiFi 配置")
-        QtCore.QTimer.singleShot(1200, self._refresh_device_config_views)
-        QtCore.QTimer.singleShot(1800, self.query_device_state)
 
     def _scan_wifi(self) -> None:
         self._send_command("SCAN_WIFI")
@@ -607,15 +652,17 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         sensor = state["sensor"]
         sensor_models = sensor.get("sensor_models") or []
         sensor_count = sensor.get("sensor_count", len(sensor_models))
+        sensor_ready_count = sensor.get("ready_count", 0)
+        sensor_readings = sensor.get("readings") or {}
         sensor_lines = [
             f"当前上报：{sensor_count} 个",
+            f"采样成功：{sensor_ready_count} 个",
             f"型号：{', '.join(sensor_models) if sensor_models else '--'}",
         ]
-        if "dht11" in sensor_models:
-            sensor_lines.append(f"DHT11 温度：{fmt_value(sensor['temperature'], ' °C')}")
-            sensor_lines.append(f"DHT11 湿度：{fmt_value(sensor['humidity'], ' %RH')}")
-        else:
-            sensor_lines.append("当前暂无已适配的实时数值展示")
+        for sensor_key in sensor_models:
+            reading = sensor_readings.get(sensor_key)
+            if isinstance(reading, dict):
+                sensor_lines.extend(sensor_display_lines(sensor_key, reading))
         sensor_lines.append(f"更新时间：{sensor['updated_at'] or '--'}")
         self._set_card(
             self.sensor_card,
@@ -623,15 +670,19 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             "\n".join(sensor_lines),
         )
         publish = state["publish"]
+        publish_sensors = publish.get("sensors") or {}
+        publish_lines = [
+            f"设备：{publish['alias']} ({publish['device']})",
+            f"RSSI：{fmt_value(publish['rssi'])}",
+        ]
+        for sensor_key, reading in publish_sensors.items():
+            if isinstance(reading, dict):
+                publish_lines.extend(sensor_display_lines(sensor_key, reading))
+        publish_lines.append(f"更新时间：{publish['updated_at'] or '--'}")
         self._set_card(
             self.publish_card,
             publish["status"],
-            (
-                f"设备：{publish['alias']} ({publish['device']})\n"
-                f"温度：{fmt_value(publish['temperature'], ' °C')}  湿度：{fmt_value(publish['humidity'], ' %RH')}\n"
-                f"RSSI：{fmt_value(publish['rssi'])}\n"
-                f"更新时间：{publish['updated_at'] or '--'}"
-            ),
+            "\n".join(publish_lines),
         )
 
         # Hardware info in monitor tab
@@ -687,21 +738,30 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
     def _sync_sensor_checks(self, sensor_types: list[str], selected: list[str]) -> None:
         self._updating_config_form = True
-        while self.sensor_checks_layout.count():
-            item = self.sensor_checks_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        current_types = list(self._sensor_checks.keys())
+        if current_types != sensor_types:
+            while self.sensor_checks_layout.count():
+                item = self.sensor_checks_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
 
-        self._sensor_checks.clear()
-        for name in sensor_types:
-            checkbox = QtWidgets.QCheckBox(name)
-            checkbox.setChecked(name in selected)
-            checkbox.stateChanged.connect(self._mark_config_form_dirty)
-            self._sensor_checks[name] = checkbox
-            self.sensor_checks_layout.addWidget(checkbox)
+            self._sensor_checks.clear()
+            for name in sensor_types:
+                checkbox = QtWidgets.QCheckBox(name)
+                checkbox.stateChanged.connect(self._mark_config_form_dirty)
+                self._sensor_checks[name] = checkbox
+                self.sensor_checks_layout.addWidget(checkbox)
 
-        self.sensor_checks_layout.addStretch(1)
+            self.sensor_checks_layout.addStretch(1)
+
+        selected_set = set(selected)
+        for name, checkbox in self._sensor_checks.items():
+            should_check = name in selected_set
+            if checkbox.isChecked() != should_check:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(should_check)
+                checkbox.blockSignals(False)
         self._updating_config_form = False
 
     def _mark_config_form_dirty(self, *_args: object) -> None:

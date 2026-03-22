@@ -30,7 +30,9 @@ const char *device_profile_hardware_variant_name(void);
 void device_profile_update_wifi(bool connected, const char *ssid, const char *ip, int disconnect_reason);
 void device_profile_update_mqtt(bool connected);
 void device_profile_update_dht11(bool ready, float temperature_c, float humidity_pct);
-void device_profile_update_publish(bool ready, float temperature_c, float humidity_pct, int rssi, const char *payload);
+void device_profile_update_sensor_snapshot(const char *json_text, int ready_count, int total_count);
+void device_profile_update_publish(bool ready, int rssi, const char *payload);
+bool device_profile_has_sensor(const char *sensor_type);
 
 void device_profile_build_config_json(char *buffer, size_t buffer_size);
 void device_profile_build_status_json(char *buffer, size_t buffer_size);

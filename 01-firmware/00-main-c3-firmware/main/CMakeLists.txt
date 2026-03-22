@@ -5,6 +5,11 @@ idf_component_register(
         "app/device_profile.c"
         "app/console_service.c"
         "dht11/dht11_sensor.c"
+        "sensors/sensor_bus.c"
+        "sensors/ds18b20_sensor.c"
+        "sensors/bh1750_sensor.c"
+        "sensors/bmp280_sensor.c"
+        "sensors/analog_sensor.c"
         "network/network_service.c"
     INCLUDE_DIRS
         "include"
@@ -17,4 +22,5 @@ idf_component_register(
         mqtt
         nvs_flash
         vfs
+        esp_adc
 )

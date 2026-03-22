@@ -73,17 +73,16 @@ def default_state() -> dict[str, Any]:
             "status": "等待数据",
             "sensor_count": 1,
             "sensor_models": ["dht11"],
-            "temperature": None,
-            "humidity": None,
+            "ready_count": 0,
+            "readings": {},
             "updated_at": "",
         },
         "publish": {
             "status": "等待上报",
             "device": "--",
             "alias": "--",
-            "temperature": None,
-            "humidity": None,
             "rssi": None,
+            "sensors": {},
             "updated_at": "",
             "payload_text": "--",
         },
@@ -103,7 +102,7 @@ def default_state() -> dict[str, Any]:
         },
         "options": {
             "device_names": ["庭院1号", "卧室1号", "书房1号", "办公室1号"],
-            "sensor_types": ["dht11", "ds18b20", "bh1750", "bmp180", "bmp280", "bme280", "soil_moisture", "rain_sensor"],
+            "sensor_types": ["dht11", "ds18b20", "bh1750", "bmp280", "soil_moisture", "rain_sensor"],
         },
         "alerts": [],
         "wifi_list": [],
@@ -278,7 +277,7 @@ class StatusParser:
         self._apply_config_payload(payload)
         wifi = payload.get("wifi") or {}
         mqtt = payload.get("mqtt") or {}
-        dht11 = payload.get("dht11") or {}
+        sensors_data = payload.get("sensorsData") or {}
         publish = payload.get("publish") or {}
 
         self._state["wifi"]["status"] = "已连接" if wifi.get("connected") else "未连接"
@@ -297,18 +296,22 @@ class StatusParser:
         self._state["mqtt"]["topic"] = mqtt.get("topic", self._state["mqtt"]["topic"])
         self._state["mqtt"]["updated_at"] = now_text()
 
-        self._state["sensor"]["status"] = "采样正常" if dht11.get("ready") else "等待数据"
-        self._state["sensor"]["temperature"] = dht11.get("temperature")
-        self._state["sensor"]["humidity"] = dht11.get("humidity")
+        self._state["sensor"]["ready_count"] = int(payload.get("sensorReadyCount", 0) or 0)
+        self._state["sensor"]["sensor_count"] = int(payload.get("sensorTotalCount", len(self._state["config"]["sensors"])) or 0)
+        self._state["sensor"]["status"] = "采样正常" if self._state["sensor"]["ready_count"] > 0 else "等待数据"
+        self._state["sensor"]["readings"] = sensors_data if isinstance(sensors_data, dict) else {}
         self._state["sensor"]["updated_at"] = now_text()
 
         self._state["publish"]["status"] = "上报成功" if publish.get("ready") else "等待上报"
-        self._state["publish"]["temperature"] = publish.get("temperature")
-        self._state["publish"]["humidity"] = publish.get("humidity")
         self._state["publish"]["rssi"] = publish.get("rssi")
         self._state["publish"]["payload_text"] = publish.get("payload", self._state["publish"]["payload_text"])
         self._state["publish"]["device"] = self._state["config"]["device_id"]
         self._state["publish"]["alias"] = self._state["config"]["device_alias"]
+        publish_payload = self._safe_load_json(self._state["publish"]["payload_text"])
+        if publish_payload:
+            sensors = publish_payload.get("sensors")
+            if isinstance(sensors, dict):
+                self._state["publish"]["sensors"] = sensors
         self._state["publish"]["updated_at"] = now_text()
 
     def _apply_event_payload(self, payload: dict[str, Any]) -> None:
@@ -334,9 +337,11 @@ class StatusParser:
             self._state["mqtt"]["topic"] = str(data.get("topic", self._state["mqtt"]["topic"]))
             self._state["mqtt"]["updated_at"] = now_text()
         elif event_type == "sensor":
+            sensor_type = data.get("sensorType")
+            if sensor_type:
+                readings = self._state["sensor"].setdefault("readings", {})
+                readings[sensor_type] = {k: v for k, v in data.items() if k != "sensorType"}
             self._state["sensor"]["status"] = "采样正常" if data.get("ready") else "读取失败"
-            self._state["sensor"]["temperature"] = data.get("temperature")
-            self._state["sensor"]["humidity"] = data.get("humidity")
             self._state["sensor"]["updated_at"] = now_text()
         elif event_type == "publish":
             self._state["publish"]["status"] = "上报成功" if data.get("ready") else "等待上报"
@@ -347,10 +352,8 @@ class StatusParser:
                 self._state["publish"]["alias"] = payload_data.get("alias", self._state["publish"]["alias"])
                 self._state["publish"]["rssi"] = payload_data.get("rssi")
                 sensors = payload_data.get("sensors") or {}
-                dht11 = sensors.get("dht11") if isinstance(sensors, dict) else {}
-                if isinstance(dht11, dict):
-                    self._state["publish"]["temperature"] = dht11.get("temperature")
-                    self._state["publish"]["humidity"] = dht11.get("humidity")
+                if isinstance(sensors, dict):
+                    self._state["publish"]["sensors"] = sensors
             self._state["publish"]["updated_at"] = now_text()
         elif event_type == "wifi_scan":
             access_points = data.get("accessPoints")
