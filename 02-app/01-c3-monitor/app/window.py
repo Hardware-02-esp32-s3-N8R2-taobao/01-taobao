@@ -206,10 +206,12 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         wifi_panel_title = QtWidgets.QLabel("WiFi 配置")
         wifi_panel_title.setObjectName("subTitle")
         self.wifi_read_btn = QtWidgets.QPushButton("读取 WiFi")
+        self.wifi_scan_btn = QtWidgets.QPushButton("扫描附近 WiFi")
         self.wifi_send_btn = QtWidgets.QPushButton("发送到设备")
         wifi_head.addWidget(wifi_panel_title)
         wifi_head.addStretch(1)
         wifi_head.addWidget(self.wifi_read_btn)
+        wifi_head.addWidget(self.wifi_scan_btn)
         wifi_head.addWidget(self.wifi_send_btn)
         config_layout.addLayout(wifi_head)
 
@@ -249,6 +251,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.query_btn.clicked.connect(self.query_device_state)
         self.save_btn.clicked.connect(self.save_device_config)
         self.wifi_read_btn.clicked.connect(self._request_wifi_list)
+        self.wifi_scan_btn.clicked.connect(self._scan_wifi)
         self.wifi_send_btn.clicked.connect(self.send_wifi_list)
         self.wifi_add_btn.clicked.connect(self._add_wifi_row)
         self.wifi_del_btn.clicked.connect(self._del_wifi_row)
@@ -497,6 +500,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(1200, self._refresh_device_config_views)
         QtCore.QTimer.singleShot(1800, self.query_device_state)
 
+    def _scan_wifi(self) -> None:
+        self._send_command("SCAN_WIFI")
+        self.statusBar().showMessage("正在让设备扫描附近 WiFi...")
+
     def _add_wifi_row(self) -> None:
         row = self.wifi_table.rowCount()
         self.wifi_table.insertRow(row)
@@ -587,6 +594,16 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self._populate_wifi_table(wifi_list)
             self.tab_widget.setCurrentIndex(1)
             self.statusBar().showMessage(f"已读取 {len(wifi_list)} 条 WiFi 配置")
+
+        wifi_scan = state.get("wifi_scan", [])
+        if wifi_scan:
+            preview = "，".join(
+                f"{item.get('ssid', '--')}({item.get('rssi', '--')}dBm)"
+                for item in wifi_scan[:5]
+                if item.get("ssid")
+            )
+            if preview:
+                self.statusBar().showMessage(f"设备扫描结果：{preview}")
 
     def _sync_combo(self, combo: QtWidgets.QComboBox, items: list[str], current_text: str) -> None:
         current_items = [combo.itemText(i) for i in range(combo.count())]

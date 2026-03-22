@@ -21,4 +21,4 @@
 
 #define APP_PUBLISH_INTERVAL_MS  3000
 
-#define APP_DHT11_GPIO           GPIO_NUM_4
+#define APP_DHT11_GPIO           GPIO_NUM_3

@@ -10,12 +10,18 @@
 #include "esp_mac.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "driver/i2c.h"
 
 #include "app_config.h"
 
 #define TAG "device_profile"
 #define DEVICE_PROFILE_NAMESPACE "device_cfg"
 #define WIFI_MAX_ENTRIES 8
+#define HW_DETECT_I2C_PORT I2C_NUM_0
+#define HW_DETECT_SDA_GPIO GPIO_NUM_5
+#define HW_DETECT_SCL_GPIO GPIO_NUM_6
+#define HW_DETECT_OLED_ADDR_PRIMARY 0x3C
+#define HW_DETECT_OLED_ADDR_SECONDARY 0x3D
 
 typedef struct {
     char ssid[33];
@@ -52,6 +58,8 @@ typedef struct {
     char mac[18];
     int chip_cores;
     int chip_revision;
+    device_hw_variant_t hardware_variant;
+    char hardware_variant_name[24];
 } device_profile_state_t;
 
 static device_profile_state_t s_state;
@@ -153,6 +161,60 @@ static const char *chip_model_to_text(esp_chip_model_t model)
     }
 }
 
+static esp_err_t i2c_probe_addr(i2c_port_t port, uint8_t addr)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (cmd == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (uint8_t)((addr << 1) | I2C_MASTER_WRITE), true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(50));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static device_hw_variant_t detect_hardware_variant(void)
+{
+    i2c_config_t cfg = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = HW_DETECT_SDA_GPIO,
+        .scl_io_num = HW_DETECT_SCL_GPIO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
+    };
+
+    if (i2c_param_config(HW_DETECT_I2C_PORT, &cfg) != ESP_OK) {
+        return DEVICE_HW_VARIANT_SUPERMINI;
+    }
+    if (i2c_driver_install(HW_DETECT_I2C_PORT, I2C_MODE_MASTER, 0, 0, 0) != ESP_OK) {
+        return DEVICE_HW_VARIANT_SUPERMINI;
+    }
+
+    esp_err_t primary = i2c_probe_addr(HW_DETECT_I2C_PORT, HW_DETECT_OLED_ADDR_PRIMARY);
+    esp_err_t secondary = i2c_probe_addr(HW_DETECT_I2C_PORT, HW_DETECT_OLED_ADDR_SECONDARY);
+    i2c_driver_delete(HW_DETECT_I2C_PORT);
+
+    if (primary == ESP_OK || secondary == ESP_OK) {
+        return DEVICE_HW_VARIANT_OLED_SCREEN;
+    }
+    return DEVICE_HW_VARIANT_SUPERMINI;
+}
+
+static const char *hardware_variant_to_text(device_hw_variant_t variant)
+{
+    switch (variant) {
+    case DEVICE_HW_VARIANT_OLED_SCREEN:
+        return "oled-screen";
+    case DEVICE_HW_VARIANT_SUPERMINI:
+        return "supermini";
+    default:
+        return "unknown";
+    }
+}
+
 static void populate_hardware_info(void)
 {
     esp_chip_info_t chip_info = {0};
@@ -176,6 +238,13 @@ static void populate_hardware_info(void)
     );
     s_state.chip_cores = chip_info.cores;
     s_state.chip_revision = chip_info.revision;
+    s_state.hardware_variant = detect_hardware_variant();
+    snprintf(
+        s_state.hardware_variant_name,
+        sizeof(s_state.hardware_variant_name),
+        "%s",
+        hardware_variant_to_text(s_state.hardware_variant)
+    );
 }
 
 static void append_json_string_array(cJSON *parent, const char *name, const char *csv)
@@ -215,6 +284,7 @@ static void build_hardware_object(cJSON *root)
     cJSON_AddNumberToObject(hardware, "cores", s_state.chip_cores);
     cJSON_AddNumberToObject(hardware, "revision", s_state.chip_revision);
     cJSON_AddStringToObject(hardware, "mac", s_state.mac);
+    cJSON_AddStringToObject(hardware, "boardVariant", s_state.hardware_variant_name);
 }
 
 static void load_wifi_list_from_nvs(nvs_handle_t handle)
@@ -317,6 +387,16 @@ const char *device_profile_mqtt_topic(void)
     static char topic[96];
     snprintf(topic, sizeof(topic), "%s/%s", APP_MQTT_TOPIC_PREFIX, device_profile_device_id());
     return topic;
+}
+
+device_hw_variant_t device_profile_hardware_variant(void)
+{
+    return s_state.hardware_variant;
+}
+
+const char *device_profile_hardware_variant_name(void)
+{
+    return s_state.hardware_variant_name;
 }
 
 void device_profile_update_wifi(bool connected, const char *ssid, const char *ip, int disconnect_reason)

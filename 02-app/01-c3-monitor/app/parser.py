@@ -26,6 +26,27 @@ def clean_serial_line(line: str) -> str:
     return text.replace("\u0000", "").strip()
 
 
+def wifi_reason_text(reason: Any) -> str:
+    try:
+        code = int(reason)
+    except (TypeError, ValueError):
+        return str(reason) if reason not in (None, "") else "--"
+
+    reason_map = {
+        0: "--",
+        2: "认证过期",
+        3: "AP 主动断开",
+        4: "关联过期",
+        15: "4 次握手超时",
+        201: "未扫描到目标 AP",
+        202: "认证失败，密码可能不对",
+        203: "关联失败",
+        204: "握手超时",
+        205: "AP 与 STA 不兼容",
+    }
+    return reason_map.get(code, str(code))
+
+
 def default_state() -> dict[str, Any]:
     return {
         "port_name": "--",
@@ -86,6 +107,7 @@ def default_state() -> dict[str, Any]:
         },
         "alerts": [],
         "wifi_list": [],
+        "wifi_scan": [],
     }
 
 
@@ -181,7 +203,7 @@ class StatusParser:
         if match := WIFI_DISCONNECTED_RE.search(text):
             changed = True
             self._state["wifi"]["status"] = "已断开"
-            self._state["wifi"]["reason"] = match.group(1)
+            self._state["wifi"]["reason"] = wifi_reason_text(match.group(1))
             self._state["wifi"]["updated_at"] = now_text()
             self._state["mqtt"]["status"] = "未连接"
             self._state["mqtt"]["updated_at"] = now_text()
@@ -267,7 +289,7 @@ class StatusParser:
             self._state["wifi"]["ssid"] = "--"
         self._state["wifi"]["ip"] = wifi.get("ip", self._state["wifi"]["ip"])
         reason = wifi.get("disconnectReason")
-        self._state["wifi"]["reason"] = "--" if reason in (None, 0) else str(reason)
+        self._state["wifi"]["reason"] = wifi_reason_text(reason)
         self._state["wifi"]["updated_at"] = now_text()
 
         self._state["mqtt"]["status"] = "已连接" if mqtt.get("connected") else "未连接"
@@ -304,7 +326,7 @@ class StatusParser:
                 self._state["wifi"]["ssid"] = "--"
             self._state["wifi"]["ip"] = str(data.get("ip", "--")) or "--"
             reason = data.get("reason")
-            self._state["wifi"]["reason"] = "--" if reason in (None, 0) else str(reason)
+            self._state["wifi"]["reason"] = wifi_reason_text(reason)
             self._state["wifi"]["updated_at"] = now_text()
         elif event_type == "mqtt":
             self._state["mqtt"]["status"] = "已连接" if data.get("connected") else "未连接"
@@ -330,6 +352,11 @@ class StatusParser:
                     self._state["publish"]["temperature"] = dht11.get("temperature")
                     self._state["publish"]["humidity"] = dht11.get("humidity")
             self._state["publish"]["updated_at"] = now_text()
+        elif event_type == "wifi_scan":
+            access_points = data.get("accessPoints")
+            if isinstance(access_points, list):
+                self._state["wifi_scan"] = access_points
+                self._push_alert(f"扫描到 {len(access_points)} 个 WiFi")
 
     def _apply_options_payload(self, payload: dict[str, Any]) -> None:
         device_names = payload.get("deviceNames")

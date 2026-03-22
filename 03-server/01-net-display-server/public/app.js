@@ -425,11 +425,12 @@ function renderRoomOverview() {
   const humidityItems = allSensorMetrics.filter((item) => item.unit === "%RH" || item.unit === "%");
   const lightItems = allSensorMetrics.filter((item) => item.unit === "lux");
 
+  const iotOnlineCount = visibleDevices
+    .filter(({ catalog }) => catalog.type !== "server" && catalog.type !== "weather")
+    .filter(({ snapshot }) => snapshot.online).length;
+
   els.roomOverview.innerHTML = `
-    <article class="mini-card"><div class="mini-card-label">设备数量</div><div class="mini-card-value">${visibleDevices.length}</div></article>
-    <article class="mini-card"><div class="mini-card-label">在线设备</div><div class="mini-card-value">${visibleDevices.filter(({ snapshot }) => snapshot.online).length}</div></article>
-    <article class="mini-card"><div class="mini-card-label">平均温度</div><div class="mini-card-value">${avg(tempItems) === "--" ? "--" : `${avg(tempItems)}°`}</div></article>
-    <article class="mini-card"><div class="mini-card-label">湿度 / 光照</div><div class="mini-card-value">${avg(humidityItems) !== "--" ? `${avg(humidityItems)}%` : avg(lightItems) !== "--" ? `${avg(lightItems)} lux` : "--"}</div></article>
+    <article class="mini-card"><div class="mini-card-label">在线设备</div><div class="mini-card-value">${iotOnlineCount}</div></article>
   `;
 }
 
@@ -1181,19 +1182,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         <div class="detail-block-title">设备总览</div>
         <div class="info-list">
           <div class="info-row"><span class="info-label">设备 ID</span><strong>${catalog.id}</strong></div>
-          <div class="info-row"><span class="info-label">挂载传感器</span><strong>${snapshot.sensors.length} 个</strong></div>
-          <div class="info-row"><span class="info-label">在线判定</span><strong>${snapshot.online ? "90 秒内有消息，判定在线" : "超过 90 秒未见消息，判定离线"}</strong></div>
           <div class="info-row"><span class="info-label">最近更新时间</span><strong>${formatTime(snapshot.updatedAt)}</strong></div>
-          <div class="info-row"><span class="info-label">页面模式</span><strong>先看设备，再看设备里的传感器</strong></div>
-        </div>
-      </article>
-      <article class="info-card">
-        <div class="detail-block-title">扩展方式</div>
-        <div class="info-list">
-          <div class="info-row"><span class="info-label">加传感器</span><strong>往这个设备的 sensors 里继续挂</strong></div>
-          <div class="info-row"><span class="info-label">加设备</span><strong>新增 deviceCatalog 配置即可</strong></div>
-          <div class="info-row"><span class="info-label">加位置</span><strong>补 roomConfigs，再把设备归到位置下</strong></div>
-          <div class="info-row"><span class="info-label">管理方式</span><strong>设备是入口，传感器是设备内部资源</strong></div>
         </div>
       </article>
     </section>

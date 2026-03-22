@@ -95,7 +95,7 @@ void console_service_emit_event(const char *event_type, const char *json_payload
 static void console_task(void *arg)
 {
     (void)arg;
-    char line[256] = {0};
+    char line[1024] = {0};
     size_t line_len = 0;
     uint8_t ch = 0;
 
@@ -151,13 +151,21 @@ static void console_task(void *arg)
             if (ret == ESP_OK) {
                 snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
                 usb_write_text(response);
+                emit_wifi_list_line();
                 network_service_reload_wifi_list();
+                emit_json_line("APP_STATUS", device_profile_build_status_json);
             } else {
                 snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
                 usb_write_text(response);
             }
+        } else if (strcmp(line, "SCAN_WIFI") == 0) {
+            char json[2048];
+            char response[2112];
+            network_service_get_scan_json(json, sizeof(json));
+            snprintf(response, sizeof(response), "APP_EVENT:{\"type\":\"wifi_scan\",\"data\":%s}\n", json);
+            usb_write_text(response);
         } else if (strcmp(line, "HELP") == 0) {
-            usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\"]}\n");
+            usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"SCAN_WIFI\"]}\n");
         } else if (line[0] != '\0') {
             usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
         }
