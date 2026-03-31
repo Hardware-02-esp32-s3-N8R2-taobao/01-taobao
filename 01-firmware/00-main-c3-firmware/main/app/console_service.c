@@ -7,12 +7,15 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/i2c.h"
 #include "esp_check.h"
 #include "esp_log.h"
 
 #include "app_config.h"
+#include "bmp180_sensor.h"
 #include "device_profile.h"
 #include "network_service.h"
+#include "sensor_bus.h"
 
 #define TAG "console_service"
 
@@ -65,6 +68,65 @@ static void emit_wifi_list_line(void)
 
     device_profile_get_wifi_list_json(json, sizeof(json));
     snprintf(line, sizeof(line), "\nAPP_WIFI_LIST:%s\n", json);
+    usb_write_text(line);
+}
+
+static esp_err_t probe_i2c_addr(i2c_port_t port, uint8_t addr)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (cmd == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (uint8_t)((addr << 1) | I2C_MASTER_WRITE), true);
+    i2c_master_stop(cmd);
+    esp_err_t ret = i2c_master_cmd_begin(port, cmd, pdMS_TO_TICKS(30));
+    i2c_cmd_link_delete(cmd);
+    return ret;
+}
+
+static void emit_i2c_scan_line(void)
+{
+    char json[768];
+    char line[896];
+    size_t used = 0;
+    bool first = true;
+
+    esp_err_t init_ret = sensor_bus_init();
+    if (init_ret != ESP_OK) {
+        snprintf(line, sizeof(line), "APP_ERROR:{\"message\":\"i2c init failed: %s\"}\n", esp_err_to_name(init_ret));
+        usb_write_text(line);
+        return;
+    }
+
+    used += (size_t)snprintf(
+        json + used,
+        sizeof(json) - used,
+        "{\"port\":%d,\"sda\":%d,\"scl\":%d,\"found\":[",
+        (int)sensor_bus_i2c_port(),
+        (int)sensor_bus_i2c_sda_gpio(),
+        (int)sensor_bus_i2c_scl_gpio()
+    );
+
+    for (uint8_t addr = 0x03; addr <= 0x77; addr++) {
+        if (probe_i2c_addr(sensor_bus_i2c_port(), addr) != ESP_OK) {
+            continue;
+        }
+        used += (size_t)snprintf(
+            json + used,
+            sizeof(json) - used,
+            "%s%d",
+            first ? "" : ",",
+            addr
+        );
+        first = false;
+        if (used >= sizeof(json) - 8) {
+            break;
+        }
+    }
+
+    snprintf(json + used, sizeof(json) - used, "]}");
+    snprintf(line, sizeof(line), "APP_EVENT:{\"type\":\"i2c_scan\",\"data\":%s}\n", json);
     usb_write_text(line);
 }
 
@@ -167,8 +229,21 @@ static void console_task(void *arg)
                 network_service_get_scan_json(json, sizeof(json));
                 snprintf(response, sizeof(response), "APP_EVENT:{\"type\":\"wifi_scan\",\"data\":%s}\n", json);
                 usb_write_text(response);
+            } else if (strcmp(line, "SCAN_I2C") == 0) {
+                emit_i2c_scan_line();
+            } else if (strcmp(line, "DUMP_BMP180") == 0) {
+                char json[768];
+                if (bmp180_sensor_build_debug_json(json, sizeof(json)) == ESP_OK) {
+                    char response[832];
+                    snprintf(response, sizeof(response), "APP_EVENT:{\"type\":\"bmp180_debug\",\"data\":%s}\n", json);
+                    usb_write_text(response);
+                } else {
+                    char response[832];
+                    snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"bmp180 debug failed\",\"data\":%s}\n", json);
+                    usb_write_text(response);
+                }
             } else if (strcmp(line, "HELP") == 0) {
-                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"SCAN_WIFI\"]}\n");
+                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\"]}\n");
             } else if (line[0] != '\0') {
                 usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
             }

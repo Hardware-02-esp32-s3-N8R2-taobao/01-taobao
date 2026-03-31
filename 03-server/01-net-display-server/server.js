@@ -31,11 +31,25 @@ const SENSOR_CONFIG = {
     label: "DS18B20 温度",
     metrics: [{ key: "temperature", label: "温度", unit: "°C", color: "#20b77a", axis: "left" }]
   },
+  bmp180: {
+    label: "BMP180 气压温度",
+    metrics: [
+      { key: "temperature", label: "BMP 温度", unit: "°C", color: "#ff8b5c", axis: "left" },
+      { key: "pressure", label: "气压", unit: "hPa", color: "#6f73ff", axis: "right" }
+    ]
+  },
   bmp280: {
     label: "BMP280 环境数据",
     metrics: [
       { key: "temperature", label: "BMP280 温度", unit: "°C", color: "#ff8b5c", axis: "left" },
       { key: "pressure", label: "气压", unit: "hPa", color: "#6f73ff", axis: "right" }
+    ]
+  },
+  shtc3: {
+    label: "SHTC3 温湿度",
+    metrics: [
+      { key: "temperature", label: "温度", unit: "°C", color: "#f08b3e", axis: "left" },
+      { key: "humidity", label: "湿度", unit: "%RH", color: "#38a9d9", axis: "right" }
     ]
   },
   bh1750: {
@@ -48,7 +62,9 @@ const MQTT_DEVICE_TOPIC_PREFIX = "device/";
 const SENSOR_TYPE_TO_KEY = {
   dht11: "dht11",
   ds18b20: "ds18b20",
+  bmp180: "bmp180",
   bmp280: "bmp280",
+  shtc3: "shtc3",
   bh1750: "bh1750"
 };
 const DEVICE_ID_ALIASES = {
@@ -160,6 +176,15 @@ function buildDefaultLatestSensors() {
       topic: `${MQTT_DEVICE_TOPIC_PREFIX}ds18b20-01`,
       updatedAt: null
     },
+    bmp180: {
+      label: SENSOR_CONFIG.bmp180.label,
+      temperature: null,
+      pressure: null,
+      pressureState: "等待气压值",
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}bmp180-01`,
+      updatedAt: null
+    },
     bmp280: {
       label: SENSOR_CONFIG.bmp280.label,
       temperature: null,
@@ -167,6 +192,14 @@ function buildDefaultLatestSensors() {
       pressureState: "等待气压值",
       source: "waiting-for-mqtt",
       topic: `${MQTT_DEVICE_TOPIC_PREFIX}bmp280-01`,
+      updatedAt: null
+    },
+    shtc3: {
+      label: SENSOR_CONFIG.shtc3.label,
+      temperature: null,
+      humidity: null,
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}shtc3-01`,
       updatedAt: null
     },
     bh1750: {
@@ -573,7 +606,7 @@ function recordSensorPayload(sensorKey, payload, meta) {
     }
   });
 
-  if (sensorKey === "bmp280") {
+  if (sensorKey === "bmp180" || sensorKey === "bmp280") {
     next.pressureState = getPressureState(next.pressure);
     deviceNext.pressureState = getPressureState(deviceNext.pressure);
   }
@@ -599,6 +632,7 @@ function loadLatestSensors() {
     sensor.updatedAt = row.recorded_at;
   });
 
+  sensors.bmp180.pressureState = getPressureState(sensors.bmp180.pressure);
   sensors.bmp280.pressureState = getPressureState(sensors.bmp280.pressure);
   return sensors;
 }
@@ -631,6 +665,9 @@ function loadLatestSensorsByDevice() {
   });
 
   Object.values(devices).forEach((deviceSensors) => {
+    if (deviceSensors.bmp180) {
+      deviceSensors.bmp180.pressureState = getPressureState(deviceSensors.bmp180.pressure);
+    }
     if (deviceSensors.bmp280) {
       deviceSensors.bmp280.pressureState = getPressureState(deviceSensors.bmp280.pressure);
     }

@@ -79,10 +79,22 @@ static const char *s_sensor_type_options[] = {
     "dht11",
     "ds18b20",
     "bh1750",
-    "bmp280",
+    "bmp180",
+    "shtc3",
     "soil_moisture",
     "rain_sensor",
 };
+
+static const char *normalize_sensor_type(const char *sensor_type)
+{
+    if (sensor_type == NULL || sensor_type[0] == '\0') {
+        return sensor_type;
+    }
+    if (strcmp(sensor_type, "bmp280") == 0 || strcmp(sensor_type, "bme280") == 0) {
+        return "bmp180";
+    }
+    return sensor_type;
+}
 
 static const device_option_t *find_device_option(const char *device_name)
 {
@@ -261,7 +273,7 @@ static void append_json_string_array(cJSON *parent, const char *name, const char
             token++;
         }
         if (*token != '\0') {
-            cJSON_AddItemToArray(array, cJSON_CreateString(token));
+            cJSON_AddItemToArray(array, cJSON_CreateString(normalize_sensor_type(token)));
         }
         token = strtok(NULL, ",");
     }
@@ -291,7 +303,7 @@ static bool csv_contains_sensor(const char *csv, const char *sensor_type)
         while (*token == ' ') {
             token++;
         }
-        if (strcmp(token, sensor_type) == 0) {
+        if (strcmp(normalize_sensor_type(token), normalize_sensor_type(sensor_type)) == 0) {
             return true;
         }
         token = strtok(NULL, ",");
@@ -379,6 +391,28 @@ esp_err_t device_profile_init(void)
     if (nvs_open(DEVICE_PROFILE_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
         load_nvs_string(handle, "device_name", s_state.device_name, sizeof(s_state.device_name));
         load_nvs_string(handle, "sensors_csv", s_state.sensors_csv, sizeof(s_state.sensors_csv));
+        if (csv_contains_sensor(s_state.sensors_csv, "bmp180") && strstr(s_state.sensors_csv, "bmp180") == NULL) {
+            char migrated[96] = {0};
+            char local_copy[96] = {0};
+            snprintf(local_copy, sizeof(local_copy), "%s", s_state.sensors_csv);
+            char *token = strtok(local_copy, ",");
+            while (token != NULL) {
+                while (*token == ' ') {
+                    token++;
+                }
+                if (*token != '\0') {
+                    if (migrated[0] != '\0') {
+                        strlcat(migrated, ",", sizeof(migrated));
+                    }
+                    strlcat(migrated, normalize_sensor_type(token), sizeof(migrated));
+                }
+                token = strtok(NULL, ",");
+            }
+            if (migrated[0] != '\0') {
+                snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", migrated);
+            }
+            save_nvs_strings();
+        }
         load_wifi_list_from_nvs(handle);
         nvs_close(handle);
     } else {
@@ -675,7 +709,7 @@ esp_err_t device_profile_apply_config_json(const char *json_text, char *message,
             if (s_state.sensors_csv[0] != '\0') {
                 strlcat(s_state.sensors_csv, ",", sizeof(s_state.sensors_csv));
             }
-            strlcat(s_state.sensors_csv, item->valuestring, sizeof(s_state.sensors_csv));
+            strlcat(s_state.sensors_csv, normalize_sensor_type(item->valuestring), sizeof(s_state.sensors_csv));
         }
         if (s_state.sensors_csv[0] == '\0') {
             snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", DEFAULT_SENSOR_LIST);

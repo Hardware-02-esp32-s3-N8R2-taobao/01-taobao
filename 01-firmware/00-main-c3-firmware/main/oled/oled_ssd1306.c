@@ -72,10 +72,12 @@ static const uint8_t *font5x7(char c)
     case '8': return (const uint8_t[5]){0x36, 0x49, 0x49, 0x49, 0x36};
     case '9': return (const uint8_t[5]){0x06, 0x49, 0x49, 0x29, 0x1E};
     case 'A': return (const uint8_t[5]){0x7E, 0x11, 0x11, 0x11, 0x7E};
+    case 'B': return (const uint8_t[5]){0x7F, 0x49, 0x49, 0x49, 0x36};
     case 'C': return (const uint8_t[5]){0x3E, 0x41, 0x41, 0x41, 0x22};
     case 'D': return (const uint8_t[5]){0x7F, 0x41, 0x41, 0x22, 0x1C};
     case 'E': return (const uint8_t[5]){0x7F, 0x49, 0x49, 0x49, 0x41};
     case 'F': return (const uint8_t[5]){0x7F, 0x09, 0x09, 0x09, 0x01};
+    case 'G': return (const uint8_t[5]){0x3E, 0x41, 0x49, 0x49, 0x7A};
     case 'H': return (const uint8_t[5]){0x7F, 0x08, 0x08, 0x08, 0x7F};
     case 'I': return (const uint8_t[5]){0x00, 0x41, 0x7F, 0x41, 0x00};
     case 'K': return (const uint8_t[5]){0x7F, 0x08, 0x14, 0x22, 0x41};
@@ -88,7 +90,11 @@ static const uint8_t *font5x7(char c)
     case 'R': return (const uint8_t[5]){0x7F, 0x09, 0x19, 0x29, 0x46};
     case 'S': return (const uint8_t[5]){0x46, 0x49, 0x49, 0x49, 0x31};
     case 'T': return (const uint8_t[5]){0x01, 0x01, 0x7F, 0x01, 0x01};
+    case 'U': return (const uint8_t[5]){0x3F, 0x40, 0x40, 0x40, 0x3F};
+    case 'V': return (const uint8_t[5]){0x1F, 0x20, 0x40, 0x20, 0x1F};
     case 'W': return (const uint8_t[5]){0x7F, 0x20, 0x18, 0x20, 0x7F};
+    case 'X': return (const uint8_t[5]){0x63, 0x14, 0x08, 0x14, 0x63};
+    case 'Y': return (const uint8_t[5]){0x03, 0x04, 0x78, 0x04, 0x03};
     default: return blank;
     }
 }
@@ -152,8 +158,9 @@ esp_err_t oled_ssd1306_init(const oled_ssd1306_config_t *config)
         .master.clk_speed = s_oled_cfg.pixel_clock_hz,
     };
 
+    // The project already brings up a shared sensor I2C bus before OLED init.
+    // Re-installing the driver on the same port causes noisy error logs.
     ESP_RETURN_ON_ERROR(i2c_param_config(s_oled_cfg.i2c_port, &i2c_conf), OLED_TAG, "i2c config failed");
-    ESP_RETURN_ON_ERROR(i2c_driver_install(s_oled_cfg.i2c_port, I2C_MODE_MASTER, 0, 0, 0), OLED_TAG, "i2c install failed");
 
     if (oled_probe(s_oled_cfg.primary_addr) == ESP_OK) {
         s_oled_addr = s_oled_cfg.primary_addr;

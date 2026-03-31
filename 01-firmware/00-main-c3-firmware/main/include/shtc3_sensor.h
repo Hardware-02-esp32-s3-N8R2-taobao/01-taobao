@@ -8,12 +8,9 @@
 typedef struct {
     bool ready;
     uint8_t address;
-    uint8_t chip_id;
-    bool has_humidity;
     float temperature_c;
-    float pressure_hpa;
     float humidity_pct;
-} bmp280_sample_t;
+} shtc3_sample_t;
 
-esp_err_t bmp280_sensor_init(void);
-esp_err_t bmp280_sensor_read(bmp280_sample_t *sample);
+esp_err_t shtc3_sensor_init(void);
+esp_err_t shtc3_sensor_read(shtc3_sample_t *sample);

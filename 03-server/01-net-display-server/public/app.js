@@ -26,6 +26,16 @@ const sensorCatalog = {
     icon: "🐟",
     metrics: [{ key: "temperature", label: "温度", unit: "°C", color: "#49bf8f" }]
   },
+  bmp180: {
+    key: "bmp180",
+    title: "BMP180 气压温度",
+    subtitle: "温度与气压",
+    icon: "🎈",
+    metrics: [
+      { key: "temperature", label: "BMP 温度", unit: "°C", color: "#ff9966" },
+      { key: "pressure", label: "气压", unit: "hPa", color: "#8368ff" }
+    ]
+  },
   bmp280: {
     key: "bmp280",
     title: "BMP280 环境数据",
@@ -34,6 +44,16 @@ const sensorCatalog = {
     metrics: [
       { key: "temperature", label: "BMP280 温度", unit: "°C", color: "#ff9966" },
       { key: "pressure", label: "气压", unit: "hPa", color: "#8368ff" }
+    ]
+  },
+  shtc3: {
+    key: "shtc3",
+    title: "SHTC3 温湿度",
+    subtitle: "空气温度与相对湿度",
+    icon: "💧",
+    metrics: [
+      { key: "temperature", label: "温度", unit: "°C", color: "#ff8a65" },
+      { key: "humidity", label: "湿度", unit: "%RH", color: "#5ea6ff" }
     ]
   },
   bh1750: {
@@ -132,8 +152,15 @@ const ALERT_THRESHOLDS = {
   ds18b20: {
     temperature: { warnHigh: 30, alertHigh: 35, warnLow: 10, alertLow: 5 }
   },
+  bmp180: {
+    temperature: { warnHigh: 40, alertHigh: 50, warnLow: -5, alertLow: -10 }
+  },
   bmp280: {
     temperature: { warnHigh: 40, alertHigh: 50, warnLow: -5, alertLow: -10 }
+  },
+  shtc3: {
+    temperature: { warnHigh: 35, alertHigh: 40, warnLow: 5, alertLow: 0 },
+    humidity:    { warnHigh: 90, alertHigh: 95, warnLow: 20, alertLow: 10 }
   }
 };
 

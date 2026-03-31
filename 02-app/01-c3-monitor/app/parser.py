@@ -75,6 +75,7 @@ def default_state() -> dict[str, Any]:
             "sensor_models": ["dht11"],
             "ready_count": 0,
             "readings": {},
+            "fail_counts": {},
             "updated_at": "",
         },
         "publish": {
@@ -102,7 +103,7 @@ def default_state() -> dict[str, Any]:
         },
         "options": {
             "device_names": ["庭院1号", "卧室1号", "书房1号", "办公室1号"],
-            "sensor_types": ["dht11", "ds18b20", "bh1750", "bmp280", "soil_moisture", "rain_sensor"],
+            "sensor_types": ["dht11", "ds18b20", "bh1750", "bmp180", "shtc3", "soil_moisture", "rain_sensor"],
         },
         "alerts": [],
         "wifi_list": [],
@@ -299,7 +300,7 @@ class StatusParser:
         self._state["sensor"]["ready_count"] = int(payload.get("sensorReadyCount", 0) or 0)
         self._state["sensor"]["sensor_count"] = int(payload.get("sensorTotalCount", len(self._state["config"]["sensors"])) or 0)
         self._state["sensor"]["status"] = "采样正常" if self._state["sensor"]["ready_count"] > 0 else "等待数据"
-        self._state["sensor"]["readings"] = sensors_data if isinstance(sensors_data, dict) else {}
+        self._merge_sensor_readings(sensors_data if isinstance(sensors_data, dict) else {})
         self._state["sensor"]["updated_at"] = now_text()
 
         self._state["publish"]["status"] = "上报成功" if publish.get("ready") else "等待上报"
@@ -339,8 +340,7 @@ class StatusParser:
         elif event_type == "sensor":
             sensor_type = data.get("sensorType")
             if sensor_type:
-                readings = self._state["sensor"].setdefault("readings", {})
-                readings[sensor_type] = {k: v for k, v in data.items() if k != "sensorType"}
+                self._merge_sensor_readings({str(sensor_type): {k: v for k, v in data.items() if k != "sensorType"}})
             self._state["sensor"]["status"] = "采样正常" if data.get("ready") else "读取失败"
             self._state["sensor"]["updated_at"] = now_text()
         elif event_type == "publish":
@@ -368,6 +368,21 @@ class StatusParser:
             self._state["options"]["device_names"] = [str(item) for item in device_names]
         if isinstance(sensor_types, list) and sensor_types:
             self._state["options"]["sensor_types"] = [str(item) for item in sensor_types]
+
+    def _merge_sensor_readings(self, incoming: dict[str, Any]) -> None:
+        readings = self._state["sensor"].setdefault("readings", {})
+        fail_counts = self._state["sensor"].setdefault("fail_counts", {})
+        for sensor_key, reading in incoming.items():
+            if not isinstance(reading, dict):
+                continue
+            if reading.get("ready"):
+                readings[sensor_key] = dict(reading)
+                fail_counts[sensor_key] = 0
+                continue
+
+            fail_counts[sensor_key] = int(fail_counts.get(sensor_key, 0)) + 1
+            if sensor_key not in readings or fail_counts[sensor_key] >= 3:
+                readings[sensor_key] = dict(reading)
 
     def _safe_load_json(self, payload_text: str) -> dict[str, Any]:
         try:

@@ -18,6 +18,19 @@ def fmt_value(value: Any, unit: str = "") -> str:
     return f"{value}{unit}"
 
 
+def sensor_display_name(sensor_key: str) -> str:
+    names = {
+        "dht11": "DHT11 温湿度",
+        "ds18b20": "DS18B20 温度",
+        "bh1750": "BH1750 光照",
+        "bmp180": "BMP180 气压温度",
+        "shtc3": "SHTC3 温湿度",
+        "soil_moisture": "土壤湿度",
+        "rain_sensor": "雨滴传感器",
+    }
+    return names.get(sensor_key, sensor_key)
+
+
 def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
     if sensor_key == "dht11":
         return [
@@ -28,15 +41,18 @@ def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
         return [f"DS18B20 温度：{fmt_value(reading.get('temperature'), ' °C')}"]
     if sensor_key == "bh1750":
         return [f"BH1750 光照：{fmt_value(reading.get('illuminance'), ' lux')}"]
-    if sensor_key == "bmp280":
-        model = str(reading.get("model") or "bmp280").upper()
+    if sensor_key == "bmp180":
+        model = str(reading.get("model") or "bmp180").upper()
         lines = [
             f"{model} 温度：{fmt_value(reading.get('temperature'), ' °C')}",
             f"{model} 气压：{fmt_value(reading.get('pressure'), ' hPa')}",
         ]
-        if reading.get("humidity") is not None:
-            lines.append(f"{model} 湿度：{fmt_value(reading.get('humidity'), ' %RH')}")
         return lines
+    if sensor_key == "shtc3":
+        return [
+            f"SHTC3 温度：{fmt_value(reading.get('temperature'), ' °C')}",
+            f"SHTC3 湿度：{fmt_value(reading.get('humidity'), ' %RH')}",
+        ]
     if sensor_key == "soil_moisture":
         return [
             f"土壤湿度原始值：{fmt_value(reading.get('raw'))}",
@@ -61,6 +77,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._parser = StatusParser()
         self._reader: SerialReader | None = None
         self._sensor_checks: dict[str, QtWidgets.QCheckBox] = {}
+        self._sensor_detail_cards: dict[str, dict[str, Any]] = {}
         self._last_wifi_list: list[dict] = []
         self._last_auto_refresh_at = "--"
         self._initial_load_done = False
@@ -193,7 +210,41 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
         self.tab_widget.addTab(monitor_tab, "监控")
 
-        # ── Tab 2: 设备配置 ───────────────────────────────────────────────
+        # ── Tab 2: 传感器数据 ─────────────────────────────────────────────
+        sensor_tab = QtWidgets.QWidget()
+        sensor_tab_layout = QtWidgets.QVBoxLayout(sensor_tab)
+        sensor_tab_layout.setContentsMargins(0, 12, 0, 0)
+        sensor_tab_layout.setSpacing(12)
+
+        sensor_panel = QtWidgets.QFrame()
+        sensor_panel.setObjectName("panelCard")
+        sensor_panel_layout = QtWidgets.QVBoxLayout(sensor_panel)
+        sensor_panel_layout.setContentsMargins(16, 14, 16, 14)
+        sensor_panel_layout.setSpacing(12)
+
+        sensor_head = QtWidgets.QHBoxLayout()
+        sensor_title = QtWidgets.QLabel("传感器数据页")
+        sensor_title.setObjectName("panelTitle")
+        sensor_hint = QtWidgets.QLabel("每个传感器独立显示：未使能、通信异常或正常数据")
+        sensor_hint.setObjectName("pageSubtitle")
+        sensor_head.addWidget(sensor_title)
+        sensor_head.addStretch(1)
+        sensor_head.addWidget(sensor_hint)
+        sensor_panel_layout.addLayout(sensor_head)
+
+        sensor_scroll = QtWidgets.QScrollArea()
+        sensor_scroll.setWidgetResizable(True)
+        sensor_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        sensor_scroll_wrap = QtWidgets.QWidget()
+        self.sensor_detail_grid = QtWidgets.QGridLayout(sensor_scroll_wrap)
+        self.sensor_detail_grid.setHorizontalSpacing(12)
+        self.sensor_detail_grid.setVerticalSpacing(12)
+        sensor_scroll.setWidget(sensor_scroll_wrap)
+        sensor_panel_layout.addWidget(sensor_scroll, 1)
+        sensor_tab_layout.addWidget(sensor_panel, 1)
+        self.tab_widget.addTab(sensor_tab, "传感器数据")
+
+        # ── Tab 3: 设备配置 ───────────────────────────────────────────────
         config_tab = QtWidgets.QWidget()
         config_tab_layout = QtWidgets.QVBoxLayout(config_tab)
         config_tab_layout.setContentsMargins(0, 12, 0, 0)
@@ -399,6 +450,24 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         layout.addWidget(meta_label)
         return {"frame": frame, "value": value_label, "meta": meta_label}
 
+    def _ensure_sensor_detail_cards(self, sensor_types: list[str]) -> None:
+        current_types = list(self._sensor_detail_cards.keys())
+        if current_types == sensor_types:
+            return
+
+        while self.sensor_detail_grid.count():
+            item = self.sensor_detail_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self._sensor_detail_cards.clear()
+        for index, sensor_key in enumerate(sensor_types):
+            card = self._create_status_card(sensor_display_name(sensor_key))
+            self._sensor_detail_cards[sensor_key] = card
+            self.sensor_detail_grid.addWidget(card["frame"], index // 2, index % 2)
+        self.sensor_detail_grid.setRowStretch((len(sensor_types) + 1) // 2, 1)
+
     @QtCore.Slot()
     def refresh_ports(self) -> None:
         current = self.port_combo.currentData()
@@ -552,13 +621,13 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     def _handle_auto_status_poll(self) -> None:
         if not self._initial_load_done:
             return
-        if self.tab_widget.currentIndex() != 0:
+        if self.tab_widget.currentIndex() not in (0, 1):
             return
         self._mark_auto_refresh()
         self.query_device_state()
 
     def _handle_tab_changed(self, index: int) -> None:
-        if index == 1 and self._reader is not None:
+        if index == 2 and self._reader is not None:
             self._config_form_dirty = False
             self._wifi_form_dirty = False
             self.read_device_config()
@@ -697,12 +766,14 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
         # Device config tab
         options = state["options"]
+        self._ensure_sensor_detail_cards(options["sensor_types"])
         if not self._config_form_dirty:
             self._sync_combo(self.device_name_combo, options["device_names"], config["device_name"])
             self._sync_sensor_checks(options["sensor_types"], config["sensors"])
         self.config_summary_label.setText(
             f"当前配置：{config['device_name']}  |  设备ID：{config['device_id']}  |  传感器：{', '.join(config['sensors']) if config['sensors'] else '--'}"
         )
+        self._render_sensor_detail_cards(state)
 
         wifi_list = state.get("wifi_list", [])
         if wifi_list and wifi_list != self._last_wifi_list:
@@ -748,7 +819,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
             self._sensor_checks.clear()
             for name in sensor_types:
-                checkbox = QtWidgets.QCheckBox(name)
+                checkbox = QtWidgets.QCheckBox(sensor_display_name(name))
                 checkbox.stateChanged.connect(self._mark_config_form_dirty)
                 self._sensor_checks[name] = checkbox
                 self.sensor_checks_layout.addWidget(checkbox)
@@ -775,6 +846,30 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             return
         self._wifi_form_dirty = True
         self.config_result_label.setText("最近操作：本地 WiFi 配置已修改，等待发送")
+
+    def _render_sensor_detail_cards(self, state: dict[str, Any]) -> None:
+        configured = set(state["config"].get("sensors") or [])
+        readings = state["sensor"].get("readings") or {}
+        updated_at = state["sensor"].get("updated_at") or "--"
+        for sensor_key, card in self._sensor_detail_cards.items():
+            if sensor_key not in configured:
+                self._set_card(card, "未使能", "请在设备配置页勾选该传感器后保存到设备。")
+                continue
+
+            reading = readings.get(sensor_key)
+            if not isinstance(reading, dict) or not reading.get("ready"):
+                reason = "--"
+                if isinstance(reading, dict):
+                    reason = str(reading.get("reason") or "--")
+                self._set_card(card, "通信异常", f"原因：{reason}\n更新时间：{updated_at}")
+                continue
+
+            lines = sensor_display_lines(sensor_key, reading)
+            address = reading.get("address")
+            if address is not None:
+                lines.append(f"I2C 地址：0x{int(address):02X}")
+            lines.append(f"更新时间：{updated_at}")
+            self._set_card(card, "正常", "\n".join(lines))
 
     def _set_card(self, card: dict[str, Any], value: str, meta: str) -> None:
         card["value"].setText(value)
