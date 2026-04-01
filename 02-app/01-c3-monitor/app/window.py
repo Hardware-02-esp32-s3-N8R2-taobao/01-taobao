@@ -22,7 +22,9 @@ def fmt_number(value: Any, decimals: int = 1, unit: str = "") -> str:
     if value is None or value == "":
         return "--"
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        text = f"{float(value):.{decimals}f}".rstrip("0").rstrip(".")
+        text = f"{float(value):.{decimals}f}"
+        if decimals > 0:
+            text = text.rstrip("0").rstrip(".")
         return f"{text}{unit}"
     return f"{value}{unit}"
 

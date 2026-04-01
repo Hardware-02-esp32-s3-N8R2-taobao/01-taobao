@@ -100,9 +100,18 @@ const PUMP_CONTROL_PASSWORD = String(process.env.PUMP_CONTROL_PASSWORD || "1234"
 const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, "data");
 const dbPath = path.join(dataDir, "sensor-history.db");
+const uploadsDir = path.join(publicDir, "uploads");
+const roomUploadsDir = path.join(uploadsDir, "rooms");
+const roomPhotoMetaPath = path.join(dataDir, "room-photos.json");
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+if (!fs.existsSync(roomUploadsDir)) {
+  fs.mkdirSync(roomUploadsDir, { recursive: true });
 }
 
 const db = new DatabaseSync(dbPath);
@@ -256,6 +265,129 @@ function tryGzip(content, acceptEncoding) {
 
 // In-memory cache for compressed static files — avoids re-compressing on every request
 const gzipFileCache = new Map();
+const ROOM_IDS = ["all", "yard", "study", "office", "bedroom", "server", "outdoor"];
+const ROOM_PHOTO_SIZE_LIMIT = 8 * 1024 * 1024;
+
+function readJsonFile(filePath, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function writeJsonFile(filePath, data) {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+function loadRoomPhotoMap() {
+  const raw = readJsonFile(roomPhotoMetaPath, {});
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  return raw;
+}
+
+function saveRoomPhotoMap(roomPhotos) {
+  writeJsonFile(roomPhotoMetaPath, roomPhotos);
+}
+
+function sanitizeUploadFileName(name) {
+  return String(name || "photo")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "photo";
+}
+
+function collectRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > ROOM_PHOTO_SIZE_LIMIT * 2) {
+        reject(new Error("payload too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function parseDataUrlImage(dataUrl) {
+  const match = /^data:(image\/(png|jpeg|jpg|webp));base64,(.+)$/i.exec(String(dataUrl || ""));
+  if (!match) {
+    throw new Error("only png/jpeg/webp images are supported");
+  }
+  const mimeType = match[1].toLowerCase();
+  const ext = mimeType === "image/png" ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
+  const buffer = Buffer.from(match[3], "base64");
+  if (!buffer.length) {
+    throw new Error("empty image payload");
+  }
+  if (buffer.length > ROOM_PHOTO_SIZE_LIMIT) {
+    throw new Error("image too large");
+  }
+  return { mimeType, ext, buffer };
+}
+
+function buildRoomPhotoResponse() {
+  const roomPhotos = loadRoomPhotoMap();
+  const photos = {};
+  ROOM_IDS.forEach((roomId) => {
+    const entry = roomPhotos[roomId];
+    if (!entry || typeof entry !== "object" || !entry.url) {
+      photos[roomId] = null;
+      return;
+    }
+    photos[roomId] = {
+      roomId,
+      url: entry.url,
+      fileName: entry.fileName || null,
+      uploadedAt: entry.uploadedAt || null
+    };
+  });
+  return { photos };
+}
+
+function removePreviousRoomPhoto(roomId, roomPhotos) {
+  const previous = roomPhotos[roomId];
+  if (!previous?.fileName) {
+    return;
+  }
+  const previousPath = path.join(roomUploadsDir, previous.fileName);
+  if (fs.existsSync(previousPath)) {
+    fs.unlinkSync(previousPath);
+  }
+}
+
+function saveRoomPhoto(roomId, originalName, dataUrl) {
+  if (!ROOM_IDS.includes(roomId)) {
+    throw new Error("invalid room id");
+  }
+
+  const { ext, buffer } = parseDataUrlImage(dataUrl);
+  const safeBase = sanitizeUploadFileName(path.parse(originalName || `${roomId}-photo`).name);
+  const fileName = `${roomId}-${Date.now()}-${safeBase}.${ext}`;
+  const absolutePath = path.join(roomUploadsDir, fileName);
+  const publicUrl = `/uploads/rooms/${fileName}`;
+  const roomPhotos = loadRoomPhotoMap();
+
+  removePreviousRoomPhoto(roomId, roomPhotos);
+  fs.writeFileSync(absolutePath, buffer);
+  roomPhotos[roomId] = {
+    roomId,
+    fileName,
+    url: publicUrl,
+    uploadedAt: new Date().toISOString()
+  };
+  saveRoomPhotoMap(roomPhotos);
+  return roomPhotos[roomId];
+}
 
 function sendJson(res, statusCode, data) {
   const json = JSON.stringify(data);
@@ -295,7 +427,11 @@ function sendFile(res, filePath) {
       ".html": "text/html; charset=utf-8",
       ".css": "text/css; charset=utf-8",
       ".js": "application/javascript; charset=utf-8",
-      ".json": "application/json; charset=utf-8"
+      ".json": "application/json; charset=utf-8",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".webp": "image/webp"
     };
 
     const headers = {
@@ -1203,6 +1339,32 @@ const server = http.createServer((req, res) => {
           detail: error.message
         })
       );
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/room-photos") {
+    sendJson(res, 200, buildRoomPhotoResponse());
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/room-photos/upload") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const roomId = String(payload.roomId || "").trim();
+        const fileName = String(payload.fileName || "photo");
+        const dataUrl = String(payload.dataUrl || "");
+        const saved = saveRoomPhoto(roomId, fileName, dataUrl);
+        sendJson(res, 200, {
+          message: "room photo uploaded",
+          photo: saved
+        });
+      })
+      .catch((error) => {
+        sendJson(res, 400, {
+          message: error.message || "invalid upload payload"
+        });
+      });
     return;
   }
 

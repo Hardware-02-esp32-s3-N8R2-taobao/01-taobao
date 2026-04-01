@@ -5,7 +5,7 @@ const roomConfigs = [
   { id: "office", name: "办公室", description: "办公室温湿度监测" },
   { id: "bedroom", name: "卧室", description: "卧室温湿度监测" },
   { id: "server", name: "机柜", description: "网关和服务运行状态" },
-  { id: "outdoor", name: "户外", description: "外部天气和室外数据" }
+  { id: "outdoor", name: "气象站", description: "室外天气和气象数据" }
 ];
 
 const sensorCatalog = {
@@ -143,13 +143,13 @@ const deviceCatalog = {
   },
   weather: {
     id: "weather",
-    title: "户外天气台",
+    title: "气象站",
     subtitle: "Open-Meteo 预报汇总",
     room: "outdoor",
     type: "weather",
     icon: "🌦️",
     accentClass: "accent-weather",
-    summary: "天气服务单独作为一个设备入口，后续替换成真实户外站也不需要换交互。"
+    summary: "天气服务单独作为一个设备入口，后续替换成真实气象站也不需要换交互。"
   }
 };
 
@@ -198,13 +198,16 @@ const appState = {
   historyViewStart: 0,
   historyViewEnd: 0,
   hoverIndexByMetric: {},
-  refreshAt: null
+  refreshAt: null,
+  roomPhotos: {}
 };
 
 const els = {
   overviewView: document.getElementById("overviewView"),
   detailView: document.getElementById("detailView"),
   detailPanel: document.getElementById("detailPanel"),
+  locationName: document.getElementById("locationName"),
+  locationSubtitle: document.getElementById("locationSubtitle"),
   roomTabs: document.getElementById("roomTabs"),
   roomOverview: document.getElementById("roomOverview"),
   deviceGrid: document.getElementById("deviceGrid"),
@@ -379,36 +382,93 @@ function getIotDevicePresence(catalog, sensors) {
   };
 }
 
+function getSensorMetricCardLabel(sensor, metric, compact) {
+  if (!compact) {
+    return metric.label;
+  }
+  const sensorName = String(sensor?.title || "")
+    .trim()
+    .split(/\s+/)[0] || sensor?.key || "";
+  return `${sensorName} ${metric.label}`.trim();
+}
+
 function buildDeviceSummaryMetrics(sensors) {
+  const onlineSensors = sensors.filter((sensor) => sensor.online);
+  const visibleSensors = onlineSensors.length ? onlineSensors : sensors;
+  const compactLabels = visibleSensors.length > 1;
   const metrics = [];
 
   const pushMetric = (sensorKey, metricKey) => {
-    const sensor = sensors.find((item) => item.key === sensorKey);
+    const sensor = visibleSensors.find((item) => item.key === sensorKey);
     const metric = sensor?.metrics?.find((item) => item.key === metricKey && item.value != null);
     if (!metric) return;
     metrics.push({
       ...metric,
+      label: getSensorMetricCardLabel(sensor, metric, compactLabels),
       sensorKey
     });
   };
 
   // 电池设备卡片优先展示电量/电压，避免被温湿度等指标挤掉。
+  pushMetric("shtc3", "temperature");
+  pushMetric("shtc3", "humidity");
   pushMetric("battery", "percent");
   pushMetric("battery", "voltage");
+  pushMetric("bh1750", "illuminance");
+  pushMetric("bmp180", "pressure");
+  pushMetric("bmp280", "pressure");
+  pushMetric("bmp180", "temperature");
+  pushMetric("bmp280", "temperature");
 
-  sensors.forEach((sensor) => {
-    const metric = sensor.metrics.find((item) => item.value != null);
-    if (!metric) return;
-    const exists = metrics.some((item) => item.sensorKey === sensor.key && item.key === metric.key);
-    if (!exists) {
-      metrics.push({
-        ...metric,
-        sensorKey: sensor.key
+  visibleSensors.forEach((sensor) => {
+    sensor.metrics
+      .filter((metric) => metric.value != null)
+      .forEach((metric) => {
+        const exists = metrics.some((item) => item.sensorKey === sensor.key && item.key === metric.key);
+        if (!exists) {
+          metrics.push({
+            ...metric,
+            label: getSensorMetricCardLabel(sensor, metric, compactLabels),
+            sensorKey: sensor.key
+          });
+        }
       });
-    }
   });
 
-  return metrics.slice(0, 2);
+  return metrics.slice(0, onlineSensors.length ? 6 : 2);
+}
+
+function getOnlineSensorCount(sensors) {
+  return sensors.filter((sensor) => sensor.online).length;
+}
+
+function getDeviceSensorCountLabel(snapshot) {
+  const sensorCount = snapshot.sensors.length;
+  const onlineSensorCount = getOnlineSensorCount(snapshot.sensors);
+  if (onlineSensorCount > 0) {
+    return `在线 ${onlineSensorCount} / 共 ${sensorCount} 个传感器`;
+  }
+  return `${sensorCount} 个传感器`;
+}
+
+function getDeviceUpdatedLabel(snapshot) {
+  const onlineUpdatedAt = snapshot.sensors
+    .filter((sensor) => sensor.online && sensor.updatedAt)
+    .map((sensor) => sensor.updatedAt)
+    .sort()
+    .slice(-1)[0];
+  const updatedAt = onlineUpdatedAt || snapshot.updatedAt;
+  return updatedAt ? `更新 ${formatTime(updatedAt)}` : "等待数据";
+}
+
+function getDeviceHistoryHint(snapshot, catalog) {
+  if (catalog?.type !== "iot-device") {
+    return "";
+  }
+  if (snapshot?.online) {
+    return "";
+  }
+  return `<span>离线可查看历史</span>`;
 }
 
 function getDeviceSnapshot(deviceId) {
@@ -498,24 +558,137 @@ function renderRoomTabs() {
   });
 }
 
-function renderRoomOverview() {
-  const visibleDevices = getVisibleDevices();
-  const allSensorMetrics = visibleDevices
-    .filter(({ catalog }) => catalog.type === "iot-device")
-    .flatMap(({ snapshot }) => snapshot.sensors)
-    .flatMap((sensor) => sensor.metrics)
-    .filter((metric) => metric.value != null);
+function getUploadableRooms() {
+  return roomConfigs.filter((room) => !["server", "outdoor"].includes(room.id));
+}
 
-  const avg = (items) => {
-    if (!items.length) return "--";
-    return (items.reduce((sum, item) => sum + Number(item.value), 0) / items.length).toFixed(items[0].unit === "lux" ? 0 : 1);
+function canUploadRoom(roomId) {
+  return getUploadableRooms().some((room) => room.id === roomId);
+}
+
+function getRoomPhoto(roomId) {
+  return appState.roomPhotos?.[roomId] || null;
+}
+
+function getOverviewTargetRoomId() {
+  return appState.activeRoom;
+}
+
+function getRoomDisplayName(roomId) {
+  return roomConfigs.find((room) => room.id === roomId)?.name || roomId;
+}
+
+function escapeAttribute(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function renderRoomPhotoCard(roomId, photo, options = {}) {
+  const roomName = getRoomDisplayName(roomId);
+  const backgroundStyle = photo?.url
+    ? ` style="background-image:url('${escapeAttribute(photo.url)}');"`
+    : "";
+  const helperText = photo?.uploadedAt
+    ? `最近上传：${formatTime(photo.uploadedAt)}`
+    : "上传你本地拍摄的照片后，这里会一直展示。";
+  return `
+    <article class="photo-showcase-card ${options.compact ? "is-compact" : ""}" data-photo-room="${roomId}">
+      <div class="photo-showcase-media ${photo?.url ? "has-photo" : "is-empty"}"${backgroundStyle}>
+        ${photo?.url ? "" : `<div class="photo-empty-copy">这里还没有 ${roomName} 的照片</div>`}
+      </div>
+      <div class="photo-showcase-copy">
+        <div>
+          <div class="photo-showcase-eyebrow">${roomName} 照片位</div>
+          <div class="photo-showcase-subtitle">${helperText}</div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderRoomPhotoUploadToolbar(roomId, includeSelector = false) {
+  if (!includeSelector && !canUploadRoom(roomId)) {
+    return "";
+  }
+  return `
+    <div class="photo-upload-toolbar">
+      <div class="photo-upload-target">${getRoomDisplayName(roomId)}</div>
+      <button class="ghost-btn" id="roomPhotoUploadBtn">上传照片</button>
+    </div>
+  `;
+}
+
+async function uploadRoomPhoto(roomId, file, button) {
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      button.disabled = true;
+      button.textContent = "上传中...";
+      const response = await fetchJson("/api/room-photos/upload", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          roomId,
+          fileName: file.name,
+          dataUrl: String(reader.result || "")
+        })
+      });
+      appState.roomPhotos[roomId] = response.photo || null;
+      renderOverview();
+    } catch (error) {
+      window.alert(`上传失败：${error.message || "请稍后再试"}`);
+      button.disabled = false;
+      button.textContent = "上传照片";
+    }
   };
+  reader.readAsDataURL(file);
+}
 
-  const tempItems = allSensorMetrics.filter((item) => item.unit === "°C");
-  const humidityItems = allSensorMetrics.filter((item) => item.unit === "%RH" || item.unit === "%");
-  const lightItems = allSensorMetrics.filter((item) => item.unit === "lux");
+function bindRoomPhotoUploadEvents() {
+  const button = document.getElementById("roomPhotoUploadBtn");
+  if (!button) {
+    return;
+  }
+  button.addEventListener("click", () => {
+    const roomId = getOverviewTargetRoomId();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/png,image/jpeg,image/webp";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (!file) {
+        return;
+      }
+      uploadRoomPhoto(roomId, file, button);
+    }, { once: true });
+    input.click();
+  });
+}
 
-  els.roomOverview.innerHTML = ``;
+function renderRoomOverview() {
+  const roomId = getOverviewTargetRoomId();
+  if (["server", "outdoor"].includes(roomId)) {
+    els.roomOverview.innerHTML = "";
+    return;
+  }
+  els.roomOverview.innerHTML = `
+    <section class="photo-gallery-card">
+      <div class="photo-gallery-head">
+        <div>
+          <div class="photo-showcase-eyebrow">${getRoomDisplayName(roomId)} 照片位</div>
+          <div class="photo-showcase-subtitle">${canUploadRoom(roomId) ? "" : "这个位置不提供上传入口，只展示已保存的照片。"}</div>
+        </div>
+        ${renderRoomPhotoUploadToolbar(roomId, false)}
+      </div>
+      ${renderRoomPhotoCard(roomId, getRoomPhoto(roomId))}
+    </section>
+  `;
+  bindRoomPhotoUploadEvents();
 }
 
 function getStatusClass(snapshot) {
@@ -543,7 +716,7 @@ function renderDeviceGrid() {
   const visibleDevices = getVisibleDevices();
   els.deviceGrid.innerHTML = visibleDevices
     .map(({ catalog, snapshot }) => {
-      const metrics = (snapshot.summaryMetrics || []).slice(0, 2);
+      const metrics = snapshot.summaryMetrics || [];
       const metricHtml = metrics.map((metric) => {
         const alertClass = metric.alertLevel ? ` metric-value-${metric.alertLevel}` : "";
         return `
@@ -554,8 +727,9 @@ function renderDeviceGrid() {
         `;
       }).join("");
       const deviceMeta = catalog.type === "iot-device"
-        ? `<span>${snapshot.sensors.length} 个传感器</span>`
+        ? `<span>${getDeviceSensorCountLabel(snapshot)}</span>`
         : `<span>${catalog.type === "server" ? "系统设备" : "服务设备"}</span>`;
+      const historyHint = getDeviceHistoryHint(snapshot, catalog);
       const alertBadge = getDeviceAlertBadge(snapshot);
       return `
         <article class="device-card ${catalog.accentClass}" data-open-device="${catalog.id}">
@@ -569,7 +743,8 @@ function renderDeviceGrid() {
           <div class="device-meta">
             ${catalog.type === "iot-device" ? `<span class="device-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${getStatusText(snapshot)}</span>` : ""}
             ${deviceMeta}
-            <span>${snapshot.updatedAt ? `更新 ${formatTime(snapshot.updatedAt)}` : "等待数据"}</span>
+            ${historyHint}
+            <span>${catalog.type === "iot-device" ? getDeviceUpdatedLabel(snapshot) : (snapshot.updatedAt ? `更新 ${formatTime(snapshot.updatedAt)}` : "等待数据")}</span>
           </div>
         </article>
       `;
@@ -587,6 +762,8 @@ function renderDeviceGrid() {
 
 function renderOverview() {
   const room = roomConfigs.find((item) => item.id === appState.activeRoom) || roomConfigs[0];
+  els.locationName.textContent = appState.activeRoom === "all" ? "龟龟老板庭院站" : `${room.name} 实景照片与设备`;
+  els.locationSubtitle.textContent = "";
   els.currentRoomLabel.textContent = room.name;
   els.onlineDeviceCount.textContent = String(getOnlineDeviceCount());
   els.lastRefreshText.textContent = appState.refreshAt ? `最近刷新：${formatTime(appState.refreshAt)}` : "正在读取网关数据...";
@@ -1098,18 +1275,182 @@ async function refreshSensorHistory(deviceId, sensorKey) {
   renderHistoryPanels();
 }
 
+function getDevicePagePriority(catalog, page) {
+  if (page.kind === "control") {
+    return 999;
+  }
+  if (catalog?.id === "yard-01") {
+    if (page.sensorKey === "shtc3") return 0;
+    if (page.sensorKey === "battery") return 1;
+  }
+  return 100;
+}
+
 function getDevicePages(catalog, snapshot) {
-  const sensorPages = snapshot.sensors.map((sensor) => ({
-    key: `sensor:${sensor.key}`,
-    label: `${sensor.icon} ${sensor.title}`,
-    kind: "sensor",
-    sensorKey: sensor.key,
-    sensorTitle: sensor.title
-  }));
+  const sensorByKey = new Map(snapshot.sensors.map((sensor) => [sensor.key, sensor]));
+  const sensorPages = snapshot.sensors
+    .map((sensor) => ({
+      key: `sensor:${sensor.key}`,
+      label: `${sensor.icon} ${sensor.title}`,
+      kind: "sensor",
+      sensorKey: sensor.key,
+      sensorTitle: sensor.title
+    }))
+    .sort((a, b) => {
+      const priorityDiff = getDevicePagePriority(catalog, a) - getDevicePagePriority(catalog, b);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+      const sensorA = sensorByKey.get(a.sensorKey);
+      const sensorB = sensorByKey.get(b.sensorKey);
+      if (sensorA?.online !== sensorB?.online) {
+        return sensorA?.online ? -1 : 1;
+      }
+      return a.sensorTitle.localeCompare(b.sensorTitle, "zh-CN");
+    });
   const controlPages = catalog.id === "yard-01"
     ? [{ key: "control:pump", label: "🧯 水泵控制", kind: "control", controlKey: "pump" }]
     : [];
   return [...sensorPages, ...controlPages];
+}
+
+function getMetricNumber(sensor, metricKey) {
+  return Number(sensor?.metrics?.find((metric) => metric.key === metricKey)?.value);
+}
+
+function buildSensorReminder(sensor) {
+  if (!sensor) {
+    return {
+      title: "AI 小提醒",
+      body: "这页还没接到传感器，老板先别急，我在等它开口说话。"
+    };
+  }
+
+  if (!sensor.online) {
+    return {
+      title: "AI 小提醒",
+      body: `这位 ${sensor.title} 现在在打盹，不过历史曲线还醒着，翻翻前面的记录也能看出不少门道。`
+    };
+  }
+
+  const temperature = getMetricNumber(sensor, "temperature");
+  const humidity = getMetricNumber(sensor, "humidity");
+  const pressure = getMetricNumber(sensor, "pressure");
+  const illuminance = getMetricNumber(sensor, "illuminance");
+  const percent = getMetricNumber(sensor, "percent");
+  const voltage = getMetricNumber(sensor, "voltage");
+
+  if ((sensor.key === "dht11" || sensor.key === "shtc3") && Number.isFinite(temperature) && Number.isFinite(humidity)) {
+    if (humidity >= 80) {
+      return {
+        title: "AI 小提醒",
+        body: `空气有点像刚浇完水的温室，${humidity.toFixed(0)}%RH 已经很有存在感，记得留意通风。`
+      };
+    }
+    if (humidity <= 35) {
+      return {
+        title: "AI 小提醒",
+        body: `这会儿空气偏干，${humidity.toFixed(0)}%RH 像在提醒你“该补点水汽啦”。`
+      };
+    }
+    if (temperature >= 30) {
+      return {
+        title: "AI 小提醒",
+        body: `温度冲到 ${temperature.toFixed(1)}°C 了，设备在认真上班，屋里也快有点热情过头。`
+      };
+    }
+    if (temperature <= 10) {
+      return {
+        title: "AI 小提醒",
+        body: `现在只有 ${temperature.toFixed(1)}°C，这股清凉劲儿已经有点“早晚添衣”的意思。`
+      };
+    }
+    return {
+      title: "AI 小提醒",
+      body: `温度 ${temperature.toFixed(1)}°C、湿度 ${humidity.toFixed(0)}%RH，整体状态挺乖，像个认真值班的小管家。`
+    };
+  }
+
+  if (sensor.key === "bh1750" && Number.isFinite(illuminance)) {
+    if (illuminance >= 800) {
+      return {
+        title: "AI 小提醒",
+        body: `这会儿光线很足，${Math.round(illuminance)} lux 的亮度已经是“精神抖擞模式”。`
+      };
+    }
+    if (illuminance <= 30) {
+      return {
+        title: "AI 小提醒",
+        body: `现在只有 ${Math.round(illuminance)} lux，环境偏暗，像是在轻声说“该开灯啦”。`
+      };
+    }
+    return {
+      title: "AI 小提醒",
+      body: `光照大约 ${Math.round(illuminance)} lux，明暗刚刚好，属于不刺眼也不偷懒的亮度。`
+    };
+  }
+
+  if ((sensor.key === "bmp180" || sensor.key === "bmp280") && Number.isFinite(temperature) && Number.isFinite(pressure)) {
+    if (pressure <= 1000) {
+      return {
+        title: "AI 小提醒",
+        body: `气压 ${pressure.toFixed(1)} hPa 稍微偏低，天气情绪像在酝酿一点变化。`
+      };
+    }
+    if (pressure >= 1020) {
+      return {
+        title: "AI 小提醒",
+        body: `气压 ${pressure.toFixed(1)} hPa 挺稳，整体状态像把“今天我很靠谱”写在了脸上。`
+      };
+    }
+    return {
+      title: "AI 小提醒",
+      body: `当前 ${temperature.toFixed(1)}°C、${pressure.toFixed(1)} hPa，环境节奏平稳，没有明显的小脾气。`
+    };
+  }
+
+  if (sensor.key === "battery" && Number.isFinite(percent) && Number.isFinite(voltage)) {
+    if (percent <= 15) {
+      return {
+        title: "AI 小提醒",
+        body: `电池只剩 ${Math.round(percent)}%，它已经在认真眨眼暗示：“老板，该补能量了。”`
+      };
+    }
+    if (percent >= 95) {
+      return {
+        title: "AI 小提醒",
+        body: `电量 ${Math.round(percent)}%，电压 ${voltage.toFixed(2)}V，这颗小电池现在是元气满满状态。`
+      };
+    }
+    return {
+      title: "AI 小提醒",
+      body: `电量还有 ${Math.round(percent)}%，电压 ${voltage.toFixed(2)}V，续航看起来还挺从容。`
+    };
+  }
+
+  if (sensor.key === "ds18b20" && Number.isFinite(temperature)) {
+    if (temperature >= 28) {
+      return {
+        title: "AI 小提醒",
+        body: `探头测到 ${temperature.toFixed(1)}°C，这片区域已经开始走“偏暖”路线了。`
+      };
+    }
+    if (temperature <= 12) {
+      return {
+        title: "AI 小提醒",
+        body: `现在 ${temperature.toFixed(1)}°C，探头这边凉意在线，像把冷静直接写进了数据里。`
+      };
+    }
+    return {
+      title: "AI 小提醒",
+      body: `温度稳定在 ${temperature.toFixed(1)}°C，探头今天表现得像个低调又可靠的哨兵。`
+    };
+  }
+
+  return {
+    title: "AI 小提醒",
+    body: `这位 ${sensor.title} 正在稳定上报，数据节奏很顺，像是在安安静静把值班工作做好。`
+  };
 }
 
 function renderSensorPageContent(sensor) {
@@ -1124,12 +1465,16 @@ function renderSensorPageContent(sensor) {
     `;
   }
 
+  const reminder = buildSensorReminder(sensor);
+  const updatedText = sensor.updatedAt ? `最新上报：${formatTime(sensor.updatedAt)}` : "最新上报：--";
+
   return `
     <article class="info-card" style="grid-column: span 12; margin-top: 12px;">
       <div class="detail-block-head">
         <div class="detail-block-title">${sensor.icon} ${sensor.title}</div>
-        <div class="detail-helper">${sensor.subtitle}</div>
+        <div class="detail-helper">${updatedText}</div>
       </div>
+      <div class="detail-helper" style="margin-top:6px;">${sensor.subtitle}</div>
       <div class="detail-summary-grid" style="margin-top:14px;">
         ${sensor.metrics.map((metric) => {
           const alertClass = metric.alertLevel ? ` metric-value-${metric.alertLevel}` : "";
@@ -1146,14 +1491,31 @@ function renderSensorPageContent(sensor) {
           `;
         }).join("")}
       </div>
-      <div class="info-list" style="margin-top:12px;">
-        <div class="info-row"><span class="info-label">状态</span><strong>${sensor.online ? "在线" : "离线"}</strong></div>
-        <div class="info-row"><span class="info-label">上报设备</span><strong>${escapeHtml(sensor.source)}</strong></div>
-        <div class="info-row"><span class="info-label">最后更新</span><strong>${formatTime(sensor.updatedAt)}</strong></div>
-        <div class="info-row"><span class="info-label">MQTT 主题</span><strong>${escapeHtml(sensor.topic)}</strong></div>
-        ${sensor.pressureState ? `<div class="info-row"><span class="info-label">补充状态</span><strong>${escapeHtml(sensor.pressureState)}</strong></div>` : ""}
+      <div class="sensor-reminder-card" style="margin-top:12px;">
+        <div class="sensor-reminder-eyebrow">${reminder.title}</div>
+        <div class="sensor-reminder-body">${reminder.body}</div>
       </div>
     </article>
+  `;
+}
+
+function renderDevicePageGroup(title, helper, pages, currentPage) {
+  if (!pages.length) {
+    return "";
+  }
+  return `
+    <div class="device-page-group">
+      <div class="device-page-group-head">
+        <div class="device-page-group-title">${title}</div>
+      </div>
+      <div class="history-toolbar" style="margin-top:10px;">
+        ${pages.map((page) => `
+          <button class="range-btn ${currentPage?.key === page.key ? "active" : ""}" data-select-page="${page.key}">
+            ${page.label}
+          </button>
+        `).join("")}
+      </div>
+    </div>
   `;
 }
 
@@ -1163,20 +1525,31 @@ function renderDevicePages(snapshot, catalog, selectedPageKey) {
   const currentSensor = currentPage?.kind === "sensor"
     ? snapshot.sensors.find((sensor) => sensor.key === currentPage.sensorKey)
     : null;
+  const onlinePages = pages.filter((page) => {
+    if (page.kind !== "sensor") {
+      return false;
+    }
+    const sensor = snapshot.sensors.find((item) => item.key === page.sensorKey);
+    return Boolean(sensor?.online);
+  });
+  const offlinePages = pages.filter((page) => {
+    if (page.kind === "control") {
+      return true;
+    }
+    if (page.kind !== "sensor") {
+      return false;
+    }
+    const sensor = snapshot.sensors.find((item) => item.key === page.sensorKey);
+    return !sensor?.online;
+  });
 
   return `
     <section style="margin-top:20px;">
       <div class="detail-block-head">
         <div class="detail-block-title">设备内分页</div>
-        <div class="detail-helper">传感器页和控制页统一作为这个设备的子页面</div>
       </div>
-      <div class="history-toolbar">
-        ${pages.map((page) => `
-          <button class="range-btn ${currentPage?.key === page.key ? "active" : ""}" data-select-page="${page.key}">
-            ${page.label}
-          </button>
-        `).join("")}
-      </div>
+      ${renderDevicePageGroup("在线设备", "正在实时上报的传感器", onlinePages, currentPage)}
+      ${renderDevicePageGroup("掉线设备", "离线传感器和历史/控制入口", offlinePages, currentPage)}
       ${currentPage?.kind === "control" ? renderPumpControlSection(catalog.id) : renderSensorPageContent(currentSensor)}
     </section>
   `;
@@ -1241,12 +1614,121 @@ function renderPumpControlSection(deviceId) {
   `;
 }
 
+function getDeviceSceneConfig(catalog) {
+  const sceneMap = {
+    yard: {
+      themeClass: "scene-yard",
+      eyebrow: "庭院场景",
+      title: "植物、光照与浇灌节奏",
+      subtitle: "把庭院节点放进一个更像真实环境的小场景里。",
+      badges: ["月季", "向日葵", "荷叶", "金鱼", "菊花"],
+      art: ["sun", "plant", "pot", "fence", "rose", "sunflower", "lotus", "fish", "chrysanthemum"]
+    },
+    study: {
+      themeClass: "scene-study",
+      eyebrow: "书房场景",
+      title: "书桌、书本与安静空气",
+      subtitle: "书房设备更适合偏安静、整洁、可阅读的氛围表达。",
+      badges: ["书桌", "阅读", "温湿度"],
+      art: ["lamp", "books", "desk", "clock"]
+    },
+    office: {
+      themeClass: "scene-office",
+      eyebrow: "办公室场景",
+      title: "工作台、文件与日常办公",
+      subtitle: "让办公室节点更像一块真实的工位环境监测面板。",
+      badges: ["工位", "效率", "环境"],
+      art: ["monitor", "desk", "mug", "files"]
+    },
+    bedroom: {
+      themeClass: "scene-bedroom",
+      eyebrow: "卧室场景",
+      title: "床头、夜灯与舒适睡眠",
+      subtitle: "卧室设备适合更柔和、安静、偏休息氛围的表达。",
+      badges: ["睡眠", "舒适", "夜间"],
+      art: ["moon", "bed", "pillow", "lamp"]
+    }
+  };
+  return sceneMap[catalog?.room] || {
+    themeClass: "scene-generic",
+    eyebrow: "设备场景",
+    title: catalog?.title || "设备节点",
+    subtitle: "这块区域用于补足设备所在环境的视觉语义。",
+    badges: ["设备", "环境", "监测"],
+    art: ["orb", "card", "spark", "line"]
+  };
+}
+
+function renderSceneShapes(scene) {
+  return scene.art.map((shape) => `<span class="scene-shape scene-${shape}"></span>`).join("");
+}
+
+function getRoomDeviceSnapshots(roomId) {
+  return Object.keys(deviceCatalog)
+    .filter((deviceId) => deviceCatalog[deviceId].type === "iot-device" && deviceCatalog[deviceId].room === roomId)
+    .map((deviceId) => ({ catalog: deviceCatalog[deviceId], snapshot: getDeviceSnapshot(deviceId) }))
+    .filter(({ snapshot }) => Boolean(snapshot));
+}
+
+function renderRoomDeviceQuickList(catalog) {
+  const roomDevices = getRoomDeviceSnapshots(catalog?.room);
+  if (!roomDevices.length) {
+    return `
+      <div class="scene-presence">
+        <div class="scene-presence-title">同位置设备</div>
+        <div class="scene-presence-empty">暂时没有可展示的设备。</div>
+      </div>
+    `;
+  }
+
+  const onlineCount = roomDevices.filter(({ snapshot }) => snapshot.online).length;
+  return `
+    <div class="scene-presence">
+      <div class="scene-presence-head">
+        <div class="scene-presence-title">同位置设备</div>
+        <div class="scene-presence-count">在线 ${onlineCount}/${roomDevices.length}</div>
+      </div>
+      <div class="scene-device-list">
+        ${roomDevices.map(({ catalog: itemCatalog, snapshot }) => `
+          <span class="scene-device-chip ${snapshot.online ? "is-online" : "is-offline"}">
+            <span class="scene-device-dot"></span>
+            ${itemCatalog.title}
+          </span>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderDeviceSceneCard(catalog) {
+  const scene = getDeviceSceneConfig(catalog);
+  return `
+    <article class="info-card device-scene-card ${scene.themeClass}">
+      <div class="scene-copy">
+        <div class="scene-eyebrow">${scene.eyebrow}</div>
+        <div class="scene-title">${scene.title}</div>
+        <div class="scene-subtitle">${scene.subtitle}</div>
+        <div class="scene-badges">
+          ${scene.badges.map((badge) => `<span>${badge}</span>`).join("")}
+        </div>
+        ${renderRoomDeviceQuickList(catalog)}
+      </div>
+      <div class="scene-art" aria-hidden="true">
+        ${renderSceneShapes(scene)}
+      </div>
+    </article>
+  `;
+}
+
 function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
   const pages = getDevicePages(catalog, snapshot);
   const selectedPageKey = appState.activeDevicePageKey || pages[0]?.key || null;
   const selectedSensor = selectedPageKey?.startsWith("sensor:")
     ? snapshot.sensors.find((sensor) => sensor.key === appState.activeSensorKey) || snapshot.sensors[0] || null
     : null;
+  const offlineHint = snapshot.online
+    ? ""
+    : `<p class="footer-note">设备当前离线，但可以继续查看设备内分页和历史数据。</p>`;
   return `
     <div class="detail-topbar">
       <div>
@@ -1257,18 +1739,13 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         <div class="detail-title">${catalog.title}</div>
         <div class="detail-subtitle">${catalog.subtitle}</div>
         <p class="footer-note">${catalog.summary}</p>
+        ${offlineHint}
       </div>
       <div class="section-note">归属位置：${roomConfigs.find((room) => room.id === catalog.room)?.name || "未分组"}</div>
     </div>
 
     <section class="detail-info-grid" style="margin-top:18px;">
-      <article class="info-card">
-        <div class="detail-block-title">设备总览</div>
-        <div class="info-list">
-          <div class="info-row"><span class="info-label">设备 ID</span><strong>${catalog.id}</strong></div>
-          <div class="info-row"><span class="info-label">最近更新时间</span><strong>${formatTime(snapshot.updatedAt)}</strong></div>
-        </div>
-      </article>
+      ${renderDeviceSceneCard(catalog)}
     </section>
 
     ${renderDevicePages(snapshot, catalog, selectedPageKey)}
@@ -1352,7 +1829,7 @@ function renderWeatherDetail(catalog, snapshot) {
           <div class="detail-icon">${catalog.icon}</div>
           <div class="detail-status"></div>
         </div>
-        <div class="detail-title">${catalog.title}</div>
+        <div class="detail-title">气象站天气预报</div>
         <div class="detail-subtitle">${escapeHtml(weather.location || catalog.subtitle)}</div>
       </div>
       <div class="section-note">更新时间：${formatTime(weather.updatedAt)}</div>
@@ -1366,11 +1843,13 @@ function renderWeatherDetail(catalog, snapshot) {
 
     <section class="detail-info-grid" style="margin-top:16px;">
       <article class="info-card">
-        <div class="detail-block-title">天气建议</div>
-        <div class="info-list">
-          <div class="info-row"><span class="info-label">地点</span><strong>${escapeHtml(weather.location || "--")}</strong></div>
-          <div class="info-row"><span class="info-label">建议</span><strong>${escapeHtml(getWeatherSummary(weather))}</strong></div>
-          <div class="info-row"><span class="info-label">定位</span><strong>天气也是独立设备入口</strong></div>
+        <div class="detail-block-head">
+          <div class="detail-block-title">天气提醒</div>
+          <div class="detail-helper">点进来就是天气页，不再额外套设备页结构</div>
+        </div>
+        <div class="sensor-reminder-card" style="margin-top:14px;">
+          <div class="sensor-reminder-eyebrow">今日建议</div>
+          <div class="sensor-reminder-body">${escapeHtml(getWeatherSummary(weather))}</div>
         </div>
       </article>
       <article class="info-card">
@@ -1498,8 +1977,9 @@ function renderDeviceDetail(deviceId) {
   if (catalog.type === "iot-device") {
     const pages = getDevicePages(catalog, snapshot);
     const pageKeys = pages.map((page) => page.key);
+    const defaultPageKey = pages[0]?.key || null;
     if (!appState.activeDevicePageKey || !pageKeys.includes(appState.activeDevicePageKey)) {
-      appState.activeDevicePageKey = pages[0]?.key || null;
+      appState.activeDevicePageKey = defaultPageKey;
     }
     if (appState.activeDevicePageKey?.startsWith("sensor:")) {
       appState.activeSensorKey = appState.activeDevicePageKey.split(":")[1];
@@ -1577,16 +2057,18 @@ function syncRoute() {
 
 async function refreshAll() {
   try {
-    const [latestSensor, serverStatus, serverHistory, devicesStatus] = await Promise.all([
+    const [latestSensor, serverStatus, serverHistory, devicesStatus, roomPhotoResponse] = await Promise.all([
       fetchJson("/api/sensor/latest"),
       fetchJson("/api/server/status"),
       fetchJson("/api/server/history"),
-      fetchJson("/api/devices/status")
+      fetchJson("/api/devices/status"),
+      fetchJson("/api/room-photos")
     ]);
     appState.latestSensor = latestSensor;
     appState.serverStatus = serverStatus;
     appState.serverHistory = serverHistory;
     appState.devicesStatus = devicesStatus;
+    appState.roomPhotos = roomPhotoResponse?.photos || {};
     appState.refreshAt = new Date().toISOString();
     renderOverview();
     if (appState.activeDeviceId) renderDeviceDetail(appState.activeDeviceId);
