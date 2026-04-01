@@ -1618,9 +1618,9 @@ function getDeviceSceneConfig(catalog) {
   const sceneMap = {
     yard: {
       themeClass: "scene-yard",
-      eyebrow: "庭院场景",
-      title: "植物、光照与浇灌节奏",
-      subtitle: "把庭院节点放进一个更像真实环境的小场景里。",
+      eyebrow: "",
+      title: "",
+      subtitle: "",
       badges: ["月季", "向日葵", "荷叶", "金鱼", "菊花"],
       art: ["sun", "plant", "pot", "fence", "rose", "sunflower", "lotus", "fish", "chrysanthemum"]
     },
@@ -1705,9 +1705,9 @@ function renderDeviceSceneCard(catalog) {
   return `
     <article class="info-card device-scene-card ${scene.themeClass}">
       <div class="scene-copy">
-        <div class="scene-eyebrow">${scene.eyebrow}</div>
-        <div class="scene-title">${scene.title}</div>
-        <div class="scene-subtitle">${scene.subtitle}</div>
+        ${scene.eyebrow ? `<div class="scene-eyebrow">${scene.eyebrow}</div>` : ""}
+        ${scene.title ? `<div class="scene-title">${scene.title}</div>` : ""}
+        ${scene.subtitle ? `<div class="scene-subtitle">${scene.subtitle}</div>` : ""}
         <div class="scene-badges">
           ${scene.badges.map((badge) => `<span>${badge}</span>`).join("")}
         </div>
@@ -1726,6 +1726,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
   const selectedSensor = selectedPageKey?.startsWith("sensor:")
     ? snapshot.sensors.find((sensor) => sensor.key === appState.activeSensorKey) || snapshot.sensors[0] || null
     : null;
+  const hideHeaderCopy = catalog.id === "yard-01";
   const offlineHint = snapshot.online
     ? ""
     : `<p class="footer-note">设备当前离线，但可以继续查看设备内分页和历史数据。</p>`;
@@ -1737,8 +1738,8 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
           <div class="detail-status ${getStatusClass(snapshot)}"><span class="status-dot"></span>${snapshot.online ? "设备在线" : "设备超时未上报"}</div>
         </div>
         <div class="detail-title">${catalog.title}</div>
-        <div class="detail-subtitle">${catalog.subtitle}</div>
-        <p class="footer-note">${catalog.summary}</p>
+        ${hideHeaderCopy ? "" : `<div class="detail-subtitle">${catalog.subtitle}</div>`}
+        ${hideHeaderCopy ? "" : `<p class="footer-note">${catalog.summary}</p>`}
         ${offlineHint}
       </div>
       <div class="section-note">归属位置：${roomConfigs.find((room) => room.id === catalog.room)?.name || "未分组"}</div>
