@@ -18,6 +18,15 @@ def fmt_value(value: Any, unit: str = "") -> str:
     return f"{value}{unit}"
 
 
+def fmt_number(value: Any, decimals: int = 1, unit: str = "") -> str:
+    if value is None or value == "":
+        return "--"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = f"{float(value):.{decimals}f}".rstrip("0").rstrip(".")
+        return f"{text}{unit}"
+    return f"{value}{unit}"
+
+
 def sensor_display_name(sensor_key: str) -> str:
     names = {
         "dht11": "DHT11 温湿度",
@@ -27,6 +36,7 @@ def sensor_display_name(sensor_key: str) -> str:
         "shtc3": "SHTC3 温湿度",
         "soil_moisture": "土壤湿度",
         "rain_sensor": "雨滴传感器",
+        "battery": "电池",
     }
     return names.get(sensor_key, sensor_key)
 
@@ -62,6 +72,11 @@ def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
         return [
             f"雨水原始值：{fmt_value(reading.get('raw'))}",
             f"雨水百分比：{fmt_value(reading.get('percent'), ' %')}",
+        ]
+    if sensor_key == "battery":
+        return [
+            f"当前电压：{fmt_number(reading.get('voltage'), 2, ' V')}",
+            f"当前电量：{fmt_number(reading.get('percent'), 0, ' %')}",
         ]
     return [f"{sensor_key}：{json.dumps(reading, ensure_ascii=False)}"]
 
@@ -728,10 +743,13 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             f"采样成功：{sensor_ready_count} 个",
             f"型号：{', '.join(sensor_models) if sensor_models else '--'}",
         ]
-        for sensor_key in sensor_models:
-            reading = sensor_readings.get(sensor_key)
-            if isinstance(reading, dict):
-                sensor_lines.extend(sensor_display_lines(sensor_key, reading))
+        online_sensor_names = [
+            sensor_display_name(sensor_key)
+            for sensor_key in sensor_models
+            if isinstance(sensor_readings.get(sensor_key), dict) and sensor_readings[sensor_key].get("ready")
+        ]
+        if online_sensor_names:
+            sensor_lines.append(f"在线传感器：{', '.join(online_sensor_names)}")
         sensor_lines.append(f"更新时间：{sensor['updated_at'] or '--'}")
         self._set_card(
             self.sensor_card,
@@ -744,9 +762,13 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             f"设备：{publish['alias']} ({publish['device']})",
             f"RSSI：{fmt_value(publish['rssi'])}",
         ]
-        for sensor_key, reading in publish_sensors.items():
-            if isinstance(reading, dict):
-                publish_lines.extend(sensor_display_lines(sensor_key, reading))
+        publish_sensor_names = [
+            sensor_display_name(sensor_key)
+            for sensor_key, reading in publish_sensors.items()
+            if isinstance(reading, dict)
+        ]
+        if publish_sensor_names:
+            publish_lines.append(f"本次上报传感器：{', '.join(publish_sensor_names)}")
         publish_lines.append(f"更新时间：{publish['updated_at'] or '--'}")
         self._set_card(
             self.publish_card,

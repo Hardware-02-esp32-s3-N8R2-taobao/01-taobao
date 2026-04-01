@@ -82,7 +82,7 @@ static const char *s_sensor_type_options[] = {
     "bmp180",
     "shtc3",
     "soil_moisture",
-    "rain_sensor",
+    "battery",
 };
 
 static const char *normalize_sensor_type(const char *sensor_type)

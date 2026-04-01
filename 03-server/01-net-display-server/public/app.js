@@ -62,6 +62,16 @@ const sensorCatalog = {
     subtitle: "环境照度",
     icon: "💡",
     metrics: [{ key: "illuminance", label: "光照", unit: "lux", color: "#f4ba41" }]
+  },
+  battery: {
+    key: "battery",
+    title: "电池电压",
+    subtitle: "锂电池电量与电压",
+    icon: "🔋",
+    metrics: [
+      { key: "voltage", label: "电压", unit: "V", color: "#4caf50" },
+      { key: "percent", label: "电量", unit: "%", color: "#ff9800" }
+    ]
   }
 };
 
@@ -76,8 +86,11 @@ const deviceCatalog = {
     accentClass: "accent-flower",
     matchIds: ["yard-01"],
     historyDevices: ["yard-01"],
-    sensors: [{ key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌼", metricLabels: { temperature: "温度", humidity: "湿度" } }],
-    summary: "庭院 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
+    sensors: [
+      { key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌼", metricLabels: { temperature: "温度", humidity: "湿度" } },
+      { key: "battery", title: "电池电压", subtitle: "锂电池电量与电压", icon: "🔋", metricLabels: { voltage: "电压", percent: "电量" } }
+    ],
+    summary: "庭院 ESP32-C3 节点，挂载 DHT11 温湿度传感器，内置锂电池供电。"
   },
   "study-01": {
     id: "study-01",
@@ -161,6 +174,10 @@ const ALERT_THRESHOLDS = {
   shtc3: {
     temperature: { warnHigh: 35, alertHigh: 40, warnLow: 5, alertLow: 0 },
     humidity:    { warnHigh: 90, alertHigh: 95, warnLow: 20, alertLow: 10 }
+  },
+  battery: {
+    voltage: { warnLow: 3.3, alertLow: 3.1 },
+    percent: { warnLow: 20, alertLow: 10 }
   }
 };
 
@@ -227,7 +244,17 @@ function formatPointTime(tsMs) {
 
 function formatMetricValue(value, unit) {
   if (value == null || Number.isNaN(Number(value))) return "--";
-  return unit === "lux" ? `${Math.round(Number(value))} ${unit}` : `${Number(value).toFixed(1)} ${unit}`;
+  if (unit === "lux") return `${Math.round(Number(value))} ${unit}`;
+  if (unit === "V") return `${Number(value).toFixed(2)} ${unit}`;
+  return `${Number(value).toFixed(1)} ${unit}`;
+}
+
+function formatSensorMetricValue(sensorKey, metricKey, value, unit) {
+  if (value == null || Number.isNaN(Number(value))) return "--";
+  if (sensorKey === "battery" && metricKey === "percent") {
+    return `${Math.round(Number(value))} ${unit}`;
+  }
+  return formatMetricValue(value, unit);
 }
 
 async function fetchJson(url, options = {}) {
@@ -352,6 +379,38 @@ function getIotDevicePresence(catalog, sensors) {
   };
 }
 
+function buildDeviceSummaryMetrics(sensors) {
+  const metrics = [];
+
+  const pushMetric = (sensorKey, metricKey) => {
+    const sensor = sensors.find((item) => item.key === sensorKey);
+    const metric = sensor?.metrics?.find((item) => item.key === metricKey && item.value != null);
+    if (!metric) return;
+    metrics.push({
+      ...metric,
+      sensorKey
+    });
+  };
+
+  // 电池设备卡片优先展示电量/电压，避免被温湿度等指标挤掉。
+  pushMetric("battery", "percent");
+  pushMetric("battery", "voltage");
+
+  sensors.forEach((sensor) => {
+    const metric = sensor.metrics.find((item) => item.value != null);
+    if (!metric) return;
+    const exists = metrics.some((item) => item.sensorKey === sensor.key && item.key === metric.key);
+    if (!exists) {
+      metrics.push({
+        ...metric,
+        sensorKey: sensor.key
+      });
+    }
+  });
+
+  return metrics.slice(0, 2);
+}
+
 function getDeviceSnapshot(deviceId) {
   const catalog = deviceCatalog[deviceId];
   if (!catalog) return null;
@@ -373,7 +432,7 @@ function getDeviceSnapshot(deviceId) {
       lastSeenAgoSeconds: presence.lastSeenAgoSeconds,
       updatedAt: lastUpdated,
       sensors,
-      summaryMetrics: sensors.flatMap((sensor) => sensor.metrics).slice(0, 2)
+      summaryMetrics: buildDeviceSummaryMetrics(sensors)
     };
   }
 
@@ -490,7 +549,7 @@ function renderDeviceGrid() {
         return `
           <div class="metric-pill">
             <div class="metric-label">${metric.label}</div>
-            <div class="metric-value${alertClass}">${formatMetricValue(metric.value, metric.unit)}</div>
+            <div class="metric-value${alertClass}">${formatSensorMetricValue(metric.sensorKey, metric.key, metric.value, metric.unit)}</div>
           </div>
         `;
       }).join("");
@@ -1082,7 +1141,7 @@ function renderSensorPageContent(sensor) {
           return `
           <article class="detail-stat">
             <div class="detail-stat-label">${metric.label}${alertTag}</div>
-            <div class="detail-stat-value${alertClass}">${formatMetricValue(metric.value, metric.unit)}</div>
+            <div class="detail-stat-value${alertClass}">${formatSensorMetricValue(sensor.key, metric.key, metric.value, metric.unit)}</div>
           </article>
           `;
         }).join("")}

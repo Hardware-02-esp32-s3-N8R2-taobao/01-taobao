@@ -25,7 +25,7 @@
 
 #define TAG "telemetry_app"
 
-#define OLED_PAGE_COUNT 4
+#define OLED_PAGE_COUNT 5
 
 typedef struct {
     bool ready;
@@ -88,7 +88,7 @@ static void oled_try_init(void)
 static void oled_render_page_0(void)
 {
     char line[24];
-    oled_ssd1306_draw_text(0, 0, "PAGE 1/4");
+    oled_ssd1306_draw_text(0, 0, "PAGE 1/5");
     oled_draw_status_line(16, "WIFI", network_service_is_wifi_ready());
     oled_draw_status_line(28, "MQTT", network_service_is_mqtt_ready());
     snprintf(line, sizeof(line), "RSSI %d", network_service_get_rssi());
@@ -100,7 +100,7 @@ static void oled_render_page_0(void)
 static void oled_render_page_1(const oled_shtc3_state_t *shtc3_state)
 {
     char line[24];
-    oled_ssd1306_draw_text(0, 0, "PAGE 2/4");
+    oled_ssd1306_draw_text(0, 0, "PAGE 2/5");
     oled_ssd1306_draw_text(0, 12, "SHTC3");
     if (shtc3_state != NULL && shtc3_state->ready) {
         oled_format_value_line(line, sizeof(line), "TEMP", shtc3_state->temperature_c, "C");
@@ -115,7 +115,7 @@ static void oled_render_page_1(const oled_shtc3_state_t *shtc3_state)
 static void oled_render_page_2(const oled_bmpx80_state_t *bmp_state)
 {
     char line[24];
-    oled_ssd1306_draw_text(0, 0, "PAGE 3/4");
+    oled_ssd1306_draw_text(0, 0, "PAGE 3/5");
     oled_ssd1306_draw_text(0, 12, (bmp_state != NULL && bmp_state->chip_id == BMP280_CHIP_ID) ? "BMP280" : "BMP180");
     if (bmp_state != NULL && bmp_state->ready) {
         oled_format_value_line(line, sizeof(line), "TEMP", bmp_state->temperature_c, "C");
@@ -130,7 +130,7 @@ static void oled_render_page_2(const oled_bmpx80_state_t *bmp_state)
 static void oled_render_page_3(const oled_bh1750_state_t *bh1750_state)
 {
     char line[24];
-    oled_ssd1306_draw_text(0, 0, "PAGE 4/4");
+    oled_ssd1306_draw_text(0, 0, "PAGE 4/5");
     oled_ssd1306_draw_text(0, 12, "BH1750");
     if (bh1750_state != NULL && bh1750_state->ready) {
         oled_format_value_line(line, sizeof(line), "LUX", bh1750_state->illuminance_lux, "");
@@ -140,7 +140,33 @@ static void oled_render_page_3(const oled_bh1750_state_t *bh1750_state)
     }
 }
 
-static void oled_render_cycle(const oled_bh1750_state_t *bh1750_state, const oled_bmpx80_state_t *bmp_state, const oled_shtc3_state_t *shtc3_state)
+typedef struct {
+    bool ready;
+    float voltage_v;
+    float percent;
+} oled_battery_state_t;
+
+static void oled_render_page_4(const oled_battery_state_t *bat_state)
+{
+    char line[24];
+    oled_ssd1306_draw_text(0, 0, "PAGE 5/5");
+    oled_ssd1306_draw_text(0, 12, "BATTERY");
+    if (bat_state != NULL && bat_state->ready) {
+        snprintf(line, sizeof(line), "VOLT %.2fV", bat_state->voltage_v);
+        oled_ssd1306_draw_text(0, 28, line);
+        snprintf(line, sizeof(line), "PCT  %.0f%%", bat_state->percent);
+        oled_ssd1306_draw_text(0, 44, line);
+    } else {
+        oled_ssd1306_draw_text(0, 32, "ERR");
+    }
+}
+
+static void oled_render_cycle(
+    const oled_bh1750_state_t *bh1750_state,
+    const oled_bmpx80_state_t *bmp_state,
+    const oled_shtc3_state_t *shtc3_state,
+    const oled_battery_state_t *bat_state
+)
 {
     if (!s_oled_initialized || !oled_ssd1306_is_ready()) {
         return;
@@ -157,8 +183,11 @@ static void oled_render_cycle(const oled_bh1750_state_t *bh1750_state, const ole
     case 2:
         oled_render_page_2(bmp_state);
         break;
-    default:
+    case 3:
         oled_render_page_3(bh1750_state);
+        break;
+    default:
+        oled_render_page_4(bat_state);
         break;
     }
     if (oled_ssd1306_present() == ESP_OK) {
@@ -410,29 +439,35 @@ static void add_soil_sensor(cJSON *sensors_obj, int *total_count, int *ready_cou
     }
 }
 
-static void add_rain_sensor(cJSON *sensors_obj, int *total_count, int *ready_count)
+static void add_battery_sensor(cJSON *sensors_obj, int *total_count, int *ready_count, oled_battery_state_t *oled_state)
 {
-    if (!device_profile_has_sensor("rain_sensor")) {
-        return;
-    }
-
-    analog_sensor_sample_t sample = {0};
+    battery_voltage_sample_t sample = {0};
     (*total_count)++;
-    esp_err_t ret = analog_sensor_read_rain(&sample);
+    esp_err_t ret = analog_sensor_read_battery(&sample);
     if (ret == ESP_OK && sample.ready) {
-        cJSON *node = create_sensor_node(sensors_obj, "rain_sensor", true);
-        cJSON_AddNumberToObject(node, "raw", sample.raw_value);
+        cJSON *node = create_sensor_node(sensors_obj, "battery", true);
+        cJSON_AddNumberToObject(node, "voltage", sample.voltage_v);
         cJSON_AddNumberToObject(node, "percent", sample.percent);
+        cJSON_AddNumberToObject(node, "raw", sample.raw_value);
         (*ready_count)++;
         char details[96];
-        snprintf(details, sizeof(details), "\"raw\":%d,\"percent\":%.1f", sample.raw_value, sample.percent);
-        emit_sensor_event("rain_sensor", true, details);
+        snprintf(details, sizeof(details), "\"voltage\":%.2f,\"percent\":%.1f,\"raw\":%d",
+                 sample.voltage_v, sample.percent, sample.raw_value);
+        emit_sensor_event("battery", true, details);
+        if (oled_state != NULL) {
+            oled_state->ready = true;
+            oled_state->voltage_v = sample.voltage_v;
+            oled_state->percent = sample.percent;
+        }
     } else {
-        cJSON *node = create_sensor_node(sensors_obj, "rain_sensor", false);
+        cJSON *node = create_sensor_node(sensors_obj, "battery", false);
         cJSON_AddStringToObject(node, "reason", esp_err_to_name(ret));
         char details[96];
         snprintf(details, sizeof(details), "\"reason\":\"%s\"", esp_err_to_name(ret));
-        emit_sensor_event("rain_sensor", false, details);
+        emit_sensor_event("battery", false, details);
+        if (oled_state != NULL) {
+            oled_state->ready = false;
+        }
     }
 }
 
@@ -456,6 +491,7 @@ void telemetry_app_run(void)
         oled_bh1750_state_t oled_bh1750 = {0};
         oled_bmpx80_state_t oled_bmpx80 = {0};
         oled_shtc3_state_t oled_shtc3 = {0};
+        oled_battery_state_t oled_battery = {0};
 
         cJSON *sensors_obj = cJSON_CreateObject();
         add_dht11_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity);
@@ -464,7 +500,7 @@ void telemetry_app_run(void)
         add_bmp180_sensor(sensors_obj, &total_count, &ready_count, &oled_bmpx80);
         add_shtc3_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity, &oled_shtc3);
         add_soil_sensor(sensors_obj, &total_count, &ready_count);
-        add_rain_sensor(sensors_obj, &total_count, &ready_count);
+        add_battery_sensor(sensors_obj, &total_count, &ready_count, &oled_battery);
 
         char *sensor_json = cJSON_PrintUnformatted(sensors_obj);
         device_profile_update_sensor_snapshot(sensor_json, ready_count, total_count);
@@ -508,7 +544,7 @@ void telemetry_app_run(void)
         }
 
         oled_try_init();
-        oled_render_cycle(&oled_bh1750, &oled_bmpx80, &oled_shtc3);
+        oled_render_cycle(&oled_bh1750, &oled_bmpx80, &oled_shtc3, &oled_battery);
 
         cJSON_free(sensor_json);
         cJSON_Delete(sensors_obj);

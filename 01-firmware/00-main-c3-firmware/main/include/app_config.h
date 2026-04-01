@@ -40,4 +40,8 @@
 #define APP_SHTC3_ADDR           0x70
 
 #define APP_SOIL_MOISTURE_GPIO   GPIO_NUM_1
-#define APP_RAIN_SENSOR_GPIO     GPIO_NUM_0
+
+// 电池电压采样：GPIO0 (ADC1_CH0)
+// 外部分压：电池+ → 30kΩ → GPIO0 → 7.5kΩ → GND
+// 单节锂电池电压范围 3.0V ~ 4.2V，分压后 0.60V ~ 0.84V
+#define APP_BATTERY_GPIO         GPIO_NUM_0

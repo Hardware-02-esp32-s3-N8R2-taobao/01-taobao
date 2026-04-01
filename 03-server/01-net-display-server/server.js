@@ -55,6 +55,13 @@ const SENSOR_CONFIG = {
   bh1750: {
     label: "BH1750 光照",
     metrics: [{ key: "illuminance", label: "光照", unit: "lux", color: "#f5b728", axis: "left" }]
+  },
+  battery: {
+    label: "电池电压",
+    metrics: [
+      { key: "voltage", label: "电压", unit: "V", color: "#4caf50", axis: "left" },
+      { key: "percent", label: "电量", unit: "%", color: "#ff9800", axis: "right" }
+    ]
   }
 };
 
@@ -65,7 +72,8 @@ const SENSOR_TYPE_TO_KEY = {
   bmp180: "bmp180",
   bmp280: "bmp280",
   shtc3: "shtc3",
-  bh1750: "bh1750"
+  bh1750: "bh1750",
+  battery: "battery"
 };
 const DEVICE_ID_ALIASES = {
   "yard-01": "yard-01",
@@ -207,6 +215,14 @@ function buildDefaultLatestSensors() {
       illuminance: null,
       source: "waiting-for-mqtt",
       topic: `${MQTT_DEVICE_TOPIC_PREFIX}bh1750-01`,
+      updatedAt: null
+    },
+    battery: {
+      label: SENSOR_CONFIG.battery.label,
+      voltage: null,
+      percent: null,
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}battery-01`,
       updatedAt: null
     }
   };
@@ -594,7 +610,7 @@ function recordSensorPayload(sensorKey, payload, meta) {
   config.metrics.forEach((metric) => {
     const value = Number(sensorPayload[metric.key]);
     if (Number.isFinite(value)) {
-      const roundedValue = Number(value.toFixed(metric.unit === "hPa" ? 1 : 1));
+      const roundedValue = Number(value.toFixed(metric.unit === "hPa" ? 1 : metric.unit === "V" ? 2 : 1));
       next[metric.key] = roundedValue;
       deviceNext[metric.key] = roundedValue;
       persistMetricValue(sensorKey, metric.key, next[metric.key], {
