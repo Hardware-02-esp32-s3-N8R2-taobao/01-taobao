@@ -38,6 +38,8 @@
 #define APP_BMP180_ADDR_SECONDARY 0x76
 
 #define APP_SHTC3_ADDR           0x70
+#define APP_MAX17043_ADDR        0x36
+#define APP_INA226_ADDR          0x40
 
 #define APP_SOIL_MOISTURE_GPIO   GPIO_NUM_1
 

@@ -16,6 +16,7 @@
 #include "device_profile.h"
 #include "network_service.h"
 #include "sensor_bus.h"
+#include "telemetry_app.h"
 
 #define TAG "console_service"
 
@@ -209,6 +210,8 @@ static void console_task(void *arg)
                 device_profile_get_wifi_list_json(json, sizeof(json));
                 snprintf(response, sizeof(response), "APP_WIFI_LIST:%s\n", json);
                 usb_write_text(response);
+            } else if (strcmp(line, "GET_LOW_POWER") == 0) {
+                emit_json_line("APP_LOW_POWER", device_profile_build_low_power_json);
             } else if (strncmp(line, "SET_WIFI_LIST ", 14) == 0) {
                 char message[96];
                 char response[160];
@@ -219,6 +222,22 @@ static void console_task(void *arg)
                     emit_wifi_list_line();
                     network_service_reload_wifi_list();
                     emit_json_line("APP_STATUS", device_profile_build_status_json);
+                } else {
+                    snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                }
+            } else if (strncmp(line, "SET_LOW_POWER ", 14) == 0) {
+                char message[96];
+                char response[160];
+                esp_err_t ret = device_profile_set_low_power_json(line + 14, message, sizeof(message));
+                if (ret == ESP_OK) {
+                    snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                    network_service_set_power_save(device_profile_low_power_enabled());
+                    emit_json_line("APP_LOW_POWER", device_profile_build_low_power_json);
+                    emit_json_line("APP_CONFIG", device_profile_build_config_json);
+                    emit_json_line("APP_STATUS", device_profile_build_status_json);
+                    telemetry_app_request_immediate_cycle();
                 } else {
                     snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
                     usb_write_text(response);
@@ -243,7 +262,7 @@ static void console_task(void *arg)
                     usb_write_text(response);
                 }
             } else if (strcmp(line, "HELP") == 0) {
-                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\"]}\n");
+                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {...}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\"]}\n");
             } else if (line[0] != '\0') {
                 usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
             }
@@ -267,6 +286,7 @@ static void console_snapshot_task(void *arg)
         if (last_full_dump == 0 || (xTaskGetTickCount() - last_full_dump) >= pdMS_TO_TICKS(8000)) {
             emit_json_line("APP_CONFIG", device_profile_build_config_json);
             emit_json_line("APP_OPTIONS", device_profile_build_options_json);
+            emit_json_line("APP_LOW_POWER", device_profile_build_low_power_json);
             emit_wifi_list_line();
             last_full_dump = xTaskGetTickCount();
         }

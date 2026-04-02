@@ -262,6 +262,16 @@ static void mqtt_start(void)
     ESP_ERROR_CHECK(esp_mqtt_client_start(s_mqtt_client));
 }
 
+static void mqtt_stop(void)
+{
+    if (s_mqtt_client == NULL) {
+        return;
+    }
+    esp_mqtt_client_stop(s_mqtt_client);
+    esp_mqtt_client_destroy(s_mqtt_client);
+    s_mqtt_client = NULL;
+}
+
 /* ── WiFi event handler ────────────────────────────────────────────── */
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -352,7 +362,7 @@ esp_err_t network_service_start(void)
         ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20));
         ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     }
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+    network_service_set_power_save(device_profile_low_power_enabled());
 
     return ESP_OK;
 }
@@ -376,6 +386,15 @@ void network_service_reload_wifi_list(void)
     esp_wifi_stop();
     apply_wifi_config(s_wifi_index);
     esp_wifi_start();
+}
+
+void network_service_set_power_save(bool enabled)
+{
+    wifi_ps_type_t ps_type = enabled ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE;
+    esp_err_t ret = esp_wifi_set_ps(ps_type);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "set wifi ps failed: %s", esp_err_to_name(ret));
+    }
 }
 
 static const char *auth_mode_text(wifi_auth_mode_t authmode)
@@ -493,4 +512,18 @@ esp_err_t network_service_publish_json(const char *topic, const char *json_paylo
     int msg_id = esp_mqtt_client_publish(s_mqtt_client, topic, json_payload, 0, 1, 0);
     ESP_RETURN_ON_FALSE(msg_id >= 0, ESP_FAIL, TAG, "publish failed");
     return ESP_OK;
+}
+
+void network_service_prepare_for_sleep(void)
+{
+    xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
+    device_profile_update_wifi(false, NULL, NULL, 0);
+    device_profile_update_mqtt(false);
+
+    if (s_mqtt_client != NULL) {
+        mqtt_stop();
+    }
+
+    esp_wifi_disconnect();
+    esp_wifi_stop();
 }

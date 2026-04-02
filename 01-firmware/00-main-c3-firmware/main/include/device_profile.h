@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 typedef struct {
@@ -43,3 +44,8 @@ int  device_profile_get_wifi_count(void);
 bool device_profile_get_wifi_entry(int index, char *ssid, size_t ssid_size, char *password, size_t pw_size);
 void device_profile_get_wifi_list_json(char *buffer, size_t buffer_size);
 esp_err_t device_profile_set_wifi_list_json(const char *json_text, char *message, size_t message_size);
+
+bool device_profile_low_power_enabled(void);
+uint32_t device_profile_low_power_interval_sec(void);
+void device_profile_build_low_power_json(char *buffer, size_t buffer_size);
+esp_err_t device_profile_set_low_power_json(const char *json_text, char *message, size_t message_size);

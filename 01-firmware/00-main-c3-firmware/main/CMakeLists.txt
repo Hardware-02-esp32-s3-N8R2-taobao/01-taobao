@@ -11,6 +11,8 @@ idf_component_register(
         "sensors/bh1750_sensor.c"
         "sensors/bmp180_sensor.c"
         "sensors/shtc3_sensor.c"
+        "sensors/max17043_sensor.c"
+        "sensors/ina226_sensor.c"
         "sensors/analog_sensor.c"
         "network/network_service.c"
     INCLUDE_DIRS

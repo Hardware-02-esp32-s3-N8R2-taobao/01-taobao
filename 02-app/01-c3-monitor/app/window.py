@@ -39,6 +39,8 @@ def sensor_display_name(sensor_key: str) -> str:
         "soil_moisture": "土壤湿度",
         "rain_sensor": "雨滴传感器",
         "battery": "电池",
+        "max17043": "MAX17043 电量计",
+        "ina226": "INA226 电流电压",
     }
     return names.get(sensor_key, sensor_key)
 
@@ -79,6 +81,17 @@ def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
         return [
             f"当前电压：{fmt_number(reading.get('voltage'), 2, ' V')}",
             f"当前电量：{fmt_number(reading.get('percent'), 0, ' %')}",
+        ]
+    if sensor_key == "max17043":
+        return [
+            f"MAX17043 电压：{fmt_number(reading.get('voltage'), 3, ' V')}",
+            f"MAX17043 电量：{fmt_number(reading.get('percent'), 1, ' %')}",
+        ]
+    if sensor_key == "ina226":
+        return [
+            f"INA226 母线电压：{fmt_number(reading.get('busVoltage'), 4, ' V')}",
+            f"INA226 电流：{fmt_number(reading.get('currentMa'), 3, ' mA')}",
+            f"INA226 功率：{fmt_number(reading.get('powerMw'), 3, ' mW')}",
         ]
     return [f"{sensor_key}：{json.dumps(reading, ensure_ascii=False)}"]
 
@@ -350,6 +363,42 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         wifi_row_btns.addWidget(self.wifi_del_btn)
         wifi_row_btns.addStretch(1)
         config_layout.addLayout(wifi_row_btns)
+
+        low_power_divider = QtWidgets.QFrame()
+        low_power_divider.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        low_power_divider.setStyleSheet("color: #dbe4f0;")
+        config_layout.addWidget(low_power_divider)
+
+        low_power_head = QtWidgets.QHBoxLayout()
+        low_power_title = QtWidgets.QLabel("低功耗模式")
+        low_power_title.setObjectName("subTitle")
+        self.low_power_read_btn = QtWidgets.QPushButton("读取低功耗")
+        self.low_power_enable_btn = QtWidgets.QPushButton("进入低功耗")
+        self.low_power_disable_btn = QtWidgets.QPushButton("退出低功耗")
+        low_power_head.addWidget(low_power_title)
+        low_power_head.addStretch(1)
+        low_power_head.addWidget(self.low_power_read_btn)
+        low_power_head.addWidget(self.low_power_enable_btn)
+        low_power_head.addWidget(self.low_power_disable_btn)
+        config_layout.addLayout(low_power_head)
+
+        low_power_hint = QtWidgets.QLabel("建议用于电池供电：设备定时唤醒，连接 WiFi/MQTT，上报一次后立即进入 Deep Sleep。")
+        low_power_hint.setObjectName("pageSubtitle")
+        config_layout.addWidget(low_power_hint)
+
+        low_power_row = QtWidgets.QHBoxLayout()
+        low_power_label = QtWidgets.QLabel("唤醒周期")
+        low_power_label.setFixedWidth(80)
+        self.low_power_interval_spin = QtWidgets.QSpinBox()
+        self.low_power_interval_spin.setRange(10, 86400)
+        self.low_power_interval_spin.setSuffix(" 秒")
+        self.low_power_interval_spin.setValue(300)
+        self.low_power_status_label = QtWidgets.QLabel("状态：未开启")
+        self.low_power_status_label.setObjectName("pageSubtitle")
+        low_power_row.addWidget(low_power_label)
+        low_power_row.addWidget(self.low_power_interval_spin)
+        low_power_row.addWidget(self.low_power_status_label, 1)
+        config_layout.addLayout(low_power_row)
         config_layout.addStretch(1)
 
         config_tab_layout.addWidget(config_frame, 1)
@@ -372,6 +421,9 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.wifi_add_btn.clicked.connect(self._add_wifi_row)
         self.wifi_del_btn.clicked.connect(self._del_wifi_row)
         self.wifi_table.itemChanged.connect(self._mark_wifi_form_dirty)
+        self.low_power_read_btn.clicked.connect(self._request_low_power)
+        self.low_power_enable_btn.clicked.connect(self.enable_low_power)
+        self.low_power_disable_btn.clicked.connect(self.disable_low_power)
 
         combo_line_edit = self.device_name_combo.lineEdit()
         if combo_line_edit is not None:
@@ -601,7 +653,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_CONFIG"))
         QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_OPTIONS"))
         QtCore.QTimer.singleShot(360, lambda: self._send_command("GET_WIFI_LIST"))
-        QtCore.QTimer.singleShot(540, self.query_device_state)
+        QtCore.QTimer.singleShot(540, lambda: self._send_command("GET_LOW_POWER"))
+        QtCore.QTimer.singleShot(720, self.query_device_state)
 
     def read_device_config(self) -> None:
         self._config_form_dirty = False
@@ -616,6 +669,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_CONFIG"))
         QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_OPTIONS"))
         QtCore.QTimer.singleShot(360, lambda: self._send_command("GET_WIFI_LIST"))
+        QtCore.QTimer.singleShot(540, lambda: self._send_command("GET_LOW_POWER"))
 
     def _toggle_auto_refresh(self, checked: bool) -> None:
         self._update_auto_refresh_timers()
@@ -689,6 +743,30 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     def _scan_wifi(self) -> None:
         self._send_command("SCAN_WIFI")
         self.statusBar().showMessage("正在让设备扫描附近 WiFi...")
+
+    def _request_low_power(self) -> None:
+        self._send_command("GET_LOW_POWER")
+        self.statusBar().showMessage("正在读取低功耗配置...")
+
+    def enable_low_power(self) -> None:
+        interval_sec = int(self.low_power_interval_spin.value())
+        payload = {
+            "enabled": True,
+            "intervalSec": interval_sec,
+        }
+        self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}")
+        self.config_result_label.setText(f"最近操作：已请求进入低功耗，周期 {interval_sec} 秒")
+        self.statusBar().showMessage(f"已下发低功耗模式，设备将按 {interval_sec} 秒周期唤醒上报")
+
+    def disable_low_power(self) -> None:
+        interval_sec = int(self.low_power_interval_spin.value())
+        payload = {
+            "enabled": False,
+            "intervalSec": interval_sec,
+        }
+        self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}")
+        self.config_result_label.setText("最近操作：已请求退出低功耗")
+        self.statusBar().showMessage("已下发退出低功耗模式")
 
     def _add_wifi_row(self) -> None:
         row = self.wifi_table.rowCount()
@@ -815,6 +893,16 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             )
             if preview:
                 self.statusBar().showMessage(f"设备扫描结果：{preview}")
+
+        low_power = state.get("low_power", {})
+        interval_sec = int(low_power.get("interval_sec", 300) or 300)
+        self.low_power_interval_spin.blockSignals(True)
+        self.low_power_interval_spin.setValue(max(10, min(interval_sec, 86400)))
+        self.low_power_interval_spin.blockSignals(False)
+        if low_power.get("enabled"):
+            self.low_power_status_label.setText(f"状态：已开启，每 {interval_sec} 秒唤醒一次")
+        else:
+            self.low_power_status_label.setText(f"状态：未开启，当前配置周期 {interval_sec} 秒")
 
     def _sync_combo(self, combo: QtWidgets.QComboBox, items: list[str], current_text: str) -> None:
         self._updating_config_form = True

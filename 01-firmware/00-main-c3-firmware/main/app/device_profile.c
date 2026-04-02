@@ -1,5 +1,6 @@
 #include "device_profile.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -63,6 +64,8 @@ typedef struct {
     int chip_revision;
     device_hw_variant_t hardware_variant;
     char hardware_variant_name[24];
+    bool low_power_enabled;
+    uint32_t low_power_interval_sec;
 } device_profile_state_t;
 
 static device_profile_state_t s_state;
@@ -83,6 +86,8 @@ static const char *s_sensor_type_options[] = {
     "shtc3",
     "soil_moisture",
     "battery",
+    "max17043",
+    "ina226",
 };
 
 static const char *normalize_sensor_type(const char *sensor_type)
@@ -149,6 +154,8 @@ static void save_nvs_strings(void)
 
     nvs_set_str(handle, "device_name", s_state.device_name);
     nvs_set_str(handle, "sensors_csv", s_state.sensors_csv);
+    nvs_set_u8(handle, "lp_enabled", s_state.low_power_enabled ? 1 : 0);
+    nvs_set_u32(handle, "lp_interval", s_state.low_power_interval_sec);
     nvs_commit(handle);
     nvs_close(handle);
 }
@@ -323,6 +330,13 @@ static void build_hardware_object(cJSON *root)
     cJSON_AddStringToObject(hardware, "boardVariant", s_state.hardware_variant_name);
 }
 
+static void build_low_power_object(cJSON *root)
+{
+    cJSON *low_power = cJSON_AddObjectToObject(root, "lowPower");
+    cJSON_AddBoolToObject(low_power, "enabled", s_state.low_power_enabled);
+    cJSON_AddNumberToObject(low_power, "intervalSec", (double)s_state.low_power_interval_sec);
+}
+
 static void load_wifi_list_from_nvs(nvs_handle_t handle)
 {
     char json[1024] = {0};
@@ -377,6 +391,8 @@ esp_err_t device_profile_init(void)
 
     set_default_strings();
     populate_hardware_info();
+    s_state.low_power_enabled = false;
+    s_state.low_power_interval_sec = 300;
 
     /* Initialize NVS here so subsequent callers (network_service) can use it */
     esp_err_t nvs_err = nvs_flash_init();
@@ -391,6 +407,12 @@ esp_err_t device_profile_init(void)
     if (nvs_open(DEVICE_PROFILE_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
         load_nvs_string(handle, "device_name", s_state.device_name, sizeof(s_state.device_name));
         load_nvs_string(handle, "sensors_csv", s_state.sensors_csv, sizeof(s_state.sensors_csv));
+        uint8_t low_power_enabled = 0;
+        uint32_t low_power_interval = 300;
+        nvs_get_u8(handle, "lp_enabled", &low_power_enabled);
+        nvs_get_u32(handle, "lp_interval", &low_power_interval);
+        s_state.low_power_enabled = (low_power_enabled != 0);
+        s_state.low_power_interval_sec = (low_power_interval >= 10U) ? low_power_interval : 300U;
         if (csv_contains_sensor(s_state.sensors_csv, "bmp180") && strstr(s_state.sensors_csv, "bmp180") == NULL) {
             char migrated[96] = {0};
             char local_copy[96] = {0};
@@ -533,6 +555,7 @@ void device_profile_build_config_json(char *buffer, size_t buffer_size)
     cJSON *root = cJSON_CreateObject();
     build_config_object(root);
     build_hardware_object(root);
+    build_low_power_object(root);
     char *printed = cJSON_PrintUnformatted(root);
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
     cJSON_free(printed);
@@ -546,6 +569,7 @@ void device_profile_build_status_json(char *buffer, size_t buffer_size)
     cJSON *root = cJSON_CreateObject();
     build_config_object(root);
     build_hardware_object(root);
+    build_low_power_object(root);
 
     cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
     cJSON_AddBoolToObject(wifi, "connected", s_state.wifi_connected);
@@ -594,6 +618,7 @@ void device_profile_build_options_json(char *buffer, size_t buffer_size)
     cJSON *root = cJSON_CreateObject();
     cJSON *device_names = cJSON_AddArrayToObject(root, "deviceNames");
     cJSON *sensor_types = cJSON_AddArrayToObject(root, "sensorTypes");
+    cJSON *low_power = cJSON_AddObjectToObject(root, "lowPower");
 
     for (size_t i = 0; i < sizeof(s_device_options) / sizeof(s_device_options[0]); i++) {
         cJSON_AddItemToArray(device_names, cJSON_CreateString(s_device_options[i].name));
@@ -601,6 +626,8 @@ void device_profile_build_options_json(char *buffer, size_t buffer_size)
     for (size_t i = 0; i < sizeof(s_sensor_type_options) / sizeof(s_sensor_type_options[0]); i++) {
         cJSON_AddItemToArray(sensor_types, cJSON_CreateString(s_sensor_type_options[i]));
     }
+    cJSON_AddNumberToObject(low_power, "minIntervalSec", 10);
+    cJSON_AddNumberToObject(low_power, "maxIntervalSec", 86400);
 
     char *printed = cJSON_PrintUnformatted(root);
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
@@ -721,5 +748,83 @@ esp_err_t device_profile_apply_config_json(const char *json_text, char *message,
     snprintf(message, message_size, "config saved");
     cJSON_Delete(root);
     ESP_LOGI(TAG, "config updated: name=%s sensors=%s", s_state.device_name, s_state.sensors_csv);
+    return ESP_OK;
+}
+
+bool device_profile_low_power_enabled(void)
+{
+    bool enabled = false;
+    profile_lock();
+    enabled = s_state.low_power_enabled;
+    profile_unlock();
+    return enabled;
+}
+
+uint32_t device_profile_low_power_interval_sec(void)
+{
+    uint32_t interval = 300;
+    profile_lock();
+    interval = s_state.low_power_interval_sec;
+    profile_unlock();
+    return interval;
+}
+
+void device_profile_build_low_power_json(char *buffer, size_t buffer_size)
+{
+    profile_lock();
+    cJSON *root = cJSON_CreateObject();
+    build_low_power_object(root);
+    char *printed = cJSON_PrintUnformatted(root);
+    snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
+    cJSON_free(printed);
+    cJSON_Delete(root);
+    profile_unlock();
+}
+
+esp_err_t device_profile_set_low_power_json(const char *json_text, char *message, size_t message_size)
+{
+    cJSON *root = cJSON_Parse(json_text);
+    if (root == NULL) {
+        snprintf(message, message_size, "invalid json");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
+    cJSON *interval_sec = cJSON_GetObjectItemCaseSensitive(root, "intervalSec");
+
+    if (!cJSON_IsBool(enabled) && !cJSON_IsNumber(enabled)) {
+        cJSON_Delete(root);
+        snprintf(message, message_size, "enabled is required");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint32_t interval = 300U;
+    if (cJSON_IsNumber(interval_sec)) {
+        interval = (uint32_t)interval_sec->valuedouble;
+    } else {
+        profile_lock();
+        interval = s_state.low_power_interval_sec;
+        profile_unlock();
+    }
+    if (interval < 10U) {
+        cJSON_Delete(root);
+        snprintf(message, message_size, "intervalSec must be >= 10");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    profile_lock();
+    s_state.low_power_enabled = cJSON_IsTrue(enabled) || (cJSON_IsNumber(enabled) && enabled->valuedouble != 0);
+    s_state.low_power_interval_sec = interval;
+    save_nvs_strings();
+    profile_unlock();
+
+    snprintf(
+        message,
+        message_size,
+        "low power %s, interval=%" PRIu32 "s",
+        s_state.low_power_enabled ? "enabled" : "disabled",
+        s_state.low_power_interval_sec
+    );
+    cJSON_Delete(root);
     return ESP_OK;
 }

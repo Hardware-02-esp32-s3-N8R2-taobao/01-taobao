@@ -6,6 +6,7 @@
 #include "cJSON.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,12 +21,18 @@
 #include "ds18b20_sensor.h"
 #include "network_service.h"
 #include "oled_ssd1306.h"
+#include "ina226_sensor.h"
+#include "max17043_sensor.h"
 #include "sensor_bus.h"
 #include "shtc3_sensor.h"
 
 #define TAG "telemetry_app"
 
 #define OLED_PAGE_COUNT 5
+#define LOW_POWER_NETWORK_WAIT_MS 20000
+#define LOW_POWER_SLEEP_SETTLE_MS 500
+
+static TaskHandle_t s_telemetry_task_handle = NULL;
 
 typedef struct {
     bool ready;
@@ -146,6 +153,25 @@ typedef struct {
     float percent;
 } oled_battery_state_t;
 
+typedef struct {
+    bool ready;
+    float voltage_v;
+    float percent;
+    uint8_t address;
+} oled_max17043_state_t;
+
+typedef struct {
+    bool ready;
+    float bus_voltage_v;
+    float current_ma;
+    float power_mw;
+    uint8_t address;
+} oled_ina226_state_t;
+
+static void emit_sensor_event(const char *sensor_type, bool ready, const char *details_json);
+static cJSON *create_sensor_node(cJSON *sensors_obj, const char *sensor_type, bool ready);
+static void add_ina226_sensor(cJSON *sensors_obj, int *total_count, int *ready_count, oled_ina226_state_t *oled_state);
+
 static void oled_render_page_4(const oled_battery_state_t *bat_state)
 {
     char line[24];
@@ -158,6 +184,114 @@ static void oled_render_page_4(const oled_battery_state_t *bat_state)
         oled_ssd1306_draw_text(0, 44, line);
     } else {
         oled_ssd1306_draw_text(0, 32, "ERR");
+    }
+}
+
+static void add_max17043_sensor(cJSON *sensors_obj, int *total_count, int *ready_count, oled_max17043_state_t *oled_state)
+{
+    if (!device_profile_has_sensor("max17043")) {
+        return;
+    }
+
+    max17043_sample_t sample = {0};
+    (*total_count)++;
+    esp_err_t ret = max17043_sensor_read(&sample);
+    if (ret == ESP_OK && sample.ready) {
+        cJSON *node = create_sensor_node(sensors_obj, "max17043", true);
+        cJSON_AddNumberToObject(node, "voltage", sample.voltage_v);
+        cJSON_AddNumberToObject(node, "percent", sample.percent);
+        cJSON_AddNumberToObject(node, "address", sample.address);
+        cJSON_AddNumberToObject(node, "rawVcell", sample.raw_vcell);
+        cJSON_AddNumberToObject(node, "rawSoc", sample.raw_soc);
+        (*ready_count)++;
+        char details[160];
+        snprintf(
+            details,
+            sizeof(details),
+            "\"voltage\":%.3f,\"percent\":%.2f,\"address\":%u,\"rawVcell\":%u,\"rawSoc\":%u",
+            sample.voltage_v,
+            sample.percent,
+            sample.address,
+            sample.raw_vcell,
+            sample.raw_soc
+        );
+        emit_sensor_event("max17043", true, details);
+        if (oled_state != NULL) {
+            oled_state->ready = true;
+            oled_state->voltage_v = sample.voltage_v;
+            oled_state->percent = sample.percent;
+            oled_state->address = sample.address;
+        }
+    } else {
+        cJSON *node = create_sensor_node(sensors_obj, "max17043", false);
+        cJSON_AddStringToObject(node, "reason", esp_err_to_name(ret));
+        cJSON_AddNumberToObject(node, "address", APP_MAX17043_ADDR);
+        char details[96];
+        snprintf(details, sizeof(details), "\"reason\":\"%s\",\"address\":%u", esp_err_to_name(ret), APP_MAX17043_ADDR);
+        emit_sensor_event("max17043", false, details);
+        if (oled_state != NULL) {
+            oled_state->ready = false;
+            oled_state->voltage_v = 0.0f;
+            oled_state->percent = 0.0f;
+            oled_state->address = APP_MAX17043_ADDR;
+        }
+    }
+}
+
+static void add_ina226_sensor(cJSON *sensors_obj, int *total_count, int *ready_count, oled_ina226_state_t *oled_state)
+{
+    if (!device_profile_has_sensor("ina226")) {
+        return;
+    }
+
+    ina226_sample_t sample = {0};
+    (*total_count)++;
+    esp_err_t ret = ina226_sensor_read(&sample);
+    if (ret == ESP_OK && sample.ready) {
+        cJSON *node = create_sensor_node(sensors_obj, "ina226", true);
+        cJSON_AddNumberToObject(node, "busVoltage", sample.bus_voltage_v);
+        cJSON_AddNumberToObject(node, "currentMa", sample.current_ma);
+        cJSON_AddNumberToObject(node, "powerMw", sample.power_mw);
+        cJSON_AddNumberToObject(node, "address", sample.address);
+        cJSON_AddNumberToObject(node, "rawBusVoltage", sample.raw_bus_voltage);
+        cJSON_AddNumberToObject(node, "rawCurrent", sample.raw_current);
+        cJSON_AddNumberToObject(node, "rawPower", sample.raw_power);
+        (*ready_count)++;
+        char details[192];
+        snprintf(
+            details,
+            sizeof(details),
+            "\"busVoltage\":%.4f,\"currentMa\":%.3f,\"powerMw\":%.3f,\"address\":%u,\"rawBusVoltage\":%u,\"rawCurrent\":%d,\"rawPower\":%u",
+            sample.bus_voltage_v,
+            sample.current_ma,
+            sample.power_mw,
+            sample.address,
+            sample.raw_bus_voltage,
+            sample.raw_current,
+            sample.raw_power
+        );
+        emit_sensor_event("ina226", true, details);
+        if (oled_state != NULL) {
+            oled_state->ready = true;
+            oled_state->bus_voltage_v = sample.bus_voltage_v;
+            oled_state->current_ma = sample.current_ma;
+            oled_state->power_mw = sample.power_mw;
+            oled_state->address = sample.address;
+        }
+    } else {
+        cJSON *node = create_sensor_node(sensors_obj, "ina226", false);
+        cJSON_AddStringToObject(node, "reason", esp_err_to_name(ret));
+        cJSON_AddNumberToObject(node, "address", APP_INA226_ADDR);
+        char details[96];
+        snprintf(details, sizeof(details), "\"reason\":\"%s\",\"address\":%u", esp_err_to_name(ret), APP_INA226_ADDR);
+        emit_sensor_event("ina226", false, details);
+        if (oled_state != NULL) {
+            oled_state->ready = false;
+            oled_state->bus_voltage_v = 0.0f;
+            oled_state->current_ma = 0.0f;
+            oled_state->power_mw = 0.0f;
+            oled_state->address = APP_INA226_ADDR;
+        }
     }
 }
 
@@ -208,6 +342,37 @@ static void emit_sensor_event(const char *sensor_type, bool ready, const char *d
         (details_json != NULL && details_json[0] != '\0') ? details_json : ""
     );
     console_service_emit_event("sensor", event_json);
+}
+
+static bool wait_for_network_ready(int timeout_ms)
+{
+    int waited_ms = 0;
+    while (waited_ms < timeout_ms) {
+        if (network_service_is_wifi_ready() && network_service_is_mqtt_ready()) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        waited_ms += 200;
+    }
+    return network_service_is_wifi_ready() && network_service_is_mqtt_ready();
+}
+
+static void enter_low_power_sleep(void)
+{
+    uint64_t interval_us = (uint64_t)device_profile_low_power_interval_sec() * 1000000ULL;
+    char event_json[160];
+
+    snprintf(
+        event_json,
+        sizeof(event_json),
+        "{\"enabled\":true,\"intervalSec\":%" PRIu32 ",\"action\":\"sleep\"}",
+        device_profile_low_power_interval_sec()
+    );
+    console_service_emit_event("low_power", event_json);
+    vTaskDelay(pdMS_TO_TICKS(LOW_POWER_SLEEP_SETTLE_MS));
+    network_service_prepare_for_sleep();
+    esp_sleep_enable_timer_wakeup(interval_us);
+    esp_deep_sleep_start();
 }
 
 static cJSON *create_sensor_node(cJSON *sensors_obj, const char *sensor_type, bool ready)
@@ -482,8 +647,11 @@ void telemetry_app_run(void)
     sensor_bus_init();
     analog_sensor_init();
     oled_try_init();
+    s_telemetry_task_handle = xTaskGetCurrentTaskHandle();
 
     while (1) {
+        bool low_power_enabled = device_profile_low_power_enabled();
+        bool publish_succeeded = false;
         int total_count = 0;
         int ready_count = 0;
         float primary_temp = 0.0f;
@@ -492,6 +660,8 @@ void telemetry_app_run(void)
         oled_bmpx80_state_t oled_bmpx80 = {0};
         oled_shtc3_state_t oled_shtc3 = {0};
         oled_battery_state_t oled_battery = {0};
+        oled_max17043_state_t oled_max17043 = {0};
+        oled_ina226_state_t oled_ina226 = {0};
 
         cJSON *sensors_obj = cJSON_CreateObject();
         add_dht11_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity);
@@ -501,12 +671,19 @@ void telemetry_app_run(void)
         add_shtc3_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity, &oled_shtc3);
         add_soil_sensor(sensors_obj, &total_count, &ready_count);
         add_battery_sensor(sensors_obj, &total_count, &ready_count, &oled_battery);
+        add_max17043_sensor(sensors_obj, &total_count, &ready_count, &oled_max17043);
+        add_ina226_sensor(sensors_obj, &total_count, &ready_count, &oled_ina226);
 
         char *sensor_json = cJSON_PrintUnformatted(sensors_obj);
         device_profile_update_sensor_snapshot(sensor_json, ready_count, total_count);
 
         topic = device_profile_mqtt_topic();
-        if (ready_count > 0 && network_service_is_wifi_ready() && network_service_is_mqtt_ready()) {
+        bool network_ready = network_service_is_wifi_ready() && network_service_is_mqtt_ready();
+        if (low_power_enabled && !network_ready) {
+            network_ready = wait_for_network_ready(LOW_POWER_NETWORK_WAIT_MS);
+        }
+
+        if (ready_count > 0 && network_ready) {
             snprintf(
                 payload,
                 sizeof(payload),
@@ -520,6 +697,7 @@ void telemetry_app_run(void)
             );
 
             if (network_service_publish_json(topic, payload) == ESP_OK) {
+                publish_succeeded = true;
                 device_profile_update_publish(true, network_service_get_rssi(), payload);
                 snprintf(
                     event_json,
@@ -548,6 +726,21 @@ void telemetry_app_run(void)
 
         cJSON_free(sensor_json);
         cJSON_Delete(sensors_obj);
-        vTaskDelay(pdMS_TO_TICKS(APP_PUBLISH_INTERVAL_MS));
+        if (low_power_enabled && publish_succeeded) {
+            enter_low_power_sleep();
+        } else if (low_power_enabled) {
+            console_service_emit_event(
+                "low_power",
+                "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"publish_not_ready\"}"
+            );
+        }
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(APP_PUBLISH_INTERVAL_MS));
+    }
+}
+
+void telemetry_app_request_immediate_cycle(void)
+{
+    if (s_telemetry_task_handle != NULL) {
+        xTaskNotifyGive(s_telemetry_task_handle);
     }
 }
