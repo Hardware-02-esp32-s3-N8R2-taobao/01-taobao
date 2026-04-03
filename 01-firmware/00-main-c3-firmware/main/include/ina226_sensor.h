@@ -9,9 +9,11 @@ typedef struct {
     bool ready;
     uint8_t address;
     float bus_voltage_v;
+    float shunt_voltage_v;
     float current_ma;
     float power_mw;
     uint16_t raw_bus_voltage;
+    int16_t raw_shunt_voltage;
     int16_t raw_current;
     uint16_t raw_power;
 } ina226_sample_t;

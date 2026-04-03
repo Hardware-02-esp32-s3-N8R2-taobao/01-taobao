@@ -1,5 +1,6 @@
 #include "ina226_sensor.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "driver/i2c.h"
@@ -17,10 +18,13 @@
 #define INA226_REG_CURRENT      0x04
 #define INA226_REG_CALIBRATION  0x05
 
-#define INA226_CONFIG_DEFAULT   0x4527
-#define INA226_CALIBRATION      0x1000
-#define INA226_CURRENT_LSB_A    0.001f
-#define INA226_POWER_LSB_W      (25.0f * INA226_CURRENT_LSB_A)
+#define INA226_CONFIG_DEFAULT   0x0127
+#define INA226_RSHUNT_OHM       0.01f
+#define INA226_IMAX_EXPECTED_A  4.0f
+
+static float s_current_lsb_a = 0.0f;
+static float s_power_lsb_w = 0.0f;
+static bool s_ina226_configured = false;
 
 static esp_err_t write_register_u16(uint8_t addr, uint8_t reg, uint16_t value)
 {
@@ -49,6 +53,31 @@ static esp_err_t read_register_u16(uint8_t addr, uint8_t reg, uint16_t *value)
     return ESP_OK;
 }
 
+static esp_err_t ina226_configure(void)
+{
+    if (s_ina226_configured) {
+        return ESP_OK;
+    }
+
+    const float minimum_lsb = INA226_IMAX_EXPECTED_A / 32767.0f;
+    float current_lsb = floorf(minimum_lsb / 0.0001f);
+    if (current_lsb < (minimum_lsb / 0.0001f)) {
+        current_lsb += 1.0f;
+    }
+    current_lsb *= 0.0001f;
+
+    const float power_lsb = current_lsb * 25.0f;
+    const uint16_t calibration = (uint16_t)(0.00512f / (current_lsb * INA226_RSHUNT_OHM));
+
+    ESP_RETURN_ON_ERROR(write_register_u16(APP_INA226_ADDR, INA226_REG_CONFIG, INA226_CONFIG_DEFAULT), TAG, "config failed");
+    ESP_RETURN_ON_ERROR(write_register_u16(APP_INA226_ADDR, INA226_REG_CALIBRATION, calibration), TAG, "calibration failed");
+
+    s_current_lsb_a = current_lsb;
+    s_power_lsb_w = power_lsb;
+    s_ina226_configured = true;
+    return ESP_OK;
+}
+
 esp_err_t ina226_sensor_read(ina226_sample_t *sample)
 {
     if (sample == NULL) {
@@ -61,24 +90,27 @@ esp_err_t ina226_sensor_read(ina226_sample_t *sample)
         ESP_RETURN_ON_ERROR(sensor_bus_init(), TAG, "i2c init failed");
     }
 
-    ESP_RETURN_ON_ERROR(write_register_u16(APP_INA226_ADDR, INA226_REG_CONFIG, INA226_CONFIG_DEFAULT), TAG, "config failed");
-    ESP_RETURN_ON_ERROR(write_register_u16(APP_INA226_ADDR, INA226_REG_CALIBRATION, INA226_CALIBRATION), TAG, "calibration failed");
+    ESP_RETURN_ON_ERROR(ina226_configure(), TAG, "configure failed");
 
+    uint16_t raw_shunt_voltage = 0;
     uint16_t raw_bus_voltage = 0;
     uint16_t raw_current = 0;
     uint16_t raw_power = 0;
+    ESP_RETURN_ON_ERROR(read_register_u16(APP_INA226_ADDR, INA226_REG_SHUNT_VOLT, &raw_shunt_voltage), TAG, "read shunt voltage failed");
     ESP_RETURN_ON_ERROR(read_register_u16(APP_INA226_ADDR, INA226_REG_BUS_VOLT, &raw_bus_voltage), TAG, "read bus voltage failed");
     ESP_RETURN_ON_ERROR(read_register_u16(APP_INA226_ADDR, INA226_REG_CURRENT, &raw_current), TAG, "read current failed");
     ESP_RETURN_ON_ERROR(read_register_u16(APP_INA226_ADDR, INA226_REG_POWER, &raw_power), TAG, "read power failed");
 
     sample->ready = true;
     sample->address = APP_INA226_ADDR;
+    sample->raw_shunt_voltage = (int16_t)raw_shunt_voltage;
     sample->raw_bus_voltage = raw_bus_voltage;
     sample->raw_current = (int16_t)raw_current;
     sample->raw_power = raw_power;
+    sample->shunt_voltage_v = ((int16_t)raw_shunt_voltage) * 0.0000025f;
     sample->bus_voltage_v = (float)raw_bus_voltage * 0.00125f;
-    sample->current_ma = ((int16_t)raw_current) * INA226_CURRENT_LSB_A * 1000.0f;
-    sample->power_mw = (float)raw_power * INA226_POWER_LSB_W * 1000.0f;
+    sample->current_ma = ((int16_t)raw_current) * s_current_lsb_a * 1000.0f;
+    sample->power_mw = (float)raw_power * s_power_lsb_w * 1000.0f;
 
     return ESP_OK;
 }

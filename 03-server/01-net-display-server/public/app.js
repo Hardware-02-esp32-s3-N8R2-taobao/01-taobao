@@ -72,6 +72,27 @@ const sensorCatalog = {
       { key: "voltage", label: "电压", unit: "V", color: "#4caf50" },
       { key: "percent", label: "电量", unit: "%", color: "#ff9800" }
     ]
+  },
+  max17043: {
+    key: "max17043",
+    title: "MAX17043 电量计",
+    subtitle: "电池电量计与电压",
+    icon: "🔋",
+    metrics: [
+      { key: "voltage", label: "电压", unit: "V", color: "#4caf50" },
+      { key: "percent", label: "电量", unit: "%", color: "#ff9800" }
+    ]
+  },
+  ina226: {
+    key: "ina226",
+    title: "INA226 电流电压",
+    subtitle: "母线电压、电流与功率",
+    icon: "📈",
+    metrics: [
+      { key: "busVoltage", label: "母线电压", unit: "V", color: "#3f8cff" },
+      { key: "currentMa", label: "电流", unit: "mA", color: "#ff8b5c" },
+      { key: "powerMw", label: "功率", unit: "mW", color: "#7a68ff" }
+    ]
   }
 };
 
@@ -82,6 +103,8 @@ const deviceCatalog = {
     subtitle: "庭院温湿度节点",
     room: "yard",
     type: "iot-device",
+    lowPowerEnabled: true,
+    reportIntervalSec: 300,
     icon: "🪴",
     accentClass: "accent-flower",
     matchIds: ["yard-01"],
@@ -98,12 +121,18 @@ const deviceCatalog = {
     subtitle: "书房温湿度节点",
     room: "study",
     type: "iot-device",
+    lowPowerEnabled: true,
+    reportIntervalSec: 300,
     icon: "📚",
     accentClass: "accent-flower",
     matchIds: ["study-01"],
     historyDevices: ["study-01"],
-    sensors: [{ key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } }],
-    summary: "书房 ESP32-C3 节点，挂载 DHT11 温湿度传感器。"
+    sensors: [
+      { key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } },
+      { key: "max17043", title: "MAX17043 电量计", subtitle: "电池电量与电压", icon: "🔋", metricLabels: { voltage: "电压", percent: "电量" } },
+      { key: "ina226", title: "INA226 电流电压", subtitle: "母线电压、电流与功率", icon: "📈", metricLabels: { busVoltage: "母线电压", currentMa: "电流", powerMw: "功率" } }
+    ],
+    summary: "书房 ESP32-C3 节点，支持温湿度、电池电量计与电流电压监测。"
   },
   "office-01": {
     id: "office-01",
@@ -153,7 +182,7 @@ const deviceCatalog = {
   }
 };
 
-// 在线判定窗口（与服务端 DEVICE_ONLINE_WINDOW_MS 保持一致）
+// 默认在线判定窗口（与服务端 DEVICE_ONLINE_WINDOW_MS 保持一致）
 const SENSOR_ONLINE_WINDOW_MS = 90 * 1000;
 
 // 传感器异常阈值 — 超出范围时在设备卡片和详情页展示告警标记
@@ -178,6 +207,13 @@ const ALERT_THRESHOLDS = {
   battery: {
     voltage: { warnLow: 3.3, alertLow: 3.1 },
     percent: { warnLow: 20, alertLow: 10 }
+  },
+  max17043: {
+    voltage: { warnLow: 3.3, alertLow: 3.1 },
+    percent: { warnLow: 20, alertLow: 10 }
+  },
+  ina226: {
+    busVoltage: { warnLow: 3.3, alertLow: 3.1 }
   }
 };
 
@@ -248,13 +284,14 @@ function formatPointTime(tsMs) {
 function formatMetricValue(value, unit) {
   if (value == null || Number.isNaN(Number(value))) return "--";
   if (unit === "lux") return `${Math.round(Number(value))} ${unit}`;
-  if (unit === "V") return `${Number(value).toFixed(2)} ${unit}`;
+  if (unit === "V") return `${Number(value).toFixed(3)} ${unit}`;
+  if (unit === "mA" || unit === "mW") return `${Number(value).toFixed(3)} ${unit}`;
   return `${Number(value).toFixed(1)} ${unit}`;
 }
 
 function formatSensorMetricValue(sensorKey, metricKey, value, unit) {
   if (value == null || Number.isNaN(Number(value))) return "--";
-  if (sensorKey === "battery" && metricKey === "percent") {
+  if ((sensorKey === "battery" || sensorKey === "max17043") && metricKey === "percent") {
     return `${Math.round(Number(value))} ${unit}`;
   }
   return formatMetricValue(value, unit);
@@ -270,6 +307,31 @@ function isRecentSensorUpdate(updatedAt) {
   if (!updatedAt) return false;
   const tsMs = new Date(updatedAt).getTime();
   return Number.isFinite(tsMs) && Date.now() - tsMs <= SENSOR_ONLINE_WINDOW_MS;
+}
+
+function getDeviceStatusEntry(deviceId) {
+  return getDevicesStatusMap().get(deviceId) || null;
+}
+
+function getDeviceOnlineWindowMs(deviceId) {
+  const deviceStatus = getDeviceStatusEntry(deviceId);
+  const dynamicWindowMs = Number(deviceStatus?.onlineWindowMs);
+  if (Number.isFinite(dynamicWindowMs) && dynamicWindowMs > 0) {
+    return dynamicWindowMs;
+  }
+
+  const reportIntervalSec = Number(deviceCatalog[deviceId]?.reportIntervalSec);
+  if (deviceCatalog[deviceId]?.lowPowerEnabled && Number.isFinite(reportIntervalSec) && reportIntervalSec >= 10) {
+    return Math.max(SENSOR_ONLINE_WINDOW_MS, (reportIntervalSec + 90) * 1000);
+  }
+
+  return SENSOR_ONLINE_WINDOW_MS;
+}
+
+function isRecentDeviceSensorUpdate(updatedAt, deviceId) {
+  if (!updatedAt) return false;
+  const tsMs = new Date(updatedAt).getTime();
+  return Number.isFinite(tsMs) && Date.now() - tsMs <= getDeviceOnlineWindowMs(deviceId);
 }
 
 // 返回 "alert" | "warn" | null，用于颜色编码和告警标记
@@ -347,7 +409,7 @@ function getSensorSnapshot(sensorRef, deviceId) {
     updatedAt: sensor.updatedAt,
     topic: sensor.topic || "--",
     source: sensor.source && sensor.source !== "waiting-for-mqtt" ? sensor.source : "等待设备上报",
-    online: isRecentSensorUpdate(sensor.updatedAt),
+    online: isRecentDeviceSensorUpdate(sensor.updatedAt, deviceId),
     pressureState: sensor.pressureState || null,
     raw: sensor
   };
@@ -412,6 +474,10 @@ function buildDeviceSummaryMetrics(sensors) {
   // 电池设备卡片优先展示电量/电压，避免被温湿度等指标挤掉。
   pushMetric("shtc3", "temperature");
   pushMetric("shtc3", "humidity");
+  pushMetric("max17043", "percent");
+  pushMetric("max17043", "voltage");
+  pushMetric("ina226", "currentMa");
+  pushMetric("ina226", "busVoltage");
   pushMetric("battery", "percent");
   pushMetric("battery", "voltage");
   pushMetric("bh1750", "illuminance");
@@ -1282,6 +1348,13 @@ function getDevicePagePriority(catalog, page) {
   if (catalog?.id === "yard-01") {
     if (page.sensorKey === "shtc3") return 0;
     if (page.sensorKey === "battery") return 1;
+    if (page.sensorKey === "max17043") return 2;
+    if (page.sensorKey === "ina226") return 3;
+  }
+  if (catalog?.id === "study-01") {
+    if (page.sensorKey === "dht11") return 0;
+    if (page.sensorKey === "max17043") return 1;
+    if (page.sensorKey === "ina226") return 2;
   }
   return 100;
 }
@@ -1409,7 +1482,7 @@ function buildSensorReminder(sensor) {
     };
   }
 
-  if (sensor.key === "battery" && Number.isFinite(percent) && Number.isFinite(voltage)) {
+  if ((sensor.key === "battery" || sensor.key === "max17043") && Number.isFinite(percent) && Number.isFinite(voltage)) {
     if (percent <= 15) {
       return {
         title: "AI 小提醒",

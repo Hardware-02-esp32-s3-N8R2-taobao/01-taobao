@@ -250,22 +250,26 @@ static void add_ina226_sensor(cJSON *sensors_obj, int *total_count, int *ready_c
     if (ret == ESP_OK && sample.ready) {
         cJSON *node = create_sensor_node(sensors_obj, "ina226", true);
         cJSON_AddNumberToObject(node, "busVoltage", sample.bus_voltage_v);
+        cJSON_AddNumberToObject(node, "shuntVoltage", sample.shunt_voltage_v);
         cJSON_AddNumberToObject(node, "currentMa", sample.current_ma);
         cJSON_AddNumberToObject(node, "powerMw", sample.power_mw);
         cJSON_AddNumberToObject(node, "address", sample.address);
+        cJSON_AddNumberToObject(node, "rawShuntVoltage", sample.raw_shunt_voltage);
         cJSON_AddNumberToObject(node, "rawBusVoltage", sample.raw_bus_voltage);
         cJSON_AddNumberToObject(node, "rawCurrent", sample.raw_current);
         cJSON_AddNumberToObject(node, "rawPower", sample.raw_power);
         (*ready_count)++;
-        char details[192];
+        char details[256];
         snprintf(
             details,
             sizeof(details),
-            "\"busVoltage\":%.4f,\"currentMa\":%.3f,\"powerMw\":%.3f,\"address\":%u,\"rawBusVoltage\":%u,\"rawCurrent\":%d,\"rawPower\":%u",
+            "\"busVoltage\":%.4f,\"shuntVoltage\":%.6f,\"currentMa\":%.3f,\"powerMw\":%.3f,\"address\":%u,\"rawShuntVoltage\":%d,\"rawBusVoltage\":%u,\"rawCurrent\":%d,\"rawPower\":%u",
             sample.bus_voltage_v,
+            sample.shunt_voltage_v,
             sample.current_ma,
             sample.power_mw,
             sample.address,
+            sample.raw_shunt_voltage,
             sample.raw_bus_voltage,
             sample.raw_current,
             sample.raw_power
@@ -606,6 +610,10 @@ static void add_soil_sensor(cJSON *sensors_obj, int *total_count, int *ready_cou
 
 static void add_battery_sensor(cJSON *sensors_obj, int *total_count, int *ready_count, oled_battery_state_t *oled_state)
 {
+    if (!device_profile_has_sensor("battery")) {
+        return;
+    }
+
     battery_voltage_sample_t sample = {0};
     (*total_count)++;
     esp_err_t ret = analog_sensor_read_battery(&sample);

@@ -18,6 +18,16 @@ const GATEWAY_BROADCAST_INTERVAL_MS = 30 * 1000;
 const SERVER_SAMPLE_INTERVAL_MS = 60 * 1000;   // 每分钟采样一次
 const DEVICE_ONLINE_WINDOW_MS = 90 * 1000;
 const SERVER_HISTORY_LIMIT = 1440;             // 保留 24 小时（24 × 60）
+const DEVICE_PRESENCE_CONFIG = {
+  "yard-01": {
+    lowPowerEnabled: true,
+    reportIntervalSec: 300
+  },
+  "study-01": {
+    lowPowerEnabled: true,
+    reportIntervalSec: 300
+  }
+};
 
 const SENSOR_CONFIG = {
   dht11: {
@@ -62,6 +72,21 @@ const SENSOR_CONFIG = {
       { key: "voltage", label: "电压", unit: "V", color: "#4caf50", axis: "left" },
       { key: "percent", label: "电量", unit: "%", color: "#ff9800", axis: "right" }
     ]
+  },
+  max17043: {
+    label: "MAX17043 电量计",
+    metrics: [
+      { key: "voltage", label: "电压", unit: "V", color: "#4caf50", axis: "left" },
+      { key: "percent", label: "电量", unit: "%", color: "#ff9800", axis: "right" }
+    ]
+  },
+  ina226: {
+    label: "INA226 电流电压",
+    metrics: [
+      { key: "busVoltage", label: "母线电压", unit: "V", color: "#3f8cff", axis: "left" },
+      { key: "currentMa", label: "电流", unit: "mA", color: "#ff8b5c", axis: "right" },
+      { key: "powerMw", label: "功率", unit: "mW", color: "#7a68ff", axis: "right" }
+    ]
   }
 };
 
@@ -73,7 +98,9 @@ const SENSOR_TYPE_TO_KEY = {
   bmp280: "bmp280",
   shtc3: "shtc3",
   bh1750: "bh1750",
-  battery: "battery"
+  battery: "battery",
+  max17043: "max17043",
+  ina226: "ina226"
 };
 const DEVICE_ID_ALIASES = {
   "yard-01": "yard-01",
@@ -232,6 +259,23 @@ function buildDefaultLatestSensors() {
       percent: null,
       source: "waiting-for-mqtt",
       topic: `${MQTT_DEVICE_TOPIC_PREFIX}battery-01`,
+      updatedAt: null
+    },
+    max17043: {
+      label: SENSOR_CONFIG.max17043.label,
+      voltage: null,
+      percent: null,
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}max17043-01`,
+      updatedAt: null
+    },
+    ina226: {
+      label: SENSOR_CONFIG.ina226.label,
+      busVoltage: null,
+      currentMa: null,
+      powerMw: null,
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}ina226-01`,
       updatedAt: null
     }
   };
@@ -567,6 +611,7 @@ function rememberDevice(deviceName, info) {
   if (!deviceName) {
     return;
   }
+  const presenceConfig = DEVICE_PRESENCE_CONFIG[deviceName] || null;
   const existing = deviceRegistry.get(deviceName) || {
     device: deviceName,
     alias: deviceName,
@@ -587,21 +632,35 @@ function rememberDevice(deviceName, info) {
     lastTopic: info.lastTopic || existing.lastTopic || "--",
     sensorKey: info.sensorKey || existing.sensorKey || null,
     source: info.source || existing.source || "mqtt",
-    sensors: Array.from(sensors)
+    sensors: Array.from(sensors),
+    lowPowerEnabled: presenceConfig?.lowPowerEnabled ?? existing.lowPowerEnabled ?? false,
+    reportIntervalSec: presenceConfig?.reportIntervalSec ?? existing.reportIntervalSec ?? null
   });
+}
+
+function getDeviceOnlineWindowMs(device) {
+  const reportIntervalSec = Number(device?.reportIntervalSec);
+  if (device?.lowPowerEnabled && Number.isFinite(reportIntervalSec) && reportIntervalSec >= 10) {
+    return Math.max(DEVICE_ONLINE_WINDOW_MS, (reportIntervalSec + 90) * 1000);
+  }
+  return DEVICE_ONLINE_WINDOW_MS;
 }
 
 function getDevicesStatus() {
   const now = Date.now();
   return Array.from(deviceRegistry.values())
     .sort((a, b) => (b.lastSeenAt || "").localeCompare(a.lastSeenAt || ""))
-    .map((device) => ({
-      ...device,
-      online: Boolean(device.lastSeenAt) && now - new Date(device.lastSeenAt).getTime() <= DEVICE_ONLINE_WINDOW_MS,
-      lastSeenAgoSeconds: device.lastSeenAt
-        ? Math.max(0, Math.round((now - new Date(device.lastSeenAt).getTime()) / 1000))
-        : null
-    }));
+    .map((device) => {
+      const onlineWindowMs = getDeviceOnlineWindowMs(device);
+      return {
+        ...device,
+        onlineWindowMs,
+        online: Boolean(device.lastSeenAt) && now - new Date(device.lastSeenAt).getTime() <= onlineWindowMs,
+        lastSeenAgoSeconds: device.lastSeenAt
+          ? Math.max(0, Math.round((now - new Date(device.lastSeenAt).getTime()) / 1000))
+          : null
+      };
+    });
 }
 
 function getServerHistory() {
@@ -746,7 +805,14 @@ function recordSensorPayload(sensorKey, payload, meta) {
   config.metrics.forEach((metric) => {
     const value = Number(sensorPayload[metric.key]);
     if (Number.isFinite(value)) {
-      const roundedValue = Number(value.toFixed(metric.unit === "hPa" ? 1 : metric.unit === "V" ? 2 : 1));
+      const roundedValue = Number(
+        value.toFixed(
+          metric.unit === "hPa" ? 1 :
+          metric.unit === "V" ? 3 :
+          metric.unit === "mA" || metric.unit === "mW" ? 3 :
+          1
+        )
+      );
       next[metric.key] = roundedValue;
       deviceNext[metric.key] = roundedValue;
       persistMetricValue(sensorKey, metric.key, next[metric.key], {
