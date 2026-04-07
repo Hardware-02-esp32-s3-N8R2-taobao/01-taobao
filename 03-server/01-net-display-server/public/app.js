@@ -303,6 +303,22 @@ async function fetchJson(url, options = {}) {
   return response.json();
 }
 
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.message || url);
+  }
+  return data;
+}
+
 function isRecentSensorUpdate(updatedAt) {
   if (!updatedAt) return false;
   const tsMs = new Date(updatedAt).getTime();
@@ -846,6 +862,107 @@ function getVisibleHistoryPoints() {
   return appState.historyPoints.slice(appState.historyViewStart, appState.historyViewEnd);
 }
 
+function sanitizeDownloadFileName(value) {
+  return String(value || "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim() || "export";
+}
+
+function getCurrentHistoryRangeLabel() {
+  return appState.historyQuery.date || appState.historyQuery.range || "24h";
+}
+
+function buildMetricHistoryCsv(metric, points) {
+  const rows = [
+    [
+      "timestamp_ms",
+      "recorded_at",
+      `${metric.key}_${metric.label}_${metric.unit}`,
+      "sample_count"
+    ].join(",")
+  ];
+
+  points.forEach((point) => {
+    if (point?.[metric.key] == null) {
+      return;
+    }
+    rows.push([
+      point.tsMs,
+      point.recordedAt || new Date(point.tsMs).toISOString(),
+      point[metric.key],
+      point.sampleCount ?? 0
+    ].join(","));
+  });
+
+  return `\ufeff${rows.join("\n")}\n`;
+}
+
+async function saveCsvWithPicker(fileName, csvText) {
+  const csvBlob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
+  if (typeof window.showSaveFilePicker === "function" && window.isSecureContext) {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: fileName,
+      types: [
+        {
+          description: "CSV 文件",
+          accept: {
+            "text/csv": [".csv"]
+          }
+        }
+      ]
+    });
+    const writable = await handle.createWritable();
+    await writable.write(csvBlob);
+    await writable.close();
+    return { mode: "picker" };
+  }
+
+  const objectUrl = URL.createObjectURL(csvBlob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  return { mode: "download" };
+}
+
+async function exportVisibleMetricCsv(deviceId, sensorKey, metricKey) {
+  const deviceTitle = deviceCatalog[deviceId]?.title || deviceId || "设备";
+  const sensorTitle = sensorCatalog[sensorKey]?.title || sensorKey || "传感器";
+  const metric = (appState.historyMeta.metrics || []).find((item) => item.key === metricKey);
+  if (!metric) {
+    throw new Error("未找到当前图表指标");
+  }
+
+  const params = new URLSearchParams();
+  params.set("series", sensorKey);
+  const catalog = deviceCatalog[deviceId];
+  (catalog?.historyDevices || [deviceId]).forEach((matchId) => params.append("device", matchId));
+  params.set("metric", metricKey);
+  if (appState.historyQuery.date) params.set("date", appState.historyQuery.date);
+  else params.set("range", appState.historyQuery.range || "24h");
+
+  const rawHistory = await fetchJson(`/api/sensor/history/raw?${params.toString()}`);
+  const rawPoints = (rawHistory.points || []).filter((point) => point?.[metric.key] != null);
+  if (!rawPoints.length) {
+    throw new Error("当前时间范围内没有可导出的数据");
+  }
+
+  const rangeLabel = getCurrentHistoryRangeLabel();
+  const fileName = sanitizeDownloadFileName(
+    `${deviceTitle}_${sensorTitle}_${metric.label}_${rangeLabel}.csv`
+  );
+  const result = await saveCsvWithPicker(fileName, buildMetricHistoryCsv(metric, rawPoints));
+  return {
+    fileName,
+    rowCount: rawPoints.length,
+    mode: result.mode
+  };
+}
+
 function resetChartZoom() {
   appState.historyViewStart = 0;
   appState.historyViewEnd = appState.historyPoints.length;
@@ -1108,15 +1225,38 @@ function renderHistoryPanels() {
         <canvas width="520" height="280"></canvas>
         <div class="chart-tip"></div>
       </div>
+      <div class="history-panel-actions">
+        <button class="ghost-btn" data-export-metric="${metric.key}">导出 ${metric.label} CSV</button>
+      </div>
       <div class="history-panel-note"></div>
     `;
 
     const canvas = panel.querySelector("canvas");
     const tooltipEl = panel.querySelector(".chart-tip");
     const noteEl = panel.querySelector(".history-panel-note");
+    const exportBtn = panel.querySelector("[data-export-metric]");
     drawMetricChart(metric, canvas, tooltipEl);
     const sampleCount = appState.historyPoints.filter((point) => point[metric.key] != null).length;
     noteEl.textContent = sampleCount ? `${metric.label} 共 ${sampleCount} 个历史点。双击可重置缩放，滚轮可缩放。` : `${metric.label} 正在等待上报。`;
+
+    exportBtn?.addEventListener("click", async () => {
+      const statusEl = document.getElementById("historyExportStatus");
+      try {
+        if (statusEl) {
+          statusEl.textContent = "正在生成并保存当前曲线 CSV...";
+        }
+        const data = await exportVisibleMetricCsv(appState.activeDeviceId, appState.activeSensorKey, metric.key);
+        if (statusEl) {
+          statusEl.textContent = data.mode === "picker"
+            ? `已保存：${data.fileName}`
+            : `已触发下载：${data.fileName}`;
+        }
+      } catch (error) {
+        if (statusEl) {
+          statusEl.textContent = `导出失败：${error.message}`;
+        }
+      }
+    });
 
     canvas.addEventListener("dblclick", () => resetChartZoom());
     canvas.addEventListener("wheel", (event) => {
@@ -1339,6 +1479,101 @@ async function refreshSensorHistory(deviceId, sensorKey) {
   appState.hoverIndexByMetric = {};
   updateHistoryHeader(data);
   renderHistoryPanels();
+}
+
+function getExportQueryPayload(deviceId, sensorKey, metricKey = null, rangeOverride = null) {
+  const payload = {
+    deviceId,
+    sensorKey
+  };
+  if (metricKey) {
+    payload.metricKey = metricKey;
+  }
+  if (rangeOverride === "all") {
+    payload.range = "all";
+    return payload;
+  }
+  if (appState.historyQuery.date) {
+    payload.date = appState.historyQuery.date;
+  } else {
+    payload.range = rangeOverride || appState.historyQuery.range || "24h";
+  }
+  return payload;
+}
+
+async function exportHistoryCsv(payload) {
+  return postJson("/api/export/history", payload);
+}
+
+function buildPromptOptions(items, formatter) {
+  return items.map((item, index) => `${index + 1}. ${formatter(item)}`).join("\n");
+}
+
+async function promptAndExportHistory(deviceId, defaultSensorKey) {
+  const deviceIds = Object.keys(deviceCatalog).filter((id) => deviceCatalog[id]?.type === "iot-device");
+  const deviceInput = window.prompt(
+    `请选择设备，输入编号：\n${buildPromptOptions(deviceIds, (id) => `${deviceCatalog[id].title} (${id})`)}`,
+    String(Math.max(deviceIds.indexOf(deviceId), 0) + 1)
+  );
+  if (!deviceInput) return null;
+  const deviceIndex = Number(deviceInput) - 1;
+  const selectedDeviceId = deviceIds[deviceIndex];
+  if (!selectedDeviceId) {
+    window.alert("设备编号无效。");
+    return null;
+  }
+
+  const sensorDefs = deviceCatalog[selectedDeviceId]?.sensors || [];
+  const sensorInput = window.prompt(
+    `请选择传感器，输入编号：\n0. 全部传感器\n${buildPromptOptions(sensorDefs, (sensor) => `${sensor.title} (${sensor.key})`)}`,
+    defaultSensorKey ? String(Math.max(sensorDefs.findIndex((sensor) => sensor.key === defaultSensorKey), 0) + 1) : "0"
+  );
+  if (sensorInput == null || sensorInput === "") return null;
+  const sensorIndex = Number(sensorInput);
+  if (!Number.isInteger(sensorIndex) || sensorIndex < 0 || sensorIndex > sensorDefs.length) {
+    window.alert("传感器编号无效。");
+    return null;
+  }
+
+  const rangeOptions = [
+    { key: "1h", label: "最近1小时" },
+    { key: "24h", label: "最近24小时" },
+    { key: "3d", label: "最近3天" },
+    { key: "7d", label: "最近7天" },
+    { key: "all", label: "全部历史" }
+  ];
+  const rangeInput = window.prompt(
+    `请选择时间跨度，输入编号：\n${buildPromptOptions(rangeOptions, (option) => `${option.label} (${option.key})`)}`,
+    "5"
+  );
+  if (!rangeInput) return null;
+  const rangeIndex = Number(rangeInput) - 1;
+  const selectedRange = rangeOptions[rangeIndex];
+  if (!selectedRange) {
+    window.alert("时间跨度编号无效。");
+    return null;
+  }
+
+  const selectedSensors = sensorIndex === 0
+    ? sensorDefs
+    : [sensorDefs[sensorIndex - 1]].filter(Boolean);
+  if (!selectedSensors.length) {
+    window.alert("当前设备没有可导出的传感器。");
+    return null;
+  }
+
+  const results = [];
+  for (const sensor of selectedSensors) {
+    // eslint-disable-next-line no-await-in-loop
+    const data = await exportHistoryCsv({
+      deviceId: selectedDeviceId,
+      sensorKey: sensor.key,
+      range: selectedRange.key
+    });
+    results.push(data.relativePath || data.filePath);
+  }
+  window.alert(`已导出 ${results.length} 个文件：\n${results.join("\n")}`);
+  return results;
 }
 
 function getDevicePagePriority(catalog, page) {
@@ -1655,7 +1890,8 @@ function renderDeviceSensorHistorySection(selectedSensor) {
       <div class="history-panels" id="historyPanels"></div>
       <div class="chart-actions">
         <button class="ghost-btn" id="resetZoomBtn">重置缩放</button>
-        <span class="detail-helper">点进的是设备，历史曲线按设备内部的传感器切换。</span>
+        <button class="ghost-btn" id="exportHistoryWizardBtn">批量导出到 data 文件夹</button>
+        <span class="detail-helper" id="historyExportStatus">点进的是设备，历史曲线按设备内部的传感器切换。</span>
       </div>
       <p class="footer-note" id="historySummary">正在整理历史统计。</p>
     </section>
@@ -1971,6 +2207,47 @@ function bindIoTDeviceEvents(deviceId) {
   });
 
   document.getElementById("resetZoomBtn")?.addEventListener("click", () => resetChartZoom());
+
+  document.querySelectorAll("[data-export-metric]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const metricKey = button.dataset.exportMetric;
+      const statusEl = document.getElementById("historyExportStatus");
+      try {
+        if (statusEl) {
+          statusEl.textContent = "正在生成并保存当前曲线 CSV...";
+        }
+        const data = await exportVisibleMetricCsv(deviceId, appState.activeSensorKey, metricKey);
+        if (statusEl) {
+          statusEl.textContent = data.mode === "picker"
+            ? `已保存：${data.fileName}`
+            : `已触发下载：${data.fileName}`;
+        }
+      } catch (error) {
+        if (statusEl) {
+          statusEl.textContent = `导出失败：${error.message}`;
+        }
+      }
+    });
+  });
+
+  document.getElementById("exportHistoryWizardBtn")?.addEventListener("click", async () => {
+    const statusEl = document.getElementById("historyExportStatus");
+    try {
+      if (statusEl) {
+        statusEl.textContent = "正在准备导出选项...";
+      }
+      const results = await promptAndExportHistory(deviceId, appState.activeSensorKey);
+      if (statusEl) {
+        statusEl.textContent = results?.length
+          ? `批量导出完成：${results.length} 个文件。`
+          : "已取消批量导出。";
+      }
+    } catch (error) {
+      if (statusEl) {
+        statusEl.textContent = `批量导出失败：${error.message}`;
+      }
+    }
+  });
 
   document.getElementById("sendPumpCommandBtn")?.addEventListener("click", async () => {
     const durationInput = document.getElementById("pumpDurationSeconds");

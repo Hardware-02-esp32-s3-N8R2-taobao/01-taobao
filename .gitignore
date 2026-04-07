@@ -42,3 +42,6 @@ __pycache__/
 # Local machine / tool state
 .claude/settings.local.json
 .project-machine-state.json
+01-firmware/03-build-report.md
+data/
+!data/.gitkeep

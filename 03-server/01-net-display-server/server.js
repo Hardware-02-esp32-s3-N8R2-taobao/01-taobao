@@ -8,6 +8,7 @@ const { URL } = require("url");
 const { DatabaseSync } = require("node:sqlite");
 const aedes = require("aedes")();
 const WebSocket = require("ws");
+const { fetchRawSensorHistory, fetchSensorHistory, writeHistoryCsvFile } = require("./lib/history-export");
 const { getWeatherForecast, invalidateWeatherCache } = require("./lib/weather");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -126,6 +127,7 @@ const PUMP_CONTROL_PASSWORD = String(process.env.PUMP_CONTROL_PASSWORD || "1234"
 
 const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, "data");
+const repoRootDataDir = path.resolve(__dirname, "..", "..", "data");
 const dbPath = path.join(dataDir, "sensor-history.db");
 const uploadsDir = path.join(publicDir, "uploads");
 const roomUploadsDir = path.join(uploadsDir, "rooms");
@@ -133,6 +135,9 @@ const roomPhotoMetaPath = path.join(dataDir, "room-photos.json");
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+if (!fs.existsSync(repoRootDataDir)) {
+  fs.mkdirSync(repoRootDataDir, { recursive: true });
 }
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
@@ -1036,6 +1041,66 @@ function resolveSeriesConfig(parsedUrl) {
   };
 }
 
+function buildHistoryExportResult({ deviceId, sensorKey, metricKey = null, range = "24h", date = "" }) {
+  if (!sensorKey) {
+    throw new Error("sensorKey is required");
+  }
+
+  const history = fetchRawSensorHistory({
+    db,
+    sensorConfigMap: SENSOR_CONFIG,
+    sensorKey,
+    deviceNames: deviceId ? [deviceId] : [],
+    range,
+    date,
+    metricKey
+  });
+  const deviceLabel = DEVICE_ALIAS_BY_ID[deviceId] || deviceId || "未命名设备";
+  const saved = writeHistoryCsvFile({
+    exportRootDir: repoRootDataDir,
+    deviceLabel,
+    history,
+    metricKey
+  });
+
+  return {
+    message: "history exported",
+    deviceId: deviceId || null,
+    deviceLabel,
+    sensorKey: history.sensorKey,
+    sensorLabel: history.sensorLabel,
+    metricKey: saved.metricKey,
+    metricLabel: saved.metricLabel,
+    range: date ? null : range,
+    date: date || null,
+    rowCount: saved.rowCount,
+    filePath: saved.filePath,
+    relativePath: path.relative(path.resolve(__dirname, "..", ".."), saved.filePath).split(path.sep).join("/")
+  };
+}
+
+function getRawSensorHistory(parsedUrl) {
+  const seriesKey = canonicalizeSensorKey(parsedUrl.searchParams.get("series") || "dht11");
+  const metricKey = String(parsedUrl.searchParams.get("metric") || "").trim() || null;
+  const deviceNames = parsedUrl.searchParams
+    .getAll("device")
+    .flatMap((value) => String(value || "").split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const range = String(parsedUrl.searchParams.get("range") || "24h").trim();
+  const date = String(parsedUrl.searchParams.get("date") || "").trim();
+
+  return fetchRawSensorHistory({
+    db,
+    sensorConfigMap: SENSOR_CONFIG,
+    sensorKey: seriesKey,
+    deviceNames,
+    range,
+    date,
+    metricKey
+  });
+}
+
 function getSensorHistory(parsedUrl) {
   const window = resolveHistoryWindow(parsedUrl);
   const series = resolveSeriesConfig(parsedUrl);
@@ -1350,6 +1415,15 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (req.method === "GET" && parsedUrl.pathname === "/api/sensor/history/raw") {
+    try {
+      sendJson(res, 200, getRawSensorHistory(parsedUrl));
+    } catch (error) {
+      sendJson(res, 400, { message: error.message });
+    }
+    return;
+  }
+
   if (req.method === "GET" && parsedUrl.pathname === "/api/mqtt/status") {
     sendJson(res, 200, {
       ...mqttStatus,
@@ -1429,6 +1503,27 @@ const server = http.createServer((req, res) => {
       .catch((error) => {
         sendJson(res, 400, {
           message: error.message || "invalid upload payload"
+        });
+      });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/export/history") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const result = buildHistoryExportResult({
+          deviceId: String(payload.deviceId || "").trim(),
+          sensorKey: String(payload.sensorKey || "").trim(),
+          metricKey: payload.metricKey ? String(payload.metricKey).trim() : null,
+          range: String(payload.range || "24h").trim(),
+          date: String(payload.date || "").trim()
+        });
+        sendJson(res, 200, result);
+      })
+      .catch((error) => {
+        sendJson(res, 400, {
+          message: error.message || "invalid export payload"
         });
       });
     return;

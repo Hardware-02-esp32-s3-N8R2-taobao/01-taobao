@@ -6,6 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "export:history": "node export-history.js",
     "tunnel:start": "node start-public-tunnel.js",
     "tunnel:stop": "node stop-public-tunnel.js"
   },
