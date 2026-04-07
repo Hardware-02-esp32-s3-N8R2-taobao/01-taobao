@@ -1244,11 +1244,28 @@
       canvas {
         width: 100%;
         display: block;
+        touch-action: none;
       }
 
       .chart-wrap {
         position: relative;
         margin-top: 14px;
+      }
+
+      .chart-scrubber-wrap {
+        display: none;
+        margin-top: 12px;
+      }
+
+      .chart-scrubber {
+        width: 100%;
+        accent-color: #2f4668;
+      }
+
+      .chart-scrubber-meta {
+        margin-top: 6px;
+        color: #6f7b8c;
+        font-size: 12px;
       }
 
       .history-panel .chart-wrap {
@@ -1267,14 +1284,28 @@
         font-size: 12px;
         line-height: 1.45;
         opacity: 0;
-        transform: translateY(4px);
+        --tip-shift-x: 14px;
+        --tip-shift-y: 4px;
+        transform: translate(var(--tip-shift-x), var(--tip-shift-y));
         transition: 120ms ease;
         pointer-events: none;
       }
 
       .chart-tip.visible {
         opacity: 1;
-        transform: translateY(0);
+        --tip-shift-y: 0px;
+      }
+
+      .chart-tip.mobile-locked {
+        left: 50% !important;
+        top: 10px !important;
+        --tip-shift-x: -50%;
+      }
+
+      @media (max-width: 768px) {
+        .chart-scrubber-wrap {
+          display: block;
+        }
       }
 
       .history-panel {

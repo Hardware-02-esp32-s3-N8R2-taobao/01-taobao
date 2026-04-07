@@ -86,10 +86,10 @@ const sensorCatalog = {
   ina226: {
     key: "ina226",
     title: "INA226 电流电压",
-    subtitle: "母线电压、电流与功率",
+    subtitle: "电压、电流与功率",
     icon: "📈",
     metrics: [
-      { key: "busVoltage", label: "母线电压", unit: "V", color: "#3f8cff" },
+      { key: "busVoltage", label: "电压", unit: "V", color: "#3f8cff" },
       { key: "currentMa", label: "电流", unit: "mA", color: "#ff8b5c" },
       { key: "powerMw", label: "功率", unit: "mW", color: "#7a68ff" }
     ]
@@ -130,7 +130,7 @@ const deviceCatalog = {
     sensors: [
       { key: "dht11", title: "DHT11 温湿度", subtitle: "空气温度与相对湿度", icon: "🌡️", metricLabels: { temperature: "温度", humidity: "湿度" } },
       { key: "max17043", title: "MAX17043 电量计", subtitle: "电池电量与电压", icon: "🔋", metricLabels: { voltage: "电压", percent: "电量" } },
-      { key: "ina226", title: "INA226 电流电压", subtitle: "母线电压、电流与功率", icon: "📈", metricLabels: { busVoltage: "母线电压", currentMa: "电流", powerMw: "功率" } }
+      { key: "ina226", title: "INA226 电流电压", subtitle: "电压、电流与功率", icon: "📈", metricLabels: { busVoltage: "电压", currentMa: "电流", powerMw: "功率" } }
     ],
     summary: "书房 ESP32-C3 节点，支持温湿度、电池电量计与电流电压监测。"
   },
@@ -234,6 +234,7 @@ const appState = {
   historyViewStart: 0,
   historyViewEnd: 0,
   hoverIndexByMetric: {},
+  hoverGuideXByMetric: {},
   refreshAt: null,
   roomPhotos: {},
   exportDialog: {
@@ -242,6 +243,10 @@ const appState = {
     startAt: "",
     endAt: "",
     submitting: false
+  },
+  sensorAliasEditor: {
+    submitting: false,
+    status: ""
   }
 };
 
@@ -380,6 +385,18 @@ function normalizeSensorRef(sensorRef) {
   return sensorRef || { key: "" };
 }
 
+function getDeviceSensorAlias(deviceId, sensorKey) {
+  return appState.latestSensor?.sensorAliases?.[deviceId]?.[sensorKey] || "";
+}
+
+function getSensorDisplayTitle(deviceId, sensorKey, fallbackTitle = "") {
+  return getDeviceSensorAlias(deviceId, sensorKey) || fallbackTitle || sensorCatalog[sensorKey]?.title || sensorKey;
+}
+
+function getMetricCsvColumnLabel(deviceId, sensorKey, metric) {
+  return `${getSensorDisplayTitle(deviceId, sensorKey, sensorCatalog[sensorKey]?.title || sensorKey)}_${metric.label}_${metric.unit}`;
+}
+
 function getDeviceMatchIds(catalog) {
   return catalog?.matchIds?.length ? catalog.matchIds : [catalog?.id].filter(Boolean);
 }
@@ -423,7 +440,7 @@ function getSensorSnapshot(sensorRef, deviceId) {
   const sensorDef = sensorCatalog[sensorKey];
   return {
     key: sensorKey,
-    title: ref.title || sensorDef.title,
+    title: getSensorDisplayTitle(deviceId, sensorKey, ref.title || sensorDef.title),
     subtitle: ref.subtitle || sensorDef.subtitle,
     icon: ref.icon || sensorDef.icon,
     metrics: sensorDef.metrics.map((metric) => ({
@@ -890,11 +907,11 @@ function escapeAttribute(value) {
     .replaceAll(">", "&gt;");
 }
 
-function buildMetricHistoryCsv(metric, points) {
+function buildMetricHistoryCsv(deviceId, sensorKey, metric, points) {
   const rows = [
     [
       "recorded_at",
-      `${metric.key}_${metric.label}_${metric.unit}`,
+      getMetricCsvColumnLabel(deviceId, sensorKey, metric),
       "sample_count"
     ].join(",")
   ];
@@ -946,7 +963,7 @@ async function saveCsvWithPicker(fileName, csvText) {
 
 async function exportVisibleMetricCsv(deviceId, sensorKey, metricKey) {
   const deviceTitle = deviceCatalog[deviceId]?.title || deviceId || "设备";
-  const sensorTitle = sensorCatalog[sensorKey]?.title || sensorKey || "传感器";
+  const sensorTitle = getSensorDisplayTitle(deviceId, sensorKey, sensorCatalog[sensorKey]?.title || sensorKey || "传感器");
   const metric = (appState.historyMeta.metrics || []).find((item) => item.key === metricKey);
   if (!metric) {
     throw new Error("未找到当前图表指标");
@@ -970,7 +987,7 @@ async function exportVisibleMetricCsv(deviceId, sensorKey, metricKey) {
   const fileName = sanitizeDownloadFileName(
     `${deviceTitle}_${sensorTitle}_${metric.label}_${rangeLabel}.csv`
   );
-  const result = await saveCsvWithPicker(fileName, buildMetricHistoryCsv(metric, rawPoints));
+  const result = await saveCsvWithPicker(fileName, buildMetricHistoryCsv(deviceId, sensorKey, metric, rawPoints));
   return {
     fileName,
     rowCount: rawPoints.length,
@@ -1000,6 +1017,13 @@ function closeDeviceExportDialog() {
     submitting: false
   };
   renderExportDialog();
+}
+
+async function saveSensorAliases(deviceId, aliases) {
+  return postJson("/api/device-sensor-aliases", {
+    deviceId,
+    aliases
+  });
 }
 
 function renderExportDialog() {
@@ -1226,6 +1250,25 @@ function getHistoryTickCount(startTs, endTs) {
   return 6;
 }
 
+function getTimeLabelLines(tsMs, startTs, endTs, isMobile = false) {
+  const totalSpan = Math.max(endTs - startTs, 1);
+  const date = new Date(tsMs);
+  if (isMobile) {
+    if (totalSpan <= 24 * 60 * 60 * 1000) {
+      return [
+        date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
+        date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
+      ];
+    }
+    return [
+      date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
+      date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
+    ];
+  }
+
+  return [getTimeLabel(tsMs, startTs, endTs)];
+}
+
 function getHistoryMinVisible(totalPoints) {
   if (totalPoints <= 12) return totalPoints;
   return Math.max(6, Math.min(24, Math.floor(totalPoints * 0.08)));
@@ -1255,13 +1298,174 @@ function showTooltip(tooltipEl, metric, point, position) {
     ? `${Math.round(Number(point[metric.key]))} ${metric.unit}`
     : `${Number(point[metric.key]).toFixed(1)} ${metric.unit}`;
   tooltipEl.innerHTML = `<strong>${formatPointTime(point.tsMs)}</strong><br />${valueText}`;
-  tooltipEl.style.left = `${position.x}px`;
-  tooltipEl.style.top = `${position.y}px`;
+  tooltipEl.classList.toggle("mobile-locked", Boolean(position.mobileLocked));
+  tooltipEl.style.left = position.mobileLocked ? "50%" : `${position.x}px`;
+  tooltipEl.style.top = position.mobileLocked ? "10px" : `${position.y}px`;
   tooltipEl.classList.add("visible");
+  const containerWidth = position.containerWidth || tooltipEl.parentElement?.clientWidth || 0;
+  const tipWidth = tooltipEl.offsetWidth || 0;
+  const shouldPlaceLeft = !position.mobileLocked && (
+    position.preferLeft
+    || (containerWidth > 0 && tipWidth > 0 && position.x + 14 + tipWidth > containerWidth - 6)
+  );
+  tooltipEl.style.setProperty("--tip-shift-x", position.mobileLocked ? "-50%" : (shouldPlaceLeft ? "calc(-100% - 14px)" : "14px"));
 }
 
 function hideTooltip(tooltipEl) {
-  if (tooltipEl) tooltipEl.classList.remove("visible");
+  if (!tooltipEl) return;
+  tooltipEl.classList.remove("visible", "mobile-locked");
+}
+
+function getCanvasPlotBounds(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const fallbackLeft = 0;
+  const fallbackRight = rect.width || 0;
+  const bounds = canvas._plotBounds || {};
+  return {
+    left: Number.isFinite(bounds.left) ? bounds.left : fallbackLeft,
+    right: Number.isFinite(bounds.right) ? bounds.right : fallbackRight
+  };
+}
+
+function resolveNearestHitPoint(canvas, clientX) {
+  const rect = canvas.getBoundingClientRect();
+  const { left: plotLeft, right: plotRight } = getCanvasPlotBounds(canvas);
+  const rawX = clientX - rect.left;
+  const x = Math.max(plotLeft, Math.min(plotRight, rawX));
+  const hitPoints = canvas._hitPoints || [];
+  let nearest = null;
+  let nearestDistance = Infinity;
+
+  hitPoints.forEach((item) => {
+    const distance = Math.abs(item.x - x);
+    if (distance < nearestDistance) {
+      nearest = item;
+      nearestDistance = distance;
+    }
+  });
+
+  if (!nearest) {
+    return null;
+  }
+  if (!isMobileChartInteraction() && nearestDistance > 44) {
+    return null;
+  }
+  return nearest;
+}
+
+function updateMetricHover(metric, canvas, tooltipEl, clientX) {
+  const nearest = resolveNearestHitPoint(canvas, clientX);
+  if (!nearest || nearest.point[metric.key] == null) {
+    appState.hoverIndexByMetric[metric.key] = null;
+    appState.hoverGuideXByMetric[metric.key] = null;
+    hideTooltip(tooltipEl);
+    drawMetricChart(metric, canvas, tooltipEl);
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const { left: plotLeft, right: plotRight } = getCanvasPlotBounds(canvas);
+  const rawX = clientX - rect.left;
+  const clampedX = Math.max(plotLeft, Math.min(plotRight, rawX));
+  appState.hoverIndexByMetric[metric.key] = nearest.index;
+  appState.hoverGuideXByMetric[metric.key] = clampedX;
+  drawMetricChart(metric, canvas, tooltipEl);
+  showTooltip(tooltipEl, metric, nearest.point, {
+    x: clampedX,
+    y: 34,
+    preferLeft: clampedX > plotRight - 140,
+    containerWidth: rect.width,
+    mobileLocked: isMobileChartInteraction()
+  });
+}
+
+function setMetricHoverByHitPoint(metric, canvas, tooltipEl, hitPoint) {
+  if (!hitPoint || hitPoint.point?.[metric.key] == null) {
+    clearMetricHover(metric, canvas, tooltipEl);
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const { left: plotLeft, right: plotRight } = getCanvasPlotBounds(canvas);
+  const clampedX = Math.max(plotLeft, Math.min(plotRight, hitPoint.x));
+  appState.hoverIndexByMetric[metric.key] = hitPoint.index;
+  appState.hoverGuideXByMetric[metric.key] = clampedX;
+  drawMetricChart(metric, canvas, tooltipEl);
+  showTooltip(tooltipEl, metric, hitPoint.point, {
+    x: clampedX,
+    y: 34,
+    preferLeft: clampedX > plotRight - 140,
+    containerWidth: rect.width,
+    mobileLocked: isMobileChartInteraction()
+  });
+}
+
+function clearMetricHover(metric, canvas, tooltipEl) {
+  appState.hoverIndexByMetric[metric.key] = null;
+  appState.hoverGuideXByMetric[metric.key] = null;
+  hideTooltip(tooltipEl);
+  drawMetricChart(metric, canvas, tooltipEl);
+}
+
+function getClientXFromTouchEvent(event) {
+  const touch = event.touches?.[0] || event.changedTouches?.[0];
+  return touch?.clientX ?? null;
+}
+
+function isMobileChartInteraction() {
+  return window.matchMedia?.("(pointer: coarse)")?.matches || window.innerWidth <= 768;
+}
+
+function bindMetricCanvasInteraction(metric, canvas, tooltipEl) {
+  canvas.addEventListener("mouseleave", () => {
+    clearMetricHover(metric, canvas, tooltipEl);
+  });
+
+  canvas.addEventListener("mousemove", (event) => {
+    updateMetricHover(metric, canvas, tooltipEl, event.clientX);
+  });
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      updateMetricHover(metric, canvas, tooltipEl, event.clientX);
+    }
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      event.preventDefault();
+      updateMetricHover(metric, canvas, tooltipEl, event.clientX);
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("pointerup", (event) => {
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      updateMetricHover(metric, canvas, tooltipEl, event.clientX);
+    }
+  });
+
+  canvas.addEventListener("pointercancel", () => {
+    clearMetricHover(metric, canvas, tooltipEl);
+  });
+
+  canvas.addEventListener("touchstart", (event) => {
+    const clientX = getClientXFromTouchEvent(event);
+    if (clientX == null) return;
+    event.preventDefault();
+    updateMetricHover(metric, canvas, tooltipEl, clientX);
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", (event) => {
+    const clientX = getClientXFromTouchEvent(event);
+    if (clientX == null) return;
+    event.preventDefault();
+    updateMetricHover(metric, canvas, tooltipEl, clientX);
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", (event) => {
+    const clientX = getClientXFromTouchEvent(event);
+    if (clientX == null) return;
+    updateMetricHover(metric, canvas, tooltipEl, clientX);
+  }, { passive: true });
 }
 
 function drawMetricChart(metric, canvas, tooltipEl) {
@@ -1269,7 +1473,10 @@ function drawMetricChart(metric, canvas, tooltipEl) {
   const { width, height, dpr } = getCanvasSize(canvas);
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
   const points = getVisibleHistoryPoints();
-  const padding = { top: 18, right: 20, bottom: 44, left: 64 };
+  const isMobile = isMobileChartInteraction();
+  const padding = isMobile
+    ? { top: 18, right: 14, bottom: 78, left: 50 }
+    : { top: 18, right: 20, bottom: 44, left: 64 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const scale = buildMetricScale(metric, points);
@@ -1303,17 +1510,16 @@ function drawMetricChart(metric, canvas, tooltipEl) {
 
   if (scale) {
     context.fillStyle = "#7b6f62";
-    context.font = "12px Segoe UI";
+    context.font = `${isMobile ? 11 : 12}px Segoe UI`;
     context.textAlign = "right";
     for (let i = 0; i <= 4; i += 1) {
       const y = padding.top + (plotHeight / 4) * i + 4;
       const value = scale.max - ((scale.max - scale.min) * i) / 4;
-      // 含单位的纵轴标签
       const label = metric.unit === "lux"
-        ? `${Math.round(value)} lux`
+        ? `${Math.round(value)}`
         : metric.unit === "%RH" || metric.unit === "%"
-          ? `${value.toFixed(0)}${metric.unit}`
-          : `${value.toFixed(1)} ${metric.unit}`;
+          ? `${value.toFixed(0)}`
+          : `${value.toFixed(1)}`;
       context.fillText(label, padding.left - 8, y);
       // 左侧刻度短线
       context.strokeStyle = "rgba(100, 110, 130, 0.30)";
@@ -1358,7 +1564,10 @@ function drawMetricChart(metric, canvas, tooltipEl) {
   const hoverIndex = appState.hoverIndexByMetric[metric.key];
   if (hoverIndex != null && points[hoverIndex]?.[metric.key] != null) {
     const hoverPoint = points[hoverIndex];
-    const hoverX = toX(hoverPoint.tsMs);
+    const hoverGuideX = appState.hoverGuideXByMetric[metric.key];
+    const hoverX = Number.isFinite(hoverGuideX)
+      ? Math.max(padding.left, Math.min(width - padding.right, hoverGuideX))
+      : toX(hoverPoint.tsMs);
     context.save();
     context.strokeStyle = "rgba(67, 84, 111, 0.45)";
     context.lineWidth = 1.25;
@@ -1370,16 +1579,30 @@ function drawMetricChart(metric, canvas, tooltipEl) {
     context.restore();
   }
 
+  if (isMobile) {
+    context.fillStyle = "rgba(246, 248, 252, 0.98)";
+    context.fillRect(padding.left - 6, padding.top + plotHeight + 8, plotWidth + 12, height - (padding.top + plotHeight + 8));
+  }
+
   context.fillStyle = "#7b6f62";
-  context.font = "12px Segoe UI";
+  context.font = `${isMobile ? 11 : 12}px Segoe UI`;
   context.textAlign = "center";
-  const tickCount = Math.min(getHistoryTickCount(startTs, endTs), Math.max(points.length, 2));
+  const tickCount = Math.min(
+    isMobile ? 4 : getHistoryTickCount(startTs, endTs),
+    Math.max(points.length, 2)
+  );
   for (let i = 0; i < tickCount; i += 1) {
     const ratio = tickCount === 1 ? 0 : i / Math.max(tickCount - 1, 1);
     const tickTs = startTs + timeSpan * ratio;
     const x = toX(tickTs);
     context.textAlign = i === 0 ? "left" : i === tickCount - 1 ? "right" : "center";
-    context.fillText(getTimeLabel(tickTs, startTs, endTs), x, height - 8);
+    const labelLines = getTimeLabelLines(tickTs, startTs, endTs, isMobile);
+    if (isMobile) {
+      context.fillText(labelLines[0], x, height - 30);
+      context.fillText(labelLines[1] || "", x, height - 14);
+    } else {
+      context.fillText(labelLines[0], x, height - 8);
+    }
     // X 轴刻度短线
     context.strokeStyle = "rgba(100, 110, 130, 0.30)";
     context.lineWidth = 1;
@@ -1390,7 +1613,11 @@ function drawMetricChart(metric, canvas, tooltipEl) {
     context.stroke();
   }
 
-  canvas._hitPoints = points.map((point, index) => ({ index, x: toX(point.tsMs), point }));
+  canvas._plotBounds = {
+    left: padding.left,
+    right: width - padding.right
+  };
+  canvas._hitPoints = validPoints.map(({ point, index }) => ({ index, x: toX(point.tsMs), point }));
 }
 
 function renderHistoryPanels() {
@@ -1409,8 +1636,9 @@ function renderHistoryPanels() {
         <canvas width="520" height="280"></canvas>
         <div class="chart-tip"></div>
       </div>
-      <div class="history-panel-actions">
-        <button class="ghost-btn" data-export-metric="${metric.key}">导出 ${metric.label} CSV</button>
+      <div class="chart-scrubber-wrap">
+        <input class="chart-scrubber" type="range" min="0" max="0" step="1" value="0" />
+        <div class="chart-scrubber-meta">手机上可拖动这里精确查看任意时间点</div>
       </div>
       <div class="history-panel-note"></div>
     `;
@@ -1418,29 +1646,29 @@ function renderHistoryPanels() {
     const canvas = panel.querySelector("canvas");
     const tooltipEl = panel.querySelector(".chart-tip");
     const noteEl = panel.querySelector(".history-panel-note");
-    const exportBtn = panel.querySelector("[data-export-metric]");
+    const scrubberEl = panel.querySelector(".chart-scrubber");
     drawMetricChart(metric, canvas, tooltipEl);
     const sampleCount = appState.historyPoints.filter((point) => point[metric.key] != null).length;
     noteEl.textContent = sampleCount ? `${metric.label} 共 ${sampleCount} 个历史点。双击可重置缩放，滚轮可缩放。` : `${metric.label} 正在等待上报。`;
-
-    exportBtn?.addEventListener("click", async () => {
-      const statusEl = document.getElementById("historyExportStatus");
-      try {
-        if (statusEl) {
-          statusEl.textContent = "正在生成并保存当前曲线 CSV...";
-        }
-        const data = await exportVisibleMetricCsv(appState.activeDeviceId, appState.activeSensorKey, metric.key);
-        if (statusEl) {
-          statusEl.textContent = data.mode === "picker"
-            ? `已保存：${data.fileName}`
-            : `已触发下载：${data.fileName}`;
-        }
-      } catch (error) {
-        if (statusEl) {
-          statusEl.textContent = `导出失败：${error.message}`;
-        }
+    const hitPoints = canvas._hitPoints || [];
+    if (scrubberEl) {
+      if (hitPoints.length) {
+        scrubberEl.max = String(hitPoints.length - 1);
+        scrubberEl.value = String(hitPoints.length - 1);
+        scrubberEl.disabled = false;
+      } else {
+        scrubberEl.max = "0";
+        scrubberEl.value = "0";
+        scrubberEl.disabled = true;
       }
-    });
+      const syncScrubberHover = () => {
+        if (!hitPoints.length) return;
+        const hitPoint = hitPoints[Math.max(0, Math.min(hitPoints.length - 1, Number(scrubberEl.value) || 0))];
+        setMetricHoverByHitPoint(metric, canvas, tooltipEl, hitPoint);
+      };
+      scrubberEl.addEventListener("input", syncScrubberHover);
+      scrubberEl.addEventListener("change", syncScrubberHover);
+    }
 
     canvas.addEventListener("dblclick", () => resetChartZoom());
     canvas.addEventListener("wheel", (event) => {
@@ -1468,39 +1696,11 @@ function renderHistoryPanels() {
       appState.historyViewStart = nextStart;
       appState.historyViewEnd = nextEnd;
       appState.hoverIndexByMetric = {};
+      appState.hoverGuideXByMetric = {};
       renderHistoryPanels();
     }, { passive: false });
 
-    canvas.addEventListener("mouseleave", () => {
-      appState.hoverIndexByMetric[metric.key] = null;
-      hideTooltip(tooltipEl);
-      drawMetricChart(metric, canvas, tooltipEl);
-    });
-
-    canvas.addEventListener("mousemove", (event) => {
-      const rect = canvas.getBoundingClientRect();
-      // _hitPoints.x 已是 CSS 像素坐标（与 toX() 同空间），直接用鼠标偏移量比较
-      const x = event.clientX - rect.left;
-      const hitPoints = canvas._hitPoints || [];
-      let nearest = null;
-      let nearestDistance = Infinity;
-      hitPoints.forEach((item) => {
-        const distance = Math.abs(item.x - x);
-        if (distance < nearestDistance) {
-          nearest = item;
-          nearestDistance = distance;
-        }
-      });
-      if (!nearest || nearestDistance > 36 || nearest.point[metric.key] == null) {
-        appState.hoverIndexByMetric[metric.key] = null;
-        hideTooltip(tooltipEl);
-        drawMetricChart(metric, canvas, tooltipEl);
-        return;
-      }
-      appState.hoverIndexByMetric[metric.key] = nearest.index;
-      drawMetricChart(metric, canvas, tooltipEl);
-      showTooltip(tooltipEl, metric, nearest.point, { x: nearest.x, y: 34 });
-    });
+    bindMetricCanvasInteraction(metric, canvas, tooltipEl);
 
     historyPanelsEl.appendChild(panel);
   });
@@ -1661,6 +1861,7 @@ async function refreshSensorHistory(deviceId, sensorKey) {
   appState.historyViewStart = 0;
   appState.historyViewEnd = appState.historyPoints.length;
   appState.hoverIndexByMetric = {};
+  appState.hoverGuideXByMetric = {};
   updateHistoryHeader(data);
   renderHistoryPanels();
 }
@@ -1732,7 +1933,8 @@ function getDevicePages(catalog, snapshot) {
   const controlPages = catalog.id === "yard-01"
     ? [{ key: "control:pump", label: "🧯 水泵控制", kind: "control", controlKey: "pump" }]
     : [];
-  return [...sensorPages, ...controlPages];
+  const settingsPages = [{ key: "settings:sensor-aliases", label: "⚙️ 名称映射", kind: "settings", settingsKey: "sensor-aliases" }];
+  return [...sensorPages, ...controlPages, ...settingsPages];
 }
 
 function getMetricNumber(sensor, metricKey) {
@@ -1915,6 +2117,47 @@ function renderSensorPageContent(sensor) {
   `;
 }
 
+function renderSensorAliasSettingsSection(deviceId, sensors) {
+  const aliasMap = appState.latestSensor?.sensorAliases?.[deviceId] || {};
+  const statusText = appState.sensorAliasEditor.status || "把实际上报的传感器名映射成更贴近安装位置的显示名。留空会恢复默认名称。";
+
+  return `
+    <article class="info-card" style="grid-column: span 12; margin-top: 12px;">
+      <div class="detail-block-head">
+        <div class="detail-block-title">传感器名称映射</div>
+        <div class="detail-helper">保存后，设备分页、历史标题和 CSV 导出列名都会使用这里的名称</div>
+      </div>
+      <div class="info-list" style="margin-top: 16px;">
+        ${sensors.map((sensor) => `
+          <div class="info-row" style="align-items: center; gap: 16px;">
+            <div style="flex: 1 1 240px;">
+              <div class="info-label">实际上报</div>
+              <strong>${sensor.icon} ${sensorCatalog[sensor.key]?.title || sensor.key}</strong>
+              <div class="detail-helper" style="margin-top: 4px;">键名：${sensor.key}</div>
+            </div>
+            <div style="flex: 1 1 320px;">
+              <div class="info-label">页面显示 / CSV 前缀</div>
+              <input
+                class="date-input modal-input"
+                data-sensor-alias-input="${sensor.key}"
+                type="text"
+                maxlength="60"
+                placeholder="${escapeAttribute(sensorCatalog[sensor.key]?.title || sensor.key)}"
+                value="${escapeAttribute(aliasMap[sensor.key] || "")}"
+              />
+            </div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="history-toolbar" style="margin-top: 18px;">
+        <button class="ghost-btn" id="resetSensorAliasBtn">恢复默认名称</button>
+        <button class="range-btn active" id="saveSensorAliasBtn">${appState.sensorAliasEditor.submitting ? "保存中..." : "保存映射"}</button>
+      </div>
+      <p class="footer-note" id="sensorAliasStatus">${statusText}</p>
+    </article>
+  `;
+}
+
 function renderDevicePageGroup(title, helper, pages, currentPage) {
   if (!pages.length) {
     return "";
@@ -1941,6 +2184,7 @@ function renderDevicePages(snapshot, catalog, selectedPageKey) {
   const currentSensor = currentPage?.kind === "sensor"
     ? snapshot.sensors.find((sensor) => sensor.key === currentPage.sensorKey)
     : null;
+  const settingsPages = pages.filter((page) => page.kind === "settings");
   const onlinePages = pages.filter((page) => {
     if (page.kind !== "sensor") {
       return false;
@@ -1962,11 +2206,16 @@ function renderDevicePages(snapshot, catalog, selectedPageKey) {
   return `
     <section style="margin-top:20px;">
       <div class="detail-block-head">
-        <div class="detail-block-title">设备内分页</div>
+      <div class="detail-block-title">设备内分页</div>
       </div>
       ${renderDevicePageGroup("在线设备", "正在实时上报的传感器", onlinePages, currentPage)}
       ${renderDevicePageGroup("掉线设备", "离线传感器和历史/控制入口", offlinePages, currentPage)}
-      ${currentPage?.kind === "control" ? renderPumpControlSection(catalog.id) : renderSensorPageContent(currentSensor)}
+      ${renderDevicePageGroup("设置", "设备内显示名称等本地映射", settingsPages, currentPage)}
+      ${currentPage?.kind === "control"
+        ? renderPumpControlSection(catalog.id)
+        : currentPage?.kind === "settings"
+          ? renderSensorAliasSettingsSection(catalog.id, snapshot.sensors)
+          : renderSensorPageContent(currentSensor)}
     </section>
   `;
 }
@@ -2386,6 +2635,61 @@ function bindIoTDeviceEvents(deviceId) {
       }
     }
   });
+
+  document.getElementById("resetSensorAliasBtn")?.addEventListener("click", () => {
+    document.querySelectorAll("[data-sensor-alias-input]").forEach((input) => {
+      input.value = "";
+    });
+    appState.sensorAliasEditor.status = "已恢复为默认名称，点保存后生效。";
+    const statusEl = document.getElementById("sensorAliasStatus");
+    if (statusEl) {
+      statusEl.textContent = appState.sensorAliasEditor.status;
+    }
+  });
+
+  document.getElementById("saveSensorAliasBtn")?.addEventListener("click", async () => {
+    const statusEl = document.getElementById("sensorAliasStatus");
+    const saveBtn = document.getElementById("saveSensorAliasBtn");
+    const aliases = {};
+    document.querySelectorAll("[data-sensor-alias-input]").forEach((input) => {
+      aliases[input.dataset.sensorAliasInput] = input.value;
+    });
+
+    try {
+      appState.sensorAliasEditor.submitting = true;
+      appState.sensorAliasEditor.status = "正在保存名称映射...";
+      if (statusEl) {
+        statusEl.textContent = appState.sensorAliasEditor.status;
+      }
+      if (saveBtn) {
+        saveBtn.textContent = "保存中...";
+        saveBtn.disabled = true;
+      }
+      const response = await saveSensorAliases(deviceId, aliases);
+      if (!appState.latestSensor) {
+        appState.latestSensor = {};
+      }
+      if (!appState.latestSensor.sensorAliases) {
+        appState.latestSensor.sensorAliases = {};
+      }
+      appState.latestSensor.sensorAliases[deviceId] = response.aliases || {};
+      appState.sensorAliasEditor.status = "名称映射已保存，当前页面和后续 CSV 导出都会使用新名称。";
+      appState.historyCache.clear();
+      renderOverview();
+      renderDeviceDetail(deviceId);
+    } catch (error) {
+      appState.sensorAliasEditor.status = `保存失败：${error.message}`;
+      if (statusEl) {
+        statusEl.textContent = appState.sensorAliasEditor.status;
+      }
+    } finally {
+      appState.sensorAliasEditor.submitting = false;
+      if (saveBtn) {
+        saveBtn.textContent = "保存映射";
+        saveBtn.disabled = false;
+      }
+    }
+  });
 }
 
 function renderServerCharts() {
@@ -2463,6 +2767,12 @@ function renderDeviceDetail(deviceId) {
 
 function openDevice(deviceId) {
   if (!deviceCatalog[deviceId]) return;
+  if (appState.activeDeviceId !== deviceId) {
+    appState.sensorAliasEditor = {
+      submitting: false,
+      status: ""
+    };
+  }
   renderDeviceDetail(deviceId);
   const nextHash = `#device=${encodeURIComponent(deviceId)}`;
   if (location.hash !== nextHash) {
@@ -2481,6 +2791,10 @@ function closeDetail() {
   appState.activeDeviceId = null;
   appState.activeDevicePageKey = null;
   appState.activeSensorKey = null;
+  appState.sensorAliasEditor = {
+    submitting: false,
+    status: ""
+  };
   appState.exportDialog.open = false;
   els.detailView.classList.remove("active");
   els.overviewView.classList.remove("hidden");

@@ -84,7 +84,7 @@ const SENSOR_CONFIG = {
   ina226: {
     label: "INA226 电流电压",
     metrics: [
-      { key: "busVoltage", label: "母线电压", unit: "V", color: "#3f8cff", axis: "left" },
+      { key: "busVoltage", label: "电压", unit: "V", color: "#3f8cff", axis: "left" },
       { key: "currentMa", label: "电流", unit: "mA", color: "#ff8b5c", axis: "right" },
       { key: "powerMw", label: "功率", unit: "mW", color: "#7a68ff", axis: "right" }
     ]
@@ -132,6 +132,7 @@ const dbPath = path.join(dataDir, "sensor-history.db");
 const uploadsDir = path.join(publicDir, "uploads");
 const roomUploadsDir = path.join(uploadsDir, "rooms");
 const roomPhotoMetaPath = path.join(dataDir, "room-photos.json");
+const sensorAliasMetaPath = path.join(dataDir, "device-sensor-aliases.json");
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -339,6 +340,87 @@ function loadRoomPhotoMap() {
 
 function saveRoomPhotoMap(roomPhotos) {
   writeJsonFile(roomPhotoMetaPath, roomPhotos);
+}
+
+function loadDeviceSensorAliasMap() {
+  const raw = readJsonFile(sensorAliasMetaPath, {});
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  return raw;
+}
+
+function saveDeviceSensorAliasMap(sensorAliases) {
+  writeJsonFile(sensorAliasMetaPath, sensorAliases);
+}
+
+let deviceSensorAliases = loadDeviceSensorAliasMap();
+
+function getSensorDisplayLabel(deviceId, sensorKey, fallbackLabel = null) {
+  const alias = deviceSensorAliases?.[deviceId]?.[sensorKey];
+  if (typeof alias === "string" && alias.trim()) {
+    return alias.trim();
+  }
+  return fallbackLabel || SENSOR_CONFIG[sensorKey]?.label || sensorKey;
+}
+
+function getMetricColumnLabel(deviceId, sensorKey, metric) {
+  return `${getSensorDisplayLabel(deviceId, sensorKey, SENSOR_CONFIG[sensorKey]?.label || sensorKey)}_${metric.label}_${metric.unit}`;
+}
+
+function sanitizeSensorAliasInput(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+}
+
+function getDeviceSensorAliasPayload(deviceId = null) {
+  if (deviceId) {
+    return deviceSensorAliases?.[deviceId] || {};
+  }
+  return deviceSensorAliases;
+}
+
+function saveDeviceSensorAliases(payload) {
+  const deviceId = canonicalizeDeviceId(payload.deviceId || "");
+  if (!deviceId || !DEVICE_ALIAS_BY_ID[deviceId]) {
+    throw new Error("invalid deviceId");
+  }
+
+  const aliases = payload.aliases;
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) {
+    throw new Error("aliases must be an object");
+  }
+
+  const next = {};
+  Object.entries(aliases).forEach(([sensorKey, alias]) => {
+    const canonicalSensorKey = canonicalizeSensorKey(sensorKey);
+    if (!canonicalSensorKey || !SENSOR_CONFIG[canonicalSensorKey]) {
+      return;
+    }
+    const normalized = sanitizeSensorAliasInput(alias);
+    if (normalized) {
+      next[canonicalSensorKey] = normalized;
+    }
+  });
+
+  if (Object.keys(next).length > 0) {
+    deviceSensorAliases = {
+      ...deviceSensorAliases,
+      [deviceId]: next
+    };
+  } else if (deviceSensorAliases[deviceId]) {
+    const { [deviceId]: _removed, ...rest } = deviceSensorAliases;
+    deviceSensorAliases = rest;
+  }
+
+  saveDeviceSensorAliasMap(deviceSensorAliases);
+
+  return {
+    deviceId,
+    aliases: deviceSensorAliases[deviceId] || {}
+  };
 }
 
 function sanitizeUploadFileName(name) {
@@ -946,6 +1028,7 @@ function buildLatestResponse() {
     updatedAt: dht11.updatedAt,
     sensors: latestSensors,
     deviceSensors: latestSensorsByDevice,
+    sensorAliases: deviceSensorAliases,
     mqtt: {
       port: mqttStatus.port,
       lastMessageAt: mqttStatus.lastMessageAt,
@@ -1076,7 +1159,8 @@ function buildHistoryExportResult({ deviceId, sensorKey, metricKey = null, range
     deviceNames: deviceId ? [deviceId] : [],
     range,
     date,
-    metricKey
+    metricKey,
+    resolveSensorLabel: getSensorDisplayLabel
   });
   const deviceLabel = DEVICE_ALIAS_BY_ID[deviceId] || deviceId || "未命名设备";
   const saved = writeHistoryCsvFile({
@@ -1120,7 +1204,8 @@ function getRawSensorHistory(parsedUrl) {
     deviceNames,
     range,
     date,
-    metricKey
+    metricKey,
+    resolveSensorLabel: getSensorDisplayLabel
   });
 }
 
@@ -1158,12 +1243,12 @@ function buildMultiSensorRawExport(payload) {
     }
     return config.metrics.map((metric) => ({
       sensorKey,
-      sensorLabel: config.label,
+      sensorLabel: getSensorDisplayLabel(deviceId, sensorKey, config.label),
       metricKey: metric.key,
       metricLabel: metric.label,
       unit: metric.unit,
       columnKey: `${sensorKey}.${metric.key}`,
-      columnLabel: `${config.label}_${metric.label}_${metric.unit}`
+      columnLabel: getMetricColumnLabel(deviceId, sensorKey, metric)
     }));
   });
 
@@ -1212,7 +1297,7 @@ function buildMultiSensorRawExport(payload) {
 
   const deviceLabel = DEVICE_ALIAS_BY_ID[deviceId] || deviceId;
   const sensorLabelText = sensorKeys
-    .map((sensorKey) => SENSOR_CONFIG[sensorKey]?.label || sensorKey)
+    .map((sensorKey) => getSensorDisplayLabel(deviceId, sensorKey, SENSOR_CONFIG[sensorKey]?.label || sensorKey))
     .join("+");
   const startLabel = startAt.replace(/[:T]/g, "-");
   const endLabel = endAt.replace(/[:T]/g, "-");
@@ -1308,7 +1393,7 @@ function getSensorHistory(parsedUrl) {
 
   return {
     mode: window.mode,
-    label: `${deviceNames[0] ? `${deviceNames[0]} · ` : ""}${series.label} · ${window.label}`,
+    label: `${deviceNames[0] ? `${deviceNames[0]} · ` : ""}${getSensorDisplayLabel(deviceNames[0] || null, series.key, series.label)} · ${window.label}`,
     series: series.key,
     device: deviceNames[0] || null,
     devices: deviceNames,
@@ -1613,6 +1698,31 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && parsedUrl.pathname === "/api/room-photos") {
     sendJson(res, 200, buildRoomPhotoResponse());
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/device-sensor-aliases") {
+    const deviceId = String(parsedUrl.searchParams.get("deviceId") || "").trim();
+    sendJson(res, 200, {
+      aliases: getDeviceSensorAliasPayload(deviceId ? canonicalizeDeviceId(deviceId) : null)
+    });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/device-sensor-aliases") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        sendJson(res, 200, {
+          message: "sensor aliases saved",
+          ...saveDeviceSensorAliases(payload)
+        });
+      })
+      .catch((error) => {
+        sendJson(res, 400, {
+          message: error.message || "invalid alias payload"
+        });
+      });
     return;
   }
 

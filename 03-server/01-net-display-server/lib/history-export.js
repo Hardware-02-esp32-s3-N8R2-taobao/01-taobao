@@ -66,7 +66,7 @@ function resolveAbsoluteWindow({ startAt = "", endAt = "" }) {
   };
 }
 
-function fetchSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [], range = "24h", date = "" }) {
+function fetchSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [], range = "24h", date = "", resolveSensorLabel = null }) {
   const config = sensorConfigMap[sensorKey];
   if (!config) {
     throw new Error("invalid series");
@@ -118,14 +118,16 @@ function fetchSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [], 
     endTs: window.endTs,
     bucketMinutes: window.bucketMinutes,
     sensorKey,
-    sensorLabel: config.label,
+    sensorLabel: typeof resolveSensorLabel === "function"
+      ? resolveSensorLabel(normalizedDevices[0] || null, sensorKey, config.label)
+      : config.label,
     metrics: config.metrics,
     devices: normalizedDevices,
     points: Array.from(pointsByTs.values()).sort((a, b) => a.tsMs - b.tsMs)
   };
 }
 
-function fetchRawSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [], range = "24h", date = "", metricKey = null }) {
+function fetchRawSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [], range = "24h", date = "", metricKey = null, resolveSensorLabel = null }) {
   const config = sensorConfigMap[sensorKey];
   if (!config) {
     throw new Error("invalid series");
@@ -168,7 +170,9 @@ function fetchRawSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [
       endTs: window.endTs,
       bucketMinutes: null,
       sensorKey,
-      sensorLabel: config.label,
+      sensorLabel: typeof resolveSensorLabel === "function"
+        ? resolveSensorLabel(normalizedDevices[0] || null, sensorKey, config.label)
+        : config.label,
       metrics: config.metrics.filter((metric) => metric.key === metricKey),
       devices: normalizedDevices,
       points: rows.map((row) => ({
@@ -200,7 +204,9 @@ function fetchRawSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [
     endTs: window.endTs,
     bucketMinutes: null,
     sensorKey,
-    sensorLabel: config.label,
+    sensorLabel: typeof resolveSensorLabel === "function"
+      ? resolveSensorLabel(normalizedDevices[0] || null, sensorKey, config.label)
+      : config.label,
     metrics: config.metrics,
     devices: normalizedDevices,
     points: Array.from(pointsByTs.values()).sort((a, b) => a.tsMs - b.tsMs)
@@ -236,7 +242,7 @@ function buildHistoryCsvText(history, metricKey = null) {
 
   const header = [
     "recorded_at",
-    ...metrics.map((metric) => `${metric.key}_${metric.label}_${metric.unit}`),
+    ...metrics.map((metric) => `${history.sensorLabel}_${metric.label}_${metric.unit}`),
     "sample_count"
   ];
 
