@@ -46,6 +46,26 @@ function resolveHistoryWindow({ range = "24h", date = "" }, now = Date.now()) {
   };
 }
 
+function resolveAbsoluteWindow({ startAt = "", endAt = "" }) {
+  const startTs = new Date(String(startAt || "").trim()).getTime();
+  const endTs = new Date(String(endAt || "").trim()).getTime();
+  if (!Number.isFinite(startTs) || !Number.isFinite(endTs)) {
+    throw new Error("invalid datetime range");
+  }
+  if (endTs <= startTs) {
+    throw new Error("endAt must be later than startAt");
+  }
+  return {
+    mode: "absolute",
+    key: "absolute",
+    label: `${startAt} ~ ${endAt}`,
+    fileLabel: `${startAt}_${endAt}`,
+    startTs,
+    endTs,
+    bucketMinutes: null
+  };
+}
+
 function fetchSensorHistory({ db, sensorConfigMap, sensorKey, deviceNames = [], range = "24h", date = "" }) {
   const config = sensorConfigMap[sensorKey];
   if (!config) {
@@ -215,7 +235,6 @@ function buildHistoryCsvText(history, metricKey = null) {
   }
 
   const header = [
-    "timestamp_ms",
     "recorded_at",
     ...metrics.map((metric) => `${metric.key}_${metric.label}_${metric.unit}`),
     "sample_count"
@@ -225,7 +244,6 @@ function buildHistoryCsvText(history, metricKey = null) {
     header.map(csvEscape).join(","),
     ...history.points.map((point) => {
       const row = [
-        point.tsMs,
         new Date(point.tsMs).toISOString(),
         ...metrics.map((metric) => point[metric.key] ?? ""),
         point.sampleCount ?? 0
@@ -272,6 +290,7 @@ module.exports = {
   buildHistoryCsvText,
   fetchRawSensorHistory,
   fetchSensorHistory,
+  resolveAbsoluteWindow,
   resolveHistoryWindow,
   sanitizeFileName,
   writeHistoryCsvFile

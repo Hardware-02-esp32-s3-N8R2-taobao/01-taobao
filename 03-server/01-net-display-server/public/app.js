@@ -235,7 +235,14 @@ const appState = {
   historyViewEnd: 0,
   hoverIndexByMetric: {},
   refreshAt: null,
-  roomPhotos: {}
+  roomPhotos: {},
+  exportDialog: {
+    open: false,
+    sensorKeys: [],
+    startAt: "",
+    endAt: "",
+    submitting: false
+  }
 };
 
 const els = {
@@ -873,10 +880,30 @@ function getCurrentHistoryRangeLabel() {
   return appState.historyQuery.date || appState.historyQuery.range || "24h";
 }
 
+function toDateTimeLocalValue(input) {
+  const date = input ? new Date(input) : new Date();
+  if (!Number.isFinite(date.getTime())) {
+    return "";
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function escapeAttribute(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function buildMetricHistoryCsv(metric, points) {
   const rows = [
     [
-      "timestamp_ms",
       "recorded_at",
       `${metric.key}_${metric.label}_${metric.unit}`,
       "sample_count"
@@ -888,7 +915,6 @@ function buildMetricHistoryCsv(metric, points) {
       return;
     }
     rows.push([
-      point.tsMs,
       point.recordedAt || new Date(point.tsMs).toISOString(),
       point[metric.key],
       point.sampleCount ?? 0
@@ -961,6 +987,175 @@ async function exportVisibleMetricCsv(deviceId, sensorKey, metricKey) {
     rowCount: rawPoints.length,
     mode: result.mode
   };
+}
+
+function openDeviceExportDialog(deviceId) {
+  const now = new Date();
+  const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  appState.exportDialog = {
+    open: true,
+    sensorKeys: [],
+    startAt: toDateTimeLocalValue(start),
+    endAt: toDateTimeLocalValue(now),
+    submitting: false
+  };
+  renderExportDialog();
+}
+
+function closeDeviceExportDialog() {
+  appState.exportDialog = {
+    open: false,
+    sensorKeys: [],
+    startAt: "",
+    endAt: "",
+    submitting: false
+  };
+  renderExportDialog();
+}
+
+function renderExportDialog() {
+  const root = document.getElementById("exportModalRoot");
+  if (!root) return;
+
+  if (!appState.exportDialog.open || !appState.activeDeviceId) {
+    root.innerHTML = "";
+    return;
+  }
+
+  const deviceId = appState.activeDeviceId;
+  const catalog = deviceCatalog[deviceId];
+  const snapshot = getDeviceSnapshot(deviceId);
+  const sensors = snapshot?.sensors || [];
+  root.innerHTML = `
+    <div class="modal-backdrop" data-export-modal-close="mask">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="multiExportTitle">
+        <div class="modal-head">
+          <div>
+            <div class="detail-block-title" id="multiExportTitle">导出多传感器 CSV</div>
+            <div class="detail-helper">当前设备：${escapeHtml(catalog?.title || deviceId)}</div>
+          </div>
+          <button class="ghost-btn" type="button" data-export-modal-close="button">关闭</button>
+        </div>
+        <div class="modal-section">
+          <div class="modal-label">选择传感器</div>
+          <div class="modal-sensor-grid">
+            ${sensors.map((sensor) => `
+              <label class="modal-check">
+                <input
+                  type="checkbox"
+                  value="${escapeAttribute(sensor.key)}"
+                  data-export-sensor
+                  ${appState.exportDialog.sensorKeys.includes(sensor.key) ? "checked" : ""}
+                />
+                <span>${escapeHtml(sensor.title)}</span>
+              </label>
+            `).join("")}
+          </div>
+        </div>
+        <div class="modal-section">
+          <div class="modal-label">开始时间</div>
+          <input class="date-input modal-input" id="multiExportStartAt" type="datetime-local" value="${escapeAttribute(appState.exportDialog.startAt)}" />
+        </div>
+        <div class="modal-section">
+          <div class="modal-label">结束时间</div>
+          <input class="date-input modal-input" id="multiExportEndAt" type="datetime-local" value="${escapeAttribute(appState.exportDialog.endAt)}" />
+        </div>
+        <div class="modal-actions">
+          <button class="ghost-btn" type="button" id="multiExportSelectAllBtn">全选</button>
+          <button class="ghost-btn" type="button" id="multiExportClearBtn">清空</button>
+          <button class="range-btn active" type="button" id="multiExportSubmitBtn">
+            ${appState.exportDialog.submitting ? "导出中..." : "导出 CSV"}
+          </button>
+        </div>
+        <p class="footer-note" id="multiExportStatus">每一行会按设备原始上报时间合并所选传感器的数据。</p>
+      </div>
+    </div>
+  `;
+  bindExportDialogEvents();
+}
+
+function bindExportDialogEvents() {
+  const root = document.getElementById("exportModalRoot");
+  if (!root) return;
+
+  root.querySelectorAll("[data-export-modal-close]").forEach((element) => {
+    element.addEventListener("click", (event) => {
+      if (element.dataset.exportModalClose === "mask" && event.target !== element) {
+        return;
+      }
+      closeDeviceExportDialog();
+    });
+  });
+
+  root.querySelectorAll("[data-export-sensor]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      appState.exportDialog.sensorKeys = Array.from(root.querySelectorAll("[data-export-sensor]:checked"))
+        .map((input) => input.value);
+    });
+  });
+
+  root.querySelector("#multiExportStartAt")?.addEventListener("change", (event) => {
+    appState.exportDialog.startAt = event.target.value;
+  });
+  root.querySelector("#multiExportEndAt")?.addEventListener("change", (event) => {
+    appState.exportDialog.endAt = event.target.value;
+  });
+
+  root.querySelector("#multiExportSelectAllBtn")?.addEventListener("click", () => {
+    root.querySelectorAll("[data-export-sensor]").forEach((checkbox) => {
+      checkbox.checked = true;
+    });
+    appState.exportDialog.sensorKeys = Array.from(root.querySelectorAll("[data-export-sensor]")).map((input) => input.value);
+  });
+
+  root.querySelector("#multiExportClearBtn")?.addEventListener("click", () => {
+    root.querySelectorAll("[data-export-sensor]").forEach((checkbox) => {
+      checkbox.checked = false;
+    });
+    appState.exportDialog.sensorKeys = [];
+  });
+
+  root.querySelector("#multiExportSubmitBtn")?.addEventListener("click", async () => {
+    const statusEl = root.querySelector("#multiExportStatus");
+    const sensorKeys = Array.from(root.querySelectorAll("[data-export-sensor]:checked")).map((input) => input.value);
+    const startAt = root.querySelector("#multiExportStartAt")?.value || "";
+    const endAt = root.querySelector("#multiExportEndAt")?.value || "";
+    if (!sensorKeys.length) {
+      if (statusEl) statusEl.textContent = "请至少勾选一个传感器。";
+      return;
+    }
+    if (!startAt || !endAt) {
+      if (statusEl) statusEl.textContent = "请选择完整的开始和结束时间。";
+      return;
+    }
+
+    try {
+      appState.exportDialog.submitting = true;
+      appState.exportDialog.sensorKeys = sensorKeys;
+      appState.exportDialog.startAt = startAt;
+      appState.exportDialog.endAt = endAt;
+      renderExportDialog();
+      const response = await postJson("/api/export/history/multi", {
+        deviceId: appState.activeDeviceId,
+        sensorKeys,
+        startAt,
+        endAt
+      });
+      await saveCsvWithPicker(response.fileName, response.csvText);
+      closeDeviceExportDialog();
+      const historyStatus = document.getElementById("historyExportStatus");
+      if (historyStatus) {
+        historyStatus.textContent = `已导出：${response.fileName}（${response.rowCount} 行）`;
+      }
+    } catch (error) {
+      appState.exportDialog.submitting = false;
+      renderExportDialog();
+      const nextStatusEl = document.getElementById("multiExportStatus");
+      if (nextStatusEl) {
+        nextStatusEl.textContent = `导出失败：${error.message}`;
+      }
+    }
+  });
 }
 
 function resetChartZoom() {
@@ -2051,7 +2246,10 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         ${hideHeaderCopy ? "" : `<p class="footer-note">${catalog.summary}</p>`}
         ${offlineHint}
       </div>
-      <div class="section-note">归属位置：${roomConfigs.find((room) => room.id === catalog.room)?.name || "未分组"}</div>
+      <div class="detail-topbar-actions">
+        <button class="ghost-btn" id="openDeviceExportDialogBtn">导出 CSV 数据</button>
+        <div class="section-note">归属位置：${roomConfigs.find((room) => room.id === catalog.room)?.name || "未分组"}</div>
+      </div>
     </div>
 
     <section class="detail-info-grid" style="margin-top:18px;">
@@ -2173,6 +2371,10 @@ function renderWeatherDetail(catalog, snapshot) {
 }
 
 function bindIoTDeviceEvents(deviceId) {
+  document.getElementById("openDeviceExportDialogBtn")?.addEventListener("click", () => {
+    openDeviceExportDialog(deviceId);
+  });
+
   document.querySelectorAll("[data-select-page]").forEach((button) => {
     button.addEventListener("click", async () => {
       appState.activeDevicePageKey = button.dataset.selectPage;
@@ -2343,6 +2545,7 @@ function renderDeviceDetail(deviceId) {
   if (catalog.type === "iot-device") {
     els.detailPanel.innerHTML = renderIoTDeviceDetail(deviceId, catalog, snapshot);
     bindIoTDeviceEvents(deviceId);
+    renderExportDialog();
     if (appState.activeDevicePageKey?.startsWith("sensor:") && appState.activeSensorKey) {
       refreshSensorHistory(deviceId, appState.activeSensorKey).catch(() => {
         const summary = document.getElementById("historySummary");
@@ -2354,12 +2557,14 @@ function renderDeviceDetail(deviceId) {
 
   if (catalog.type === "server") {
     els.detailPanel.innerHTML = renderServerDetail(catalog, snapshot);
+    renderExportDialog();
     renderServerCharts();
     return;
   }
 
   if (catalog.type === "weather") {
     els.detailPanel.innerHTML = renderWeatherDetail(catalog, snapshot);
+    renderExportDialog();
   }
 }
 
@@ -2383,8 +2588,10 @@ function closeDetail() {
   appState.activeDeviceId = null;
   appState.activeDevicePageKey = null;
   appState.activeSensorKey = null;
+  appState.exportDialog.open = false;
   els.detailView.classList.remove("active");
   els.overviewView.classList.remove("hidden");
+  renderExportDialog();
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 }
 

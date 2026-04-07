@@ -8,7 +8,7 @@ const { URL } = require("url");
 const { DatabaseSync } = require("node:sqlite");
 const aedes = require("aedes")();
 const WebSocket = require("ws");
-const { fetchRawSensorHistory, fetchSensorHistory, writeHistoryCsvFile } = require("./lib/history-export");
+const { fetchRawSensorHistory, fetchSensorHistory, resolveAbsoluteWindow, sanitizeFileName, writeHistoryCsvFile } = require("./lib/history-export");
 const { getWeatherForecast, invalidateWeatherCache } = require("./lib/weather");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -1101,6 +1101,110 @@ function getRawSensorHistory(parsedUrl) {
   });
 }
 
+function csvEscape(value) {
+  if (value == null) {
+    return "";
+  }
+  const text = String(value);
+  if (/[",\r\n]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+  return text;
+}
+
+function buildMultiSensorRawExport(payload) {
+  const deviceId = String(payload.deviceId || "").trim();
+  const sensorKeys = Array.isArray(payload.sensorKeys)
+    ? payload.sensorKeys.map((value) => canonicalizeSensorKey(value)).filter(Boolean)
+    : [];
+  const startAt = String(payload.startAt || "").trim();
+  const endAt = String(payload.endAt || "").trim();
+
+  if (!deviceId) {
+    throw new Error("deviceId is required");
+  }
+  if (!sensorKeys.length) {
+    throw new Error("at least one sensor must be selected");
+  }
+
+  const window = resolveAbsoluteWindow({ startAt, endAt });
+  const selectedMetrics = sensorKeys.flatMap((sensorKey) => {
+    const config = SENSOR_CONFIG[sensorKey];
+    if (!config) {
+      return [];
+    }
+    return config.metrics.map((metric) => ({
+      sensorKey,
+      sensorLabel: config.label,
+      metricKey: metric.key,
+      metricLabel: metric.label,
+      unit: metric.unit,
+      columnKey: `${sensorKey}.${metric.key}`,
+      columnLabel: `${config.label}_${metric.label}_${metric.unit}`
+    }));
+  });
+
+  const sensorPlaceholders = sensorKeys.map(() => "?").join(", ");
+  const rows = db.prepare(`
+    SELECT
+      ts_ms AS tsMs,
+      recorded_at AS recordedAt,
+      sensor_key AS sensorKey,
+      metric_key AS metricKey,
+      value
+    FROM metric_readings
+    WHERE source = ?
+      AND sensor_key IN (${sensorPlaceholders})
+      AND ts_ms >= ?
+      AND ts_ms < ?
+    ORDER BY ts_ms ASC, sensor_key ASC, metric_key ASC
+  `).all(deviceId, ...sensorKeys, window.startTs, window.endTs);
+
+  const MERGE_WINDOW_MS = 2000;
+  const points = [];
+  rows.forEach((row) => {
+    const pointKey = `${row.sensorKey}.${row.metricKey}`;
+    const lastPoint = points[points.length - 1];
+    if (lastPoint && row.tsMs - lastPoint.tsMs <= MERGE_WINDOW_MS) {
+      lastPoint[pointKey] = row.value;
+      return;
+    }
+    points.push({
+      tsMs: row.tsMs,
+      recordedAt: row.recordedAt || new Date(row.tsMs).toISOString(),
+      [pointKey]: row.value
+    });
+  });
+  const header = [
+    "recorded_at",
+    ...selectedMetrics.map((item) => item.columnLabel)
+  ];
+  const csvLines = [
+    header.map(csvEscape).join(","),
+    ...points.map((point) => [
+      point.recordedAt,
+      ...selectedMetrics.map((item) => point[item.columnKey] ?? "")
+    ].map(csvEscape).join(","))
+  ];
+
+  const deviceLabel = DEVICE_ALIAS_BY_ID[deviceId] || deviceId;
+  const sensorLabelText = sensorKeys
+    .map((sensorKey) => SENSOR_CONFIG[sensorKey]?.label || sensorKey)
+    .join("+");
+  const startLabel = startAt.replace(/[:T]/g, "-");
+  const endLabel = endAt.replace(/[:T]/g, "-");
+  const fileName = `${sanitizeFileName(`${deviceLabel}_${startLabel}_${endLabel}_${sensorLabelText}`)}.csv`;
+
+  return {
+    fileName,
+    csvText: `\ufeff${csvLines.join("\n")}\n`,
+    rowCount: points.length,
+    deviceId,
+    deviceLabel,
+    sensorKeys
+  };
+}
+
 function getSensorHistory(parsedUrl) {
   const window = resolveHistoryWindow(parsedUrl);
   const series = resolveSeriesConfig(parsedUrl);
@@ -1524,6 +1628,20 @@ const server = http.createServer((req, res) => {
       .catch((error) => {
         sendJson(res, 400, {
           message: error.message || "invalid export payload"
+        });
+      });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/export/history/multi") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        sendJson(res, 200, buildMultiSensorRawExport(payload));
+      })
+      .catch((error) => {
+        sendJson(res, 400, {
+          message: error.message || "invalid multi export payload"
         });
       });
     return;
