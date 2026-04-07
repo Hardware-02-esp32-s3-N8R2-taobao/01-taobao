@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "cJSON.h"
 #include "esp_err.h"
@@ -644,6 +645,29 @@ static void add_battery_sensor(cJSON *sensors_obj, int *total_count, int *ready_
     }
 }
 
+static bool sensor_enabled_in_csv(const char *enabled_sensors_csv, const char *sensor_key)
+{
+    if (enabled_sensors_csv == NULL || sensor_key == NULL || sensor_key[0] == '\0') {
+        return false;
+    }
+
+    char local_copy[96];
+    snprintf(local_copy, sizeof(local_copy), "%s", enabled_sensors_csv);
+
+    char *token = strtok(local_copy, ",");
+    while (token != NULL) {
+        while (*token == ' ') {
+            token++;
+        }
+        if (strcmp(token, sensor_key) == 0) {
+            return true;
+        }
+        token = strtok(NULL, ",");
+    }
+
+    return false;
+}
+
 void telemetry_app_run(void)
 {
     char payload[1536];
@@ -670,17 +694,37 @@ void telemetry_app_run(void)
         oled_battery_state_t oled_battery = {0};
         oled_max17043_state_t oled_max17043 = {0};
         oled_ina226_state_t oled_ina226 = {0};
+        char enabled_sensors_csv[96] = {0};
+        device_profile_copy_sensors_csv(enabled_sensors_csv, sizeof(enabled_sensors_csv));
 
         cJSON *sensors_obj = cJSON_CreateObject();
-        add_dht11_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity);
-        add_ds18b20_sensor(sensors_obj, &total_count, &ready_count);
-        add_bh1750_sensor(sensors_obj, &total_count, &ready_count, &oled_bh1750);
-        add_bmp180_sensor(sensors_obj, &total_count, &ready_count, &oled_bmpx80);
-        add_shtc3_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity, &oled_shtc3);
-        add_soil_sensor(sensors_obj, &total_count, &ready_count);
-        add_battery_sensor(sensors_obj, &total_count, &ready_count, &oled_battery);
-        add_max17043_sensor(sensors_obj, &total_count, &ready_count, &oled_max17043);
-        add_ina226_sensor(sensors_obj, &total_count, &ready_count, &oled_ina226);
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "dht11")) {
+            add_dht11_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "ds18b20")) {
+            add_ds18b20_sensor(sensors_obj, &total_count, &ready_count);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "bh1750")) {
+            add_bh1750_sensor(sensors_obj, &total_count, &ready_count, &oled_bh1750);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "bmp180")) {
+            add_bmp180_sensor(sensors_obj, &total_count, &ready_count, &oled_bmpx80);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "shtc3")) {
+            add_shtc3_sensor(sensors_obj, &total_count, &ready_count, &primary_temp, &primary_humidity, &oled_shtc3);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "soil_moisture")) {
+            add_soil_sensor(sensors_obj, &total_count, &ready_count);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "battery")) {
+            add_battery_sensor(sensors_obj, &total_count, &ready_count, &oled_battery);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "max17043")) {
+            add_max17043_sensor(sensors_obj, &total_count, &ready_count, &oled_max17043);
+        }
+        if (sensor_enabled_in_csv(enabled_sensors_csv, "ina226")) {
+            add_ina226_sensor(sensors_obj, &total_count, &ready_count, &oled_ina226);
+        }
 
         char *sensor_json = cJSON_PrintUnformatted(sensors_obj);
         device_profile_update_sensor_snapshot(sensor_json, ready_count, total_count);

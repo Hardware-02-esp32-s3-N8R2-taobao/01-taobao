@@ -345,7 +345,11 @@ function getDeviceOnlineWindowMs(deviceId) {
 
   const reportIntervalSec = Number(deviceCatalog[deviceId]?.reportIntervalSec);
   if (deviceCatalog[deviceId]?.lowPowerEnabled && Number.isFinite(reportIntervalSec) && reportIntervalSec >= 10) {
-    return Math.max(SENSOR_ONLINE_WINDOW_MS, (reportIntervalSec + 90) * 1000);
+    return Math.max(
+      SENSOR_ONLINE_WINDOW_MS,
+      (reportIntervalSec + 180) * 1000,
+      reportIntervalSec * 3 * 1000
+    );
   }
 
   return SENSOR_ONLINE_WINDOW_MS;
@@ -381,6 +385,12 @@ function getDeviceMatchIds(catalog) {
 }
 
 function buildDynamicSensorRefs(deviceId, catalog) {
+  const deviceStatus = getDevicesStatusMap().get(deviceId);
+  const statusSensorKeys = (deviceStatus?.sensors || []).filter((sensorKey) => sensorCatalog[sensorKey]);
+  if (statusSensorKeys.length > 0) {
+    return statusSensorKeys.map((sensorKey) => ({ key: sensorKey }));
+  }
+
   const matchIds = getDeviceMatchIds(catalog);
   const sensorKeys = new Set();
 
@@ -392,13 +402,6 @@ function buildDynamicSensorRefs(deviceId, catalog) {
           sensorKeys.add(sensorKey);
         }
       });
-    }
-  });
-
-  const deviceStatus = getDevicesStatusMap().get(deviceId);
-  (deviceStatus?.sensors || []).forEach((sensorKey) => {
-    if (sensorCatalog[sensorKey]) {
-      sensorKeys.add(sensorKey);
     }
   });
 
@@ -1700,77 +1703,6 @@ async function exportHistoryCsv(payload) {
   return postJson("/api/export/history", payload);
 }
 
-function buildPromptOptions(items, formatter) {
-  return items.map((item, index) => `${index + 1}. ${formatter(item)}`).join("\n");
-}
-
-async function promptAndExportHistory(deviceId, defaultSensorKey) {
-  const deviceIds = Object.keys(deviceCatalog).filter((id) => deviceCatalog[id]?.type === "iot-device");
-  const deviceInput = window.prompt(
-    `请选择设备，输入编号：\n${buildPromptOptions(deviceIds, (id) => `${deviceCatalog[id].title} (${id})`)}`,
-    String(Math.max(deviceIds.indexOf(deviceId), 0) + 1)
-  );
-  if (!deviceInput) return null;
-  const deviceIndex = Number(deviceInput) - 1;
-  const selectedDeviceId = deviceIds[deviceIndex];
-  if (!selectedDeviceId) {
-    window.alert("设备编号无效。");
-    return null;
-  }
-
-  const sensorDefs = deviceCatalog[selectedDeviceId]?.sensors || [];
-  const sensorInput = window.prompt(
-    `请选择传感器，输入编号：\n0. 全部传感器\n${buildPromptOptions(sensorDefs, (sensor) => `${sensor.title} (${sensor.key})`)}`,
-    defaultSensorKey ? String(Math.max(sensorDefs.findIndex((sensor) => sensor.key === defaultSensorKey), 0) + 1) : "0"
-  );
-  if (sensorInput == null || sensorInput === "") return null;
-  const sensorIndex = Number(sensorInput);
-  if (!Number.isInteger(sensorIndex) || sensorIndex < 0 || sensorIndex > sensorDefs.length) {
-    window.alert("传感器编号无效。");
-    return null;
-  }
-
-  const rangeOptions = [
-    { key: "1h", label: "最近1小时" },
-    { key: "24h", label: "最近24小时" },
-    { key: "3d", label: "最近3天" },
-    { key: "7d", label: "最近7天" },
-    { key: "all", label: "全部历史" }
-  ];
-  const rangeInput = window.prompt(
-    `请选择时间跨度，输入编号：\n${buildPromptOptions(rangeOptions, (option) => `${option.label} (${option.key})`)}`,
-    "5"
-  );
-  if (!rangeInput) return null;
-  const rangeIndex = Number(rangeInput) - 1;
-  const selectedRange = rangeOptions[rangeIndex];
-  if (!selectedRange) {
-    window.alert("时间跨度编号无效。");
-    return null;
-  }
-
-  const selectedSensors = sensorIndex === 0
-    ? sensorDefs
-    : [sensorDefs[sensorIndex - 1]].filter(Boolean);
-  if (!selectedSensors.length) {
-    window.alert("当前设备没有可导出的传感器。");
-    return null;
-  }
-
-  const results = [];
-  for (const sensor of selectedSensors) {
-    // eslint-disable-next-line no-await-in-loop
-    const data = await exportHistoryCsv({
-      deviceId: selectedDeviceId,
-      sensorKey: sensor.key,
-      range: selectedRange.key
-    });
-    results.push(data.relativePath || data.filePath);
-  }
-  window.alert(`已导出 ${results.length} 个文件：\n${results.join("\n")}`);
-  return results;
-}
-
 function getDevicePagePriority(catalog, page) {
   if (page.kind === "control") {
     return 999;
@@ -2085,7 +2017,6 @@ function renderDeviceSensorHistorySection(selectedSensor) {
       <div class="history-panels" id="historyPanels"></div>
       <div class="chart-actions">
         <button class="ghost-btn" id="resetZoomBtn">重置缩放</button>
-        <button class="ghost-btn" id="exportHistoryWizardBtn">批量导出到 data 文件夹</button>
         <span class="detail-helper" id="historyExportStatus">点进的是设备，历史曲线按设备内部的传感器切换。</span>
       </div>
       <p class="footer-note" id="historySummary">正在整理历史统计。</p>
@@ -2430,25 +2361,6 @@ function bindIoTDeviceEvents(deviceId) {
         }
       }
     });
-  });
-
-  document.getElementById("exportHistoryWizardBtn")?.addEventListener("click", async () => {
-    const statusEl = document.getElementById("historyExportStatus");
-    try {
-      if (statusEl) {
-        statusEl.textContent = "正在准备导出选项...";
-      }
-      const results = await promptAndExportHistory(deviceId, appState.activeSensorKey);
-      if (statusEl) {
-        statusEl.textContent = results?.length
-          ? `批量导出完成：${results.length} 个文件。`
-          : "已取消批量导出。";
-      }
-    } catch (error) {
-      if (statusEl) {
-        statusEl.textContent = `批量导出失败：${error.message}`;
-      }
-    }
   });
 
   document.getElementById("sendPumpCommandBtn")?.addEventListener("click", async () => {

@@ -624,10 +624,15 @@ function rememberDevice(deviceName, info) {
     sensors: []
   };
 
-  const sensors = new Set(existing.sensors || []);
-  if (info.sensorKey) {
-    sensors.add(info.sensorKey);
-  }
+  const sensors = Array.isArray(info.sensorKeys)
+    ? info.sensorKeys.filter(Boolean)
+    : (() => {
+        const nextSensors = new Set(existing.sensors || []);
+        if (info.sensorKey) {
+          nextSensors.add(info.sensorKey);
+        }
+        return Array.from(nextSensors);
+      })();
 
   deviceRegistry.set(deviceName, {
     ...existing,
@@ -637,7 +642,7 @@ function rememberDevice(deviceName, info) {
     lastTopic: info.lastTopic || existing.lastTopic || "--",
     sensorKey: info.sensorKey || existing.sensorKey || null,
     source: info.source || existing.source || "mqtt",
-    sensors: Array.from(sensors),
+    sensors,
     lowPowerEnabled: presenceConfig?.lowPowerEnabled ?? existing.lowPowerEnabled ?? false,
     reportIntervalSec: presenceConfig?.reportIntervalSec ?? existing.reportIntervalSec ?? null
   });
@@ -646,7 +651,11 @@ function rememberDevice(deviceName, info) {
 function getDeviceOnlineWindowMs(device) {
   const reportIntervalSec = Number(device?.reportIntervalSec);
   if (device?.lowPowerEnabled && Number.isFinite(reportIntervalSec) && reportIntervalSec >= 10) {
-    return Math.max(DEVICE_ONLINE_WINDOW_MS, (reportIntervalSec + 90) * 1000);
+    return Math.max(
+      DEVICE_ONLINE_WINDOW_MS,
+      (reportIntervalSec + 180) * 1000,
+      reportIntervalSec * 3 * 1000
+    );
   }
   return DEVICE_ONLINE_WINDOW_MS;
 }
@@ -757,6 +766,20 @@ function getOrCreateDeviceSensorState(deviceName, sensorKey) {
     deviceSensors[sensorKey] = createDefaultSensorState(sensorKey);
   }
   return deviceSensors[sensorKey];
+}
+
+function pruneDeviceSensorStates(deviceName, sensorKeys) {
+  const deviceSensors = getOrCreateDeviceSensors(deviceName);
+  if (!deviceSensors || !Array.isArray(sensorKeys)) {
+    return;
+  }
+
+  const allowedSensorKeys = new Set(sensorKeys.filter(Boolean));
+  Object.keys(deviceSensors).forEach((sensorKey) => {
+    if (!allowedSensorKeys.has(sensorKey)) {
+      delete deviceSensors[sensorKey];
+    }
+  });
 }
 
 function resolveSensorPayload(sensorKey, payload) {
@@ -1416,11 +1439,13 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
   }
 
   const deviceSensorKeys = new Set();
+  pruneDeviceSensorStates(source, sensorEntries.map(({ sensorKey }) => sensorKey));
   rememberDevice(source, {
     alias: getDeviceAlias(source, payload.alias),
     clientId: clientId || source,
     lastTopic: topic,
-    source: "sensor-mqtt"
+    source: "sensor-mqtt",
+    sensorKeys: sensorEntries.map(({ sensorKey }) => sensorKey)
   });
 
   sensorEntries.forEach(({ sensorKey, sensorType }) => {

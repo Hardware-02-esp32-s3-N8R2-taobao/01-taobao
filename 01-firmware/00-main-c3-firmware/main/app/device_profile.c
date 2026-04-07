@@ -549,6 +549,17 @@ bool device_profile_has_sensor(const char *sensor_type)
     return enabled;
 }
 
+void device_profile_copy_sensors_csv(char *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || buffer_size == 0) {
+        return;
+    }
+
+    profile_lock();
+    snprintf(buffer, buffer_size, "%s", s_state.sensors_csv);
+    profile_unlock();
+}
+
 void device_profile_build_config_json(char *buffer, size_t buffer_size)
 {
     profile_lock();
