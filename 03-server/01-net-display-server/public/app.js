@@ -791,19 +791,6 @@ function getStatusText(snapshot) {
   return snapshot?.statusText || (snapshot?.online ? "在线" : "离线");
 }
 
-function getDeviceAlertBadge(snapshot) {
-  if (!snapshot.sensors) return "";
-  const highest = snapshot.sensors
-    .flatMap((sensor) => sensor.metrics)
-    .reduce((acc, metric) => {
-      if (metric.alertLevel === "alert") return "alert";
-      if (metric.alertLevel === "warn" && acc !== "alert") return "warn";
-      return acc;
-    }, null);
-  if (!highest) return "";
-  return `<span class="alert-badge alert-badge-${highest}">${highest === "alert" ? "异常" : "警告"}</span>`;
-}
-
 function renderDeviceGrid() {
   const visibleDevices = getVisibleDevices();
   els.deviceGrid.innerHTML = visibleDevices
@@ -822,14 +809,13 @@ function renderDeviceGrid() {
         ? `<span>${getDeviceSensorCountLabel(snapshot)}</span>`
         : `<span>${catalog.type === "server" ? "系统设备" : "服务设备"}</span>`;
       const historyHint = getDeviceHistoryHint(snapshot, catalog);
-      const alertBadge = getDeviceAlertBadge(snapshot);
       return `
         <article class="device-card ${catalog.accentClass}" data-open-device="${catalog.id}">
           <div class="device-card-header">
             <div class="device-icon">${catalog.icon}</div>
             <button class="device-open" data-open-device="${catalog.id}" aria-label="打开${catalog.title}">›</button>
           </div>
-          <div class="device-title">${catalog.title}${alertBadge}</div>
+          <div class="device-title">${catalog.title}</div>
           <div class="device-subtitle">${catalog.subtitle}</div>
           <div class="device-metrics">${metricHtml || '<div class="metric-pill"><div class="metric-label">当前数据</div><div class="metric-value">--</div></div>'}</div>
           <div class="device-meta">
@@ -1913,14 +1899,9 @@ function renderSensorPageContent(sensor) {
       <div class="detail-summary-grid" style="margin-top:14px;">
         ${sensor.metrics.map((metric) => {
           const alertClass = metric.alertLevel ? ` metric-value-${metric.alertLevel}` : "";
-          const alertTag = metric.alertLevel === "alert"
-            ? ` <span class="alert-badge alert-badge-alert">异常</span>`
-            : metric.alertLevel === "warn"
-              ? ` <span class="alert-badge alert-badge-warn">警告</span>`
-              : "";
           return `
           <article class="detail-stat">
-            <div class="detail-stat-label">${metric.label}${alertTag}</div>
+            <div class="detail-stat-label">${metric.label}</div>
             <div class="detail-stat-value${alertClass}">${formatSensorMetricValue(sensor.key, metric.key, metric.value, metric.unit)}</div>
           </article>
           `;
