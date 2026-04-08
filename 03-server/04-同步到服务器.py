@@ -19,6 +19,7 @@ import hashlib
 import ctypes
 import datetime
 import io
+import subprocess
 
 # ── Windows UTF-8 控制台 ──────────────────────────────────────────────────────
 if sys.platform == "win32":
@@ -45,7 +46,9 @@ REMOTE_DIR  = "/opt/yard-display"
 SERVICE     = "yard-display"
 
 # 本地代码目录（绝对路径）
-LOCAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "01-net-display-server")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_DIR = os.path.join(SCRIPT_DIR, "01-net-display-server")
+NOTIFY_SCRIPT = os.path.join(SCRIPT_DIR, "06-完成提醒.py")
 
 # 同步白名单：只同步这些路径（相对 LOCAL_DIR），支持目录（含子文件）和单文件
 SYNC_INCLUDES = [
@@ -136,6 +139,22 @@ def upload_file(sftp, local_path, remote_path):
     ensure_remote_dir(sftp, remote_path.rsplit("/", 1)[0])
     sftp.put(local_path, remote_path)
 
+
+def notify_local_result(title, message, level="info"):
+    """本地弹窗提醒；失败时不影响主流程。"""
+    if not os.path.isfile(NOTIFY_SCRIPT):
+        return
+    try:
+        subprocess.Popen([
+            sys.executable,
+            NOTIFY_SCRIPT,
+            "--title", title,
+            "--message", message,
+            "--level", level,
+        ], cwd=SCRIPT_DIR)
+    except Exception:
+        pass
+
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     print(f"\n{BOLD}{CYN}{'='*60}{R}")
@@ -148,6 +167,7 @@ def main():
         client = ssh_connect()
     except Exception as e:
         print(f"  {RED}连接失败: {e}{R}")
+        notify_local_result("服务器同步失败", f"连接 {HOST} 失败：{e}", "error")
         sys.exit(1)
     print(f"  {GRN}连接成功{R}\n")
 
@@ -170,6 +190,7 @@ def main():
     local_files = collect_local_files()
     if not local_files:
         print(f"  {RED}未找到本地文件，请检查 LOCAL_DIR 路径：{LOCAL_DIR}{R}")
+        notify_local_result("服务器同步失败", "没有找到需要同步的本地文件。", "error")
         sys.exit(1)
 
     to_upload = []   # [(local_abs, rel_path, reason)]
@@ -251,8 +272,10 @@ def main():
     if active == "active":
         print(f"  {GRN}{BOLD}同步完成，服务正在运行{R}")
         print(f"  {GRN}网页: http://{HOST}/{R}")
+        notify_local_result("部署完成", f"网页已同步到 {HOST}，服务运行正常。", "success")
     else:
         print(f"  {RED}{BOLD}服务未正常启动，请查看上方日志排查{R}")
+        notify_local_result("部署失败", f"{HOST} 上的 yard-display 服务未正常启动。", "error")
     print(f"{CYN}{'='*60}{R}\n")
 
 if __name__ == "__main__":

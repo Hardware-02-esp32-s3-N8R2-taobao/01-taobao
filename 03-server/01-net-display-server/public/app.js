@@ -1226,6 +1226,22 @@ function buildMetricScale(metric, points) {
   return { min: minValue - padding, max: maxValue + padding };
 }
 
+function getMetricExtrema(points, metric) {
+  let minPoint = null;
+  let maxPoint = null;
+  points.forEach((point) => {
+    const value = point?.[metric.key];
+    if (value == null || Number.isNaN(Number(value))) return;
+    if (!minPoint || Number(value) < Number(minPoint[metric.key])) {
+      minPoint = point;
+    }
+    if (!maxPoint || Number(value) > Number(maxPoint[metric.key])) {
+      maxPoint = point;
+    }
+  });
+  return { minPoint, maxPoint };
+}
+
 function getHistoryGapThresholdMs() {
   const bucketMinutes = Number(appState.historyMeta.bucketMinutes || 10);
   return Math.max(bucketMinutes * 60 * 1000 * 3, 2 * 60 * 1000);
@@ -1292,27 +1308,66 @@ function getCanvasSize(canvas) {
   return { width: cssWidth, height: cssHeight, dpr };
 }
 
-function showTooltip(tooltipEl, metric, point, position) {
-  if (!tooltipEl) return;
+function getSelectionSummaryElement(tooltipEl) {
+  return tooltipEl?.closest(".history-panel")?.querySelector(".history-selection") || null;
+}
+
+function showSelectionSummary(selectionEl, metric, point) {
+  if (!selectionEl || !point) return;
   const valueText = metric.unit === "lux"
     ? `${Math.round(Number(point[metric.key]))} ${metric.unit}`
     : `${Number(point[metric.key]).toFixed(1)} ${metric.unit}`;
+  selectionEl.innerHTML = `
+    <div class="history-selection-time">${formatPointTime(point.tsMs)}</div>
+    <div class="history-selection-value">${valueText}</div>
+  `;
+  selectionEl.classList.add("visible");
+}
+
+function hideSelectionSummary(selectionEl) {
+  if (!selectionEl) return;
+  selectionEl.classList.remove("visible");
+}
+
+function showTooltip(tooltipEl, metric, point, position) {
+  if (!tooltipEl) return;
+  const selectionEl = getSelectionSummaryElement(tooltipEl);
+  const valueText = metric.unit === "lux"
+    ? `${Math.round(Number(point[metric.key]))} ${metric.unit}`
+    : `${Number(point[metric.key]).toFixed(1)} ${metric.unit}`;
+  if (position.mobileLocked) {
+    hideTooltip(tooltipEl);
+    showSelectionSummary(selectionEl, metric, point);
+    return;
+  }
+  hideSelectionSummary(selectionEl);
   tooltipEl.innerHTML = `<strong>${formatPointTime(point.tsMs)}</strong><br />${valueText}`;
-  tooltipEl.classList.toggle("mobile-locked", Boolean(position.mobileLocked));
-  tooltipEl.style.left = position.mobileLocked ? "50%" : `${position.x}px`;
-  tooltipEl.style.top = position.mobileLocked ? "10px" : `${position.y}px`;
+  const mobileLocked = Boolean(position.mobileLocked);
+  tooltipEl.classList.toggle("mobile-locked", mobileLocked);
+  tooltipEl.style.left = `${position.x}px`;
+  tooltipEl.style.top = `${position.y}px`;
   tooltipEl.classList.add("visible");
   const containerWidth = position.containerWidth || tooltipEl.parentElement?.clientWidth || 0;
   const tipWidth = tooltipEl.offsetWidth || 0;
+  if (mobileLocked) {
+    const safeHalfWidth = tipWidth > 0 ? (tipWidth / 2) + 6 : 0;
+    const clampedX = containerWidth > 0
+      ? Math.max(safeHalfWidth, Math.min(containerWidth - safeHalfWidth, position.x))
+      : position.x;
+    tooltipEl.style.left = `${clampedX}px`;
+    tooltipEl.style.setProperty("--tip-shift-x", "-50%");
+    return;
+  }
   const shouldPlaceLeft = !position.mobileLocked && (
     position.preferLeft
     || (containerWidth > 0 && tipWidth > 0 && position.x + 14 + tipWidth > containerWidth - 6)
   );
-  tooltipEl.style.setProperty("--tip-shift-x", position.mobileLocked ? "-50%" : (shouldPlaceLeft ? "calc(-100% - 14px)" : "14px"));
+  tooltipEl.style.setProperty("--tip-shift-x", shouldPlaceLeft ? "calc(-100% - 14px)" : "14px");
 }
 
 function hideTooltip(tooltipEl) {
   if (!tooltipEl) return;
+  hideSelectionSummary(getSelectionSummaryElement(tooltipEl));
   tooltipEl.classList.remove("visible", "mobile-locked");
 }
 
@@ -1367,15 +1422,16 @@ function updateMetricHover(metric, canvas, tooltipEl, clientX) {
   const { left: plotLeft, right: plotRight } = getCanvasPlotBounds(canvas);
   const rawX = clientX - rect.left;
   const clampedX = Math.max(plotLeft, Math.min(plotRight, rawX));
+  const mobileLocked = isMobileChartInteraction();
   appState.hoverIndexByMetric[metric.key] = nearest.index;
   appState.hoverGuideXByMetric[metric.key] = clampedX;
   drawMetricChart(metric, canvas, tooltipEl);
   showTooltip(tooltipEl, metric, nearest.point, {
     x: clampedX,
-    y: 34,
+    y: mobileLocked ? 0 : 34,
     preferLeft: clampedX > plotRight - 140,
     containerWidth: rect.width,
-    mobileLocked: isMobileChartInteraction()
+    mobileLocked
   });
 }
 
@@ -1387,15 +1443,16 @@ function setMetricHoverByHitPoint(metric, canvas, tooltipEl, hitPoint) {
   const rect = canvas.getBoundingClientRect();
   const { left: plotLeft, right: plotRight } = getCanvasPlotBounds(canvas);
   const clampedX = Math.max(plotLeft, Math.min(plotRight, hitPoint.x));
+  const mobileLocked = isMobileChartInteraction();
   appState.hoverIndexByMetric[metric.key] = hitPoint.index;
   appState.hoverGuideXByMetric[metric.key] = clampedX;
   drawMetricChart(metric, canvas, tooltipEl);
   showTooltip(tooltipEl, metric, hitPoint.point, {
     x: clampedX,
-    y: 34,
+    y: mobileLocked ? 0 : 34,
     preferLeft: clampedX > plotRight - 140,
     containerWidth: rect.width,
-    mobileLocked: isMobileChartInteraction()
+    mobileLocked
   });
 }
 
@@ -1415,7 +1472,15 @@ function isMobileChartInteraction() {
   return window.matchMedia?.("(pointer: coarse)")?.matches || window.innerWidth <= 768;
 }
 
+function isDirectChartSelectionEnabled() {
+  return !isMobileChartInteraction();
+}
+
 function bindMetricCanvasInteraction(metric, canvas, tooltipEl) {
+  if (!isDirectChartSelectionEnabled()) {
+    return;
+  }
+
   canvas.addEventListener("mouseleave", () => {
     clearMetricHover(metric, canvas, tooltipEl);
   });
@@ -1475,7 +1540,7 @@ function drawMetricChart(metric, canvas, tooltipEl) {
   const points = getVisibleHistoryPoints();
   const isMobile = isMobileChartInteraction();
   const padding = isMobile
-    ? { top: 18, right: 14, bottom: 78, left: 50 }
+    ? { top: 10, right: 12, bottom: 62, left: 48 }
     : { top: 18, right: 20, bottom: 44, left: 64 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
@@ -1554,29 +1619,45 @@ function drawMetricChart(metric, canvas, tooltipEl) {
   }
   context.setLineDash([]);
 
-  validPoints.forEach(({ point, index }) => {
-    context.beginPath();
-    context.arc(toX(point.tsMs), toY(point[metric.key]), appState.hoverIndexByMetric[metric.key] === index ? 5 : 3.5, 0, Math.PI * 2);
-    context.fillStyle = metric.color || "#395dff";
-    context.fill();
-  });
+  if (!isMobile) {
+    validPoints.forEach(({ point }) => {
+      context.beginPath();
+      context.arc(toX(point.tsMs), toY(point[metric.key]), 3.5, 0, Math.PI * 2);
+      context.fillStyle = metric.color || "#395dff";
+      context.fill();
+    });
+  }
 
   const hoverIndex = appState.hoverIndexByMetric[metric.key];
   if (hoverIndex != null && points[hoverIndex]?.[metric.key] != null) {
     const hoverPoint = points[hoverIndex];
     const hoverGuideX = appState.hoverGuideXByMetric[metric.key];
-    const hoverX = Number.isFinite(hoverGuideX)
+    const selectedPointX = toX(hoverPoint.tsMs);
+    const selectedPointY = toY(hoverPoint[metric.key]);
+    const hoverX = !isMobile && Number.isFinite(hoverGuideX)
       ? Math.max(padding.left, Math.min(width - padding.right, hoverGuideX))
-      : toX(hoverPoint.tsMs);
-    context.save();
-    context.strokeStyle = "rgba(67, 84, 111, 0.45)";
-    context.lineWidth = 1.25;
-    context.setLineDash([6, 6]);
+      : selectedPointX;
+    if (!isMobile) {
+      context.save();
+      context.strokeStyle = "rgba(67, 84, 111, 0.45)";
+      context.lineWidth = 1.25;
+      context.setLineDash([6, 6]);
+      context.beginPath();
+      context.moveTo(hoverX, padding.top);
+      context.lineTo(hoverX, padding.top + plotHeight);
+      context.stroke();
+      context.restore();
+    }
+
     context.beginPath();
-    context.moveTo(hoverX, padding.top);
-    context.lineTo(hoverX, padding.top + plotHeight);
+    context.arc(selectedPointX, selectedPointY, isMobile ? 6.5 : 5, 0, Math.PI * 2);
+    context.fillStyle = metric.color || "#395dff";
+    context.fill();
+    context.beginPath();
+    context.arc(selectedPointX, selectedPointY, isMobile ? 9.5 : 7.5, 0, Math.PI * 2);
+    context.strokeStyle = "rgba(255, 255, 255, 0.92)";
+    context.lineWidth = isMobile ? 3 : 2.5;
     context.stroke();
-    context.restore();
   }
 
   if (isMobile) {
@@ -1624,6 +1705,8 @@ function renderHistoryPanels() {
   const historyPanelsEl = document.getElementById("historyPanels");
   if (!historyPanelsEl) return;
   historyPanelsEl.innerHTML = "";
+  const visiblePoints = getVisibleHistoryPoints();
+  const isMobile = isMobileChartInteraction();
   (appState.historyMeta.metrics || []).forEach((metric) => {
     const panel = document.createElement("div");
     panel.className = "history-panel";
@@ -1632,24 +1715,47 @@ function renderHistoryPanels() {
         <div class="history-panel-title">${metric.label}</div>
         <div class="history-panel-meta">${metric.unit}</div>
       </div>
+      <div class="history-extrema"></div>
+      <div class="history-selection"></div>
       <div class="chart-wrap">
         <canvas width="520" height="280"></canvas>
         <div class="chart-tip"></div>
       </div>
       <div class="chart-scrubber-wrap">
         <input class="chart-scrubber" type="range" min="0" max="0" step="1" value="0" />
-        <div class="chart-scrubber-meta">手机上可拖动这里精确查看任意时间点</div>
       </div>
       <div class="history-panel-note"></div>
     `;
 
     const canvas = panel.querySelector("canvas");
     const tooltipEl = panel.querySelector(".chart-tip");
+    const extremaEl = panel.querySelector(".history-extrema");
     const noteEl = panel.querySelector(".history-panel-note");
     const scrubberEl = panel.querySelector(".chart-scrubber");
+    const metricVisiblePoints = visiblePoints.filter((point) => point[metric.key] != null);
+    const { minPoint, maxPoint } = getMetricExtrema(visiblePoints, metric);
+    extremaEl.innerHTML = metricVisiblePoints.length ? `
+      <div class="history-extrema-item">
+        <div class="history-extrema-label">最低</div>
+        <div class="history-extrema-value">${formatMetricValue(minPoint?.[metric.key], metric.unit)}</div>
+        <div class="history-extrema-time">${formatPointTime(minPoint.tsMs)}</div>
+      </div>
+      <div class="history-extrema-item">
+        <div class="history-extrema-label">最高</div>
+        <div class="history-extrema-value">${formatMetricValue(maxPoint?.[metric.key], metric.unit)}</div>
+        <div class="history-extrema-time">${formatPointTime(maxPoint.tsMs)}</div>
+      </div>
+    ` : `
+      <div class="history-extrema-item">
+        <div class="history-extrema-label">历史极值</div>
+        <div class="history-extrema-time">暂时还没有可展示的数据点。</div>
+      </div>
+    `;
     drawMetricChart(metric, canvas, tooltipEl);
     const sampleCount = appState.historyPoints.filter((point) => point[metric.key] != null).length;
-    noteEl.textContent = sampleCount ? `${metric.label} 共 ${sampleCount} 个历史点。双击可重置缩放，滚轮可缩放。` : `${metric.label} 正在等待上报。`;
+    noteEl.textContent = sampleCount
+      ? `${metric.label} 共 ${sampleCount} 个历史点。${isMobile ? "" : "双击可重置缩放，滚轮可缩放。"}`
+      : `${metric.label} 正在等待上报。`;
     const hitPoints = canvas._hitPoints || [];
     if (scrubberEl) {
       if (hitPoints.length) {
@@ -1668,6 +1774,9 @@ function renderHistoryPanels() {
       };
       scrubberEl.addEventListener("input", syncScrubberHover);
       scrubberEl.addEventListener("change", syncScrubberHover);
+      if (hitPoints.length && isMobileChartInteraction()) {
+        syncScrubberHover();
+      }
     }
 
     canvas.addEventListener("dblclick", () => resetChartZoom());
