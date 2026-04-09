@@ -1115,6 +1115,8 @@ function resolveHistoryWindow(parsedUrl) {
 
   const rangeMap = {
     "1h": { durationMs: 60 * 60 * 1000, bucketMinutes: 0.25, label: "最近1小时" },
+    "3h": { durationMs: 3 * 60 * 60 * 1000, bucketMinutes: 0.5, label: "最近3小时" },
+    "6h": { durationMs: 6 * 60 * 60 * 1000, bucketMinutes: 1, label: "最近6小时" },
     "24h": { durationMs: 24 * 60 * 60 * 1000, bucketMinutes: 3, label: "最近24小时" },
     "3d": { durationMs: 3 * 24 * 60 * 60 * 1000, bucketMinutes: 15, label: "最近3天" },
     "7d": { durationMs: 7 * 24 * 60 * 60 * 1000, bucketMinutes: 30, label: "最近7天" }

@@ -2343,6 +2343,8 @@ function renderDeviceSensorHistorySection(selectedSensor) {
       <div class="detail-helper" style="margin-bottom:10px;">当前查看：${selectedSensor.title || sensorCatalog[selectedSensor.key]?.title || "--"}</div>
       <div class="history-toolbar">
         <button class="range-btn ${appState.historyQuery.range === "1h" && !appState.historyQuery.date ? "active" : ""}" data-range="1h">最近1小时</button>
+        <button class="range-btn ${appState.historyQuery.range === "3h" && !appState.historyQuery.date ? "active" : ""}" data-range="3h">最近3小时</button>
+        <button class="range-btn ${appState.historyQuery.range === "6h" && !appState.historyQuery.date ? "active" : ""}" data-range="6h">最近6小时</button>
         <button class="range-btn ${appState.historyQuery.range === "24h" && !appState.historyQuery.date ? "active" : ""}" data-range="24h">最近24小时</button>
         <button class="range-btn ${appState.historyQuery.range === "3d" && !appState.historyQuery.date ? "active" : ""}" data-range="3d">最近3天</button>
         <button class="range-btn ${appState.historyQuery.range === "7d" && !appState.historyQuery.date ? "active" : ""}" data-range="7d">最近7天</button>

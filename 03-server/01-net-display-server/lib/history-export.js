@@ -5,6 +5,8 @@ const path = require("path");
 
 const RANGE_MAP = {
   "1h": { label: "最近1小时", durationMs: 60 * 60 * 1000, bucketMinutes: 2, fileLabel: "1h" },
+  "3h": { label: "最近3小时", durationMs: 3 * 60 * 60 * 1000, bucketMinutes: 5, fileLabel: "3h" },
+  "6h": { label: "最近6小时", durationMs: 6 * 60 * 60 * 1000, bucketMinutes: 5, fileLabel: "6h" },
   "24h": { label: "最近24小时", durationMs: 24 * 60 * 60 * 1000, bucketMinutes: 10, fileLabel: "24h" },
   "3d": { label: "最近3天", durationMs: 3 * 24 * 60 * 60 * 1000, bucketMinutes: 30, fileLabel: "3d" },
   "7d": { label: "最近7天", durationMs: 7 * 24 * 60 * 60 * 1000, bucketMinutes: 60, fileLabel: "7d" },
