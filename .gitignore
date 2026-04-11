@@ -38,6 +38,9 @@ __pycache__/
 
 # Build logs and temp files
 **/log/
+*.log
+*.out.log
+*.err.log
 
 # Local machine / tool state
 .claude/settings.local.json

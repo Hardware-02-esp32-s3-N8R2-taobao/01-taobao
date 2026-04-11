@@ -34,6 +34,7 @@ def sensor_display_name(sensor_key: str) -> str:
         "dht11": "DHT11 温湿度",
         "ds18b20": "DS18B20 温度",
         "bh1750": "BH1750 光照",
+        "wifi_signal": "WiFi 信号强度",
         "bmp180": "BMP180 气压温度",
         "shtc3": "SHTC3 温湿度",
         "soil_moisture": "土壤湿度",
@@ -55,6 +56,8 @@ def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
         return [f"DS18B20 温度：{fmt_value(reading.get('temperature'), ' °C')}"]
     if sensor_key == "bh1750":
         return [f"BH1750 光照：{fmt_value(reading.get('illuminance'), ' lux')}"]
+    if sensor_key == "wifi_signal":
+        return [f"WiFi 信号强度：{fmt_value(reading.get('rssi'), ' dBm')}"]
     if sensor_key == "bmp180":
         model = str(reading.get("model") or "bmp180").upper()
         lines = [
@@ -94,6 +97,17 @@ def sensor_display_lines(sensor_key: str, reading: dict[str, Any]) -> list[str]:
             f"INA226 功率：{fmt_number(reading.get('powerMw'), 3, ' mW')}",
         ]
     return [f"{sensor_key}：{json.dumps(reading, ensure_ascii=False)}"]
+
+
+def device_alias_from_name(device_name: str) -> str:
+    alias_map = {
+        "探索者1号": "探索者 1 号",
+        "庭院1号": "庭院 1 号",
+        "卧室1号": "卧室 1 号",
+        "书房1号": "书房 1 号",
+        "办公室1号": "办公室 1 号",
+    }
+    return alias_map.get(device_name, f"{device_name}设备")
 
 
 class C3MonitorWindow(QtWidgets.QMainWindow):
@@ -705,12 +719,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
     def save_device_config(self) -> None:
         sensors = [name for name, checkbox in self._sensor_checks.items() if checkbox.isChecked()]
-        if not sensors:
-            sensors = ["dht11"]
-        device_name = self.device_name_combo.currentText().strip() or "庭院1号"
+        device_name = self.device_name_combo.currentText().strip() or "探索者1号"
         payload = {
             "deviceName": device_name,
-            "deviceAlias": device_name + "设备",
+            "deviceAlias": device_alias_from_name(device_name),
             "sensors": sensors,
         }
         self._pending_config_save = True

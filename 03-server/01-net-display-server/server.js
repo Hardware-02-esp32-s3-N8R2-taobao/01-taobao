@@ -1,4 +1,5 @@
 const http = require("http");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -20,12 +21,16 @@ const SERVER_SAMPLE_INTERVAL_MS = 60 * 1000;   // 每分钟采样一次
 const DEVICE_ONLINE_WINDOW_MS = 90 * 1000;
 const SERVER_HISTORY_LIMIT = 1440;             // 保留 24 小时（24 × 60）
 const DEVICE_PRESENCE_CONFIG = {
+  "explorer-01": {
+    lowPowerEnabled: false,
+    reportIntervalSec: 300
+  },
   "yard-01": {
-    lowPowerEnabled: true,
+    lowPowerEnabled: false,
     reportIntervalSec: 300
   },
   "study-01": {
-    lowPowerEnabled: true,
+    lowPowerEnabled: false,
     reportIntervalSec: 300
   }
 };
@@ -67,6 +72,10 @@ const SENSOR_CONFIG = {
     label: "BH1750 光照",
     metrics: [{ key: "illuminance", label: "光照", unit: "lux", color: "#f5b728", axis: "left" }]
   },
+  wifi_signal: {
+    label: "WiFi 信号强度",
+    metrics: [{ key: "rssi", label: "信号强度", unit: "dBm", color: "#2f7cf6", axis: "left" }]
+  },
   battery: {
     label: "电池电压",
     metrics: [
@@ -99,11 +108,15 @@ const SENSOR_TYPE_TO_KEY = {
   bmp280: "bmp280",
   shtc3: "shtc3",
   bh1750: "bh1750",
+  wifi_signal: "wifi_signal",
+  soil_moisture: "soil_moisture",
   battery: "battery",
   max17043: "max17043",
   ina226: "ina226"
 };
 const DEVICE_ID_ALIASES = {
+  "explorer-01": "explorer-01",
+  "explorer01": "explorer-01",
   "yard-01": "yard-01",
   "yard01": "yard-01",
   "study-01": "study-01",
@@ -114,16 +127,37 @@ const DEVICE_ID_ALIASES = {
   "bedroom01": "bedroom-01"
 };
 const DEVICE_ALIAS_BY_ID = {
+  "explorer-01": "探索者 1 号",
   "yard-01": "庭院 1 号",
   "study-01": "书房 1 号",
   "office-01": "办公室 1 号",
   "bedroom-01": "卧室 1 号"
 };
+const DEVICE_OPTIONS = [
+  { id: "explorer-01", name: "探索者1号", alias: "探索者 1 号" },
+  { id: "yard-01", name: "庭院1号", alias: "庭院 1 号" },
+  { id: "bedroom-01", name: "卧室1号", alias: "卧室 1 号" },
+  { id: "study-01", name: "书房1号", alias: "书房 1 号" },
+  { id: "office-01", name: "办公室1号", alias: "办公室 1 号" }
+];
+const SENSOR_TYPE_OPTIONS = [
+  "dht11",
+  "ds18b20",
+  "bh1750",
+  "bmp180",
+  "shtc3",
+  "soil_moisture",
+  "battery",
+  "max17043",
+  "ina226"
+];
 const GATEWAY_PING_TOPIC = "garden/gateway/ping";
 const GATEWAY_STATUS_PREFIX = "garden/gateway/status/";
 const GATEWAY_BROADCAST_TOPIC = "garden/gateway/broadcast";
 const YARD_PUMP_CONTROL_TOPIC = "garden/yard/pump/set";
 const PUMP_CONTROL_PASSWORD = String(process.env.PUMP_CONTROL_PASSWORD || "1234");
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "1234");
+const ADMIN_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 const publicDir = path.join(__dirname, "public");
 const dataDir = path.join(__dirname, "data");
@@ -133,6 +167,11 @@ const uploadsDir = path.join(publicDir, "uploads");
 const roomUploadsDir = path.join(uploadsDir, "rooms");
 const roomPhotoMetaPath = path.join(dataDir, "room-photos.json");
 const sensorAliasMetaPath = path.join(dataDir, "device-sensor-aliases.json");
+const firmwareDir = path.join(dataDir, "firmware");
+const firmwareMetaPath = path.join(dataDir, "firmware-packages.json");
+const otaJobsMetaPath = path.join(dataDir, "ota-jobs.json");
+const deviceConfigMetaPath = path.join(dataDir, "device-runtime-configs.json");
+const deviceConfigJobsMetaPath = path.join(dataDir, "device-config-jobs.json");
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -145,6 +184,9 @@ if (!fs.existsSync(uploadsDir)) {
 }
 if (!fs.existsSync(roomUploadsDir)) {
   fs.mkdirSync(roomUploadsDir, { recursive: true });
+}
+if (!fs.existsSync(firmwareDir)) {
+  fs.mkdirSync(firmwareDir, { recursive: true });
 }
 
 const db = new DatabaseSync(dbPath);
@@ -259,6 +301,13 @@ function buildDefaultLatestSensors() {
       topic: `${MQTT_DEVICE_TOPIC_PREFIX}bh1750-01`,
       updatedAt: null
     },
+    wifi_signal: {
+      label: SENSOR_CONFIG.wifi_signal.label,
+      rssi: null,
+      source: "waiting-for-mqtt",
+      topic: `${MQTT_DEVICE_TOPIC_PREFIX}wifi-signal-01`,
+      updatedAt: null
+    },
     battery: {
       label: SENSOR_CONFIG.battery.label,
       voltage: null,
@@ -315,7 +364,7 @@ function tryGzip(content, acceptEncoding) {
 
 // In-memory cache for compressed static files — avoids re-compressing on every request
 const gzipFileCache = new Map();
-const ROOM_IDS = ["all", "yard", "study", "office", "bedroom", "server", "outdoor"];
+const ROOM_IDS = ["all", "explorer", "yard", "study", "office", "bedroom", "server", "outdoor"];
 const ROOM_PHOTO_SIZE_LIMIT = 8 * 1024 * 1024;
 
 function readJsonFile(filePath, fallback) {
@@ -328,6 +377,42 @@ function readJsonFile(filePath, fallback) {
 
 function writeJsonFile(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2) + "\n", "utf8");
+}
+
+function loadFirmwarePackages() {
+  const raw = readJsonFile(firmwareMetaPath, []);
+  return Array.isArray(raw) ? raw : [];
+}
+
+function saveFirmwarePackages(packages) {
+  writeJsonFile(firmwareMetaPath, packages);
+}
+
+function loadOtaJobs() {
+  const raw = readJsonFile(otaJobsMetaPath, []);
+  return Array.isArray(raw) ? raw : [];
+}
+
+function saveOtaJobs(jobs) {
+  writeJsonFile(otaJobsMetaPath, jobs);
+}
+
+function loadDeviceRuntimeConfigs() {
+  const raw = readJsonFile(deviceConfigMetaPath, {});
+  return raw && typeof raw === "object" ? raw : {};
+}
+
+function saveDeviceRuntimeConfigs(configs) {
+  writeJsonFile(deviceConfigMetaPath, configs);
+}
+
+function loadDeviceConfigJobs() {
+  const raw = readJsonFile(deviceConfigJobsMetaPath, []);
+  return Array.isArray(raw) ? raw : [];
+}
+
+function saveDeviceConfigJobs(jobs) {
+  writeJsonFile(deviceConfigJobsMetaPath, jobs);
 }
 
 function loadRoomPhotoMap() {
@@ -355,6 +440,586 @@ function saveDeviceSensorAliasMap(sensorAliases) {
 }
 
 let deviceSensorAliases = loadDeviceSensorAliasMap();
+let firmwarePackages = loadFirmwarePackages();
+let otaJobs = loadOtaJobs();
+let deviceRuntimeConfigs = loadDeviceRuntimeConfigs();
+let deviceConfigJobs = loadDeviceConfigJobs();
+const adminSessions = new Map();
+
+function createAdminSession() {
+  const token = crypto.randomBytes(24).toString("hex");
+  adminSessions.set(token, {
+    token,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ADMIN_SESSION_TTL_MS
+  });
+  return token;
+}
+
+function purgeExpiredAdminSessions() {
+  const now = Date.now();
+  for (const [token, session] of adminSessions.entries()) {
+    if (!session || session.expiresAt <= now) {
+      adminSessions.delete(token);
+    }
+  }
+}
+
+function parseCookies(req) {
+  const raw = String(req?.headers?.cookie || "");
+  return raw.split(";").reduce((acc, item) => {
+    const [key, ...rest] = item.split("=");
+    if (!key || rest.length === 0) {
+      return acc;
+    }
+    acc[key.trim()] = decodeURIComponent(rest.join("=").trim());
+    return acc;
+  }, {});
+}
+
+function isAdminAuthenticated(req) {
+  purgeExpiredAdminSessions();
+  const token = parseCookies(req).admin_session;
+  if (!token) {
+    return false;
+  }
+  const session = adminSessions.get(token);
+  if (!session || session.expiresAt <= Date.now()) {
+    adminSessions.delete(token);
+    return false;
+  }
+  session.expiresAt = Date.now() + ADMIN_SESSION_TTL_MS;
+  return true;
+}
+
+function requireAdmin(req, res) {
+  if (isAdminAuthenticated(req)) {
+    return true;
+  }
+  sendJson(res, 401, { message: "admin login required" });
+  return false;
+}
+
+function getRequestBaseUrl(req) {
+  const host = String(req?.headers?.host || `127.0.0.1:${PORT}`).trim();
+  return `http://${host}`;
+}
+
+function sanitizeFirmwareText(value, maxLength = 120) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function inferFirmwareVersionFromFileName(fileName) {
+  const raw = sanitizeFirmwareText(fileName || "", 120);
+  if (!raw) {
+    return "";
+  }
+  const match = raw.match(/(?:_v|[-_])(\d+\.\d+\.\d+)\.bin$/i) || raw.match(/(\d+\.\d+\.\d+)/);
+  return match?.[1] || "";
+}
+
+function clampOtaProgress(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(100, Number(fallback) || 0));
+  }
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function deriveOtaProgressPercent(status, existingProgress = 0, explicitProgress = null) {
+  if (explicitProgress != null && explicitProgress !== "") {
+    return clampOtaProgress(explicitProgress, existingProgress);
+  }
+
+  const fallback = clampOtaProgress(existingProgress, 0);
+  switch (String(status || "").trim()) {
+    case "pending":
+      return Math.max(fallback, 5);
+    case "downloading":
+      return Math.max(fallback, 15);
+    case "rebooting":
+      return Math.max(fallback, 95);
+    case "success":
+      return 100;
+    case "rolled_back":
+    case "failed":
+    case "replaced":
+      return fallback;
+    default:
+      return fallback;
+  }
+}
+
+function decodeFirmwarePayload(payload) {
+  const rawBase64 = String(payload.dataBase64 || "").trim();
+  const dataUrl = String(payload.dataUrl || "").trim();
+  let base64 = rawBase64;
+  if (!base64 && dataUrl.startsWith("data:application/octet-stream;base64,")) {
+    base64 = dataUrl.split(",")[1] || "";
+  }
+  if (!base64) {
+    throw new Error("firmware data is required");
+  }
+  const buffer = Buffer.from(base64, "base64");
+  if (!buffer.length) {
+    throw new Error("empty firmware payload");
+  }
+  return buffer;
+}
+
+function saveFirmwarePackage(payload) {
+  const requestedVersion = sanitizeFirmwareText(payload.version || "", 32);
+  const notes = sanitizeFirmwareText(payload.notes || "", 240);
+  const originalFileName = sanitizeFirmwareText(payload.fileName || "firmware.bin", 120) || "firmware.bin";
+  const inferredVersion = inferFirmwareVersionFromFileName(originalFileName);
+  if (requestedVersion && inferredVersion && requestedVersion !== inferredVersion) {
+    throw new Error(`firmware version mismatch: input=${requestedVersion}, file=${inferredVersion}`);
+  }
+  const version = inferredVersion || requestedVersion;
+  if (!version) {
+    throw new Error("version is required");
+  }
+
+  const buffer = decodeFirmwarePayload(payload);
+  const ext = path.extname(originalFileName || "").toLowerCase() || ".bin";
+  const firmwareId = `fw_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+  const storedFileName = `${firmwareId}${ext === ".bin" ? ".bin" : ext}`;
+  const absolutePath = path.join(firmwareDir, storedFileName);
+  const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+
+  fs.writeFileSync(absolutePath, buffer);
+
+  const entry = {
+    id: firmwareId,
+    version,
+    notes,
+    originalFileName,
+    storedFileName,
+    size: buffer.length,
+    sha256,
+    uploadedAt: new Date().toISOString()
+  };
+
+  firmwarePackages = [entry, ...firmwarePackages.filter((item) => item.id !== firmwareId)];
+  saveFirmwarePackages(firmwarePackages);
+  return entry;
+}
+
+function getFirmwarePackage(firmwareId) {
+  return firmwarePackages.find((item) => item.id === firmwareId) || null;
+}
+
+function listFirmwarePackages() {
+  return [...firmwarePackages].sort((a, b) => String(b.uploadedAt || "").localeCompare(String(a.uploadedAt || "")));
+}
+
+function markPreviousJobsReplaced(deviceId) {
+  otaJobs = otaJobs.map((job) => {
+    if (job.deviceId !== deviceId) {
+      return job;
+    }
+    if (!["pending", "downloading", "rebooting"].includes(job.status)) {
+      return job;
+    }
+    return {
+      ...job,
+      status: "replaced",
+      finishedAt: new Date().toISOString(),
+      message: "replaced by a newer ota job"
+    };
+  });
+}
+
+function createOtaJob(payload) {
+  const deviceId = canonicalizeDeviceId(payload.deviceId || "");
+  if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+    throw new Error("invalid deviceId");
+  }
+
+  const firmware = getFirmwarePackage(payload.firmwareId);
+  if (!firmware) {
+    throw new Error("firmware package not found");
+  }
+
+  markPreviousJobsReplaced(deviceId);
+
+  const job = {
+    id: `ota_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+    deviceId,
+    firmwareId: firmware.id,
+    targetVersion: firmware.version,
+    status: "pending",
+    force: Boolean(payload.force),
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    progressPercent: 0,
+    message: sanitizeFirmwareText(payload.message || "waiting for device wakeup", 240),
+    token: crypto.randomBytes(18).toString("hex"),
+    lastReportedVersion: null,
+    history: []
+  };
+
+  otaJobs = [job, ...otaJobs];
+  saveOtaJobs(otaJobs);
+  return job;
+}
+
+function getOtaJobsForDevice(deviceId) {
+  return otaJobs
+    .filter((job) => job.deviceId === deviceId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function getLatestOtaJobForDevice(deviceId) {
+  return getOtaJobsForDevice(deviceId)[0] || null;
+}
+
+function getActiveOtaJobForDevice(deviceId, currentVersion = "") {
+  return getOtaJobsForDevice(deviceId).find((job) => {
+    if (!["pending", "downloading", "rebooting"].includes(job.status)) {
+      return false;
+    }
+    if (!job.force && currentVersion && job.targetVersion === currentVersion) {
+      return false;
+    }
+    return Boolean(getFirmwarePackage(job.firmwareId));
+  }) || null;
+}
+
+function getDeviceOptionById(deviceId) {
+  return DEVICE_OPTIONS.find((item) => item.id === deviceId) || DEVICE_OPTIONS[0];
+}
+
+function normalizeDeviceName(deviceId, requestedName = "") {
+  const matched = DEVICE_OPTIONS.find((item) => item.name === String(requestedName || "").trim());
+  return matched || getDeviceOptionById(deviceId);
+}
+
+function normalizeSensorList(sensorValues) {
+  if (!Array.isArray(sensorValues)) {
+    return [];
+  }
+  const sensors = [];
+  const seen = new Set();
+  sensorValues.forEach((item) => {
+    const sensorKey = canonicalizeSensorKey(item);
+    if (!sensorKey || !SENSOR_TYPE_OPTIONS.includes(sensorKey) || seen.has(sensorKey)) {
+      return;
+    }
+    seen.add(sensorKey);
+    sensors.push(sensorKey);
+  });
+  return sensors;
+}
+
+function normalizeLowPowerPayload(payload, fallback = {}) {
+  const enabled = Boolean(payload?.enabled ?? fallback.enabled ?? false);
+  const intervalCandidate = Number(payload?.intervalSec ?? payload?.interval_sec ?? fallback.intervalSec ?? fallback.interval_sec ?? 300);
+  const intervalSec = Number.isFinite(intervalCandidate)
+    ? Math.max(10, Math.min(86400, Math.round(intervalCandidate)))
+    : 300;
+  return {
+    enabled,
+    intervalSec
+  };
+}
+
+function getDefaultDeviceRuntimeConfig(deviceId) {
+  const option = getDeviceOptionById(deviceId);
+  const presenceConfig = DEVICE_PRESENCE_CONFIG[deviceId] || {};
+  const remembered = deviceRegistry.get(deviceId) || null;
+  return {
+    deviceId,
+    deviceName: option.name,
+    deviceAlias: option.alias,
+    sensors: normalizeSensorList(remembered?.sensors || []),
+    lowPower: normalizeLowPowerPayload({
+      enabled: presenceConfig.lowPowerEnabled,
+      intervalSec: presenceConfig.reportIntervalSec || 300
+    }),
+    updatedAt: remembered?.lastSeenAt || null,
+    source: "inferred"
+  };
+}
+
+function getDeviceRuntimeConfig(deviceId) {
+  const saved = deviceRuntimeConfigs[deviceId];
+  if (saved && typeof saved === "object") {
+    const option = normalizeDeviceName(deviceId, saved.deviceName);
+    return {
+      deviceId,
+      deviceName: option.name,
+      deviceAlias: option.alias,
+      sensors: normalizeSensorList(saved.sensors || []),
+      lowPower: normalizeLowPowerPayload(saved.lowPower, getDefaultDeviceRuntimeConfig(deviceId).lowPower),
+      updatedAt: saved.updatedAt || null,
+      source: saved.source || "device-report"
+    };
+  }
+  return getDefaultDeviceRuntimeConfig(deviceId);
+}
+
+function saveDeviceRuntimeConfig(deviceId, payload, source = "device-report", fwVersion = null) {
+  const option = normalizeDeviceName(deviceId, payload?.deviceName);
+  const config = {
+    deviceId,
+    deviceName: option.name,
+    deviceAlias: option.alias,
+    sensors: normalizeSensorList(payload?.sensors || []),
+    lowPower: normalizeLowPowerPayload(payload?.lowPower || {}),
+    updatedAt: new Date().toISOString(),
+    source
+  };
+  deviceRuntimeConfigs[deviceId] = config;
+  saveDeviceRuntimeConfigs(deviceRuntimeConfigs);
+  if (source !== "web-desired") {
+    rememberDevice(deviceId, {
+      alias: config.deviceAlias,
+      source: source === "device-report" ? "device-config-report" : "device-config",
+      sensorKeys: config.sensors,
+      fwVersion: sanitizeFirmwareText(fwVersion || "", 32),
+      lowPowerEnabled: config.lowPower.enabled,
+      reportIntervalSec: config.lowPower.intervalSec
+    });
+  }
+  return config;
+}
+
+function markPreviousConfigJobsReplaced(deviceId) {
+  deviceConfigJobs = deviceConfigJobs.map((job) => {
+    if (job.deviceId !== deviceId || job.status !== "pending") {
+      return job;
+    }
+    return {
+      ...job,
+      status: "replaced",
+      finishedAt: new Date().toISOString(),
+      message: "replaced by a newer config job"
+    };
+  });
+}
+
+function createDeviceConfigJob(payload) {
+  const deviceId = canonicalizeDeviceId(payload.deviceId || "");
+  if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+    throw new Error("invalid deviceId");
+  }
+
+  const deviceOption = normalizeDeviceName(deviceId, payload.deviceName);
+  const sensors = normalizeSensorList(payload.sensors || []);
+  const lowPower = normalizeLowPowerPayload(payload.lowPower || {}, getDeviceRuntimeConfig(deviceId).lowPower);
+
+  markPreviousConfigJobsReplaced(deviceId);
+
+  const job = {
+    id: `cfg_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
+    deviceId,
+    status: "pending",
+    config: {
+      deviceId,
+      deviceName: deviceOption.name,
+      deviceAlias: deviceOption.alias,
+      sensors
+    },
+    lowPower,
+    message: sanitizeFirmwareText(payload.message || "web admin config push", 240),
+    createdAt: new Date().toISOString(),
+    finishedAt: null,
+    history: []
+  };
+
+  saveDeviceRuntimeConfig(deviceId, {
+    deviceName: deviceOption.name,
+    sensors,
+    lowPower
+  }, "web-desired");
+
+  deviceConfigJobs = [job, ...deviceConfigJobs];
+  saveDeviceConfigJobs(deviceConfigJobs);
+  return job;
+}
+
+function getDeviceConfigJobsForDevice(deviceId) {
+  return deviceConfigJobs
+    .filter((job) => job.deviceId === deviceId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function getActiveDeviceConfigJobForDevice(deviceId) {
+  return getDeviceConfigJobsForDevice(deviceId).find((job) => job.status === "pending") || null;
+}
+
+function updateDeviceConfigJobStatus(payload) {
+  const reportedDeviceId = canonicalizeDeviceId(payload.deviceId || "");
+  const jobId = sanitizeFirmwareText(payload.jobId || "", 80);
+  const status = sanitizeFirmwareText(payload.status || "", 40);
+  const message = sanitizeFirmwareText(payload.message || "", 240);
+  if (!reportedDeviceId || !jobId || !status) {
+    throw new Error("deviceId, jobId and status are required");
+  }
+
+  const index = deviceConfigJobs.findIndex((job) => job.id === jobId);
+  if (index < 0) {
+    throw new Error("config job not found");
+  }
+
+  const existing = deviceConfigJobs[index];
+  const finished = ["success", "failed", "replaced"].includes(status);
+  const nextJob = {
+    ...existing,
+    status,
+    message: message || existing.message,
+    finishedAt: finished ? new Date().toISOString() : null,
+    history: [
+      ...(existing.history || []),
+      {
+        status,
+        message,
+        at: new Date().toISOString()
+      }
+    ].slice(-20)
+  };
+
+  if ((payload.config && typeof payload.config === "object") || (payload.lowPower && typeof payload.lowPower === "object")) {
+    const targetDeviceId = canonicalizeDeviceId(payload.config?.deviceId || existing.config?.deviceId || reportedDeviceId);
+    const runtimeConfig = saveDeviceRuntimeConfig(targetDeviceId, {
+      ...(payload.config || existing.config || {}),
+      lowPower: payload.lowPower || existing.lowPower || {}
+    }, "device-report", payload.fwVersion);
+    nextJob.appliedConfig = runtimeConfig;
+  }
+
+  deviceConfigJobs[index] = nextJob;
+  saveDeviceConfigJobs(deviceConfigJobs);
+  return nextJob;
+}
+
+function getDeviceAdminSummary(deviceId) {
+  return {
+    options: {
+      deviceNames: DEVICE_OPTIONS.map((item) => item.name),
+      sensorTypes: SENSOR_TYPE_OPTIONS,
+      lowPower: {
+        minIntervalSec: 10,
+        maxIntervalSec: 86400
+      }
+    },
+    currentConfig: getDeviceRuntimeConfig(deviceId),
+    activeConfigJob: getActiveDeviceConfigJobForDevice(deviceId),
+    configJobs: getDeviceConfigJobsForDevice(deviceId).slice(0, 10),
+    ...getDeviceAdminOtaSummary(deviceId)
+  };
+}
+
+function updateOtaJobStatus(payload) {
+  const deviceId = canonicalizeDeviceId(payload.deviceId || "");
+  const jobId = sanitizeFirmwareText(payload.jobId || "", 80);
+  const status = sanitizeFirmwareText(payload.status || "", 40);
+  const message = sanitizeFirmwareText(payload.message || "", 240);
+  const fwVersion = sanitizeFirmwareText(payload.fwVersion || "", 32);
+  const progressPercent = payload.progressPercent;
+  if (!deviceId || !jobId || !status) {
+    throw new Error("deviceId, jobId and status are required");
+  }
+
+  const index = otaJobs.findIndex((job) => job.id === jobId && job.deviceId === deviceId);
+  if (index < 0) {
+    throw new Error("ota job not found");
+  }
+
+  const existing = otaJobs[index];
+  const nowIso = new Date().toISOString();
+  const nextProgress = deriveOtaProgressPercent(status, existing.progressPercent, progressPercent);
+  const next = {
+    ...existing,
+    status,
+    message: message || existing.message,
+    lastReportedVersion: fwVersion || existing.lastReportedVersion,
+    progressPercent: nextProgress,
+    startedAt: existing.startedAt || (status === "downloading" ? nowIso : existing.startedAt),
+    finishedAt: ["success", "rolled_back", "failed", "replaced"].includes(status) ? nowIso : existing.finishedAt,
+    history: [
+      ...(Array.isArray(existing.history) ? existing.history : []),
+      {
+        status,
+        message,
+        fwVersion,
+        progressPercent: nextProgress,
+        at: nowIso
+      }
+    ].slice(-20)
+  };
+
+  otaJobs[index] = next;
+  saveOtaJobs(otaJobs);
+  return next;
+}
+
+function reconcileOtaSuccessFromDeviceVersion(deviceId, fwVersion) {
+  const normalizedDeviceId = canonicalizeDeviceId(deviceId || "");
+  const normalizedVersion = sanitizeFirmwareText(fwVersion || "", 32);
+  if (!normalizedDeviceId || !normalizedVersion) {
+    return null;
+  }
+
+  const activeJob = getOtaJobsForDevice(normalizedDeviceId).find((job) => ["pending", "downloading", "rebooting"].includes(job.status));
+  if (!activeJob) {
+    return null;
+  }
+  if (activeJob.targetVersion !== normalizedVersion) {
+    return null;
+  }
+
+  if (activeJob.status === "success") {
+    return activeJob;
+  }
+
+  return updateOtaJobStatus({
+    deviceId: normalizedDeviceId,
+    jobId: activeJob.id,
+    status: "success",
+    message: "device reported target firmware version after ota reboot",
+    fwVersion: normalizedVersion
+  });
+}
+
+function buildOtaCheckResponse(req, deviceId, currentVersion) {
+  const job = getActiveOtaJobForDevice(deviceId, currentVersion);
+  if (!job) {
+    return { hasUpdate: false };
+  }
+
+  const firmware = getFirmwarePackage(job.firmwareId);
+  if (!firmware) {
+    return { hasUpdate: false };
+  }
+
+  const baseUrl = getRequestBaseUrl(req);
+  return {
+    hasUpdate: true,
+    jobId: job.id,
+    targetVersion: job.targetVersion,
+    size: firmware.size,
+    sha256: firmware.sha256,
+    force: Boolean(job.force),
+    url: `${baseUrl}/api/device/ota/download/${encodeURIComponent(job.id)}?token=${encodeURIComponent(job.token)}`
+  };
+}
+
+function getDeviceAdminOtaSummary(deviceId) {
+  const jobs = getOtaJobsForDevice(deviceId);
+  return {
+    activeJob: jobs.find((job) => ["pending", "downloading", "rebooting"].includes(job.status)) || null,
+    jobs: jobs.slice(0, 10).map((job) => ({
+      ...job,
+      firmware: getFirmwarePackage(job.firmwareId)
+    }))
+  };
+}
 
 function getSensorDisplayLabel(deviceId, sensorKey, fallbackLabel = null) {
   const alias = deviceSensorAliases?.[deviceId]?.[sensorKey];
@@ -520,7 +1185,7 @@ function saveRoomPhoto(roomId, originalName, dataUrl) {
   return roomPhotos[roomId];
 }
 
-function sendJson(res, statusCode, data) {
+function sendJson(res, statusCode, data, extraHeaders = {}) {
   const json = JSON.stringify(data);
   const acceptEncoding = res._req?.headers?.["accept-encoding"] || "";
   const compressed = tryGzip(json, acceptEncoding);
@@ -531,14 +1196,16 @@ function sendJson(res, statusCode, data) {
       "Access-Control-Allow-Origin": "*",
       "Cache-Control": "no-store",
       "Content-Encoding": "gzip",
-      "Vary": "Accept-Encoding"
+      "Vary": "Accept-Encoding",
+      ...extraHeaders
     });
     res.end(compressed);
   } else {
     res.writeHead(statusCode, {
       "Content-Type": "application/json; charset=utf-8",
       "Access-Control-Allow-Origin": "*",
-      "Cache-Control": "no-store"
+      "Cache-Control": "no-store",
+      ...extraHeaders
     });
     res.end(json);
   }
@@ -716,7 +1383,7 @@ function rememberDevice(deviceName, info) {
         return Array.from(nextSensors);
       })();
 
-  deviceRegistry.set(deviceName, {
+  const nextDevice = {
     ...existing,
     alias: info.alias || existing.alias || deviceName,
     clientId: info.clientId || existing.clientId || deviceName,
@@ -725,9 +1392,17 @@ function rememberDevice(deviceName, info) {
     sensorKey: info.sensorKey || existing.sensorKey || null,
     source: info.source || existing.source || "mqtt",
     sensors,
-    lowPowerEnabled: presenceConfig?.lowPowerEnabled ?? existing.lowPowerEnabled ?? false,
-    reportIntervalSec: presenceConfig?.reportIntervalSec ?? existing.reportIntervalSec ?? null
-  });
+    fwVersion: info.fwVersion || existing.fwVersion || null,
+    lowPowerEnabled: typeof info.lowPowerEnabled === "boolean"
+      ? info.lowPowerEnabled
+      : (presenceConfig?.lowPowerEnabled ?? existing.lowPowerEnabled ?? false),
+    reportIntervalSec: Number.isFinite(Number(info.reportIntervalSec))
+      ? Number(info.reportIntervalSec)
+      : (presenceConfig?.reportIntervalSec ?? existing.reportIntervalSec ?? null)
+  };
+
+  deviceRegistry.set(deviceName, nextDevice);
+  reconcileOtaSuccessFromDeviceVersion(deviceName, nextDevice.fwVersion);
 }
 
 function getDeviceOnlineWindowMs(device) {
@@ -918,6 +1593,7 @@ function recordSensorPayload(sensorKey, payload, meta) {
       const roundedValue = Number(
         value.toFixed(
           metric.unit === "hPa" ? 1 :
+          metric.unit === "dBm" ? 0 :
           metric.unit === "V" ? 3 :
           metric.unit === "mA" || metric.unit === "mW" ? 3 :
           1
@@ -1532,7 +2208,8 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
     clientId: clientId || source,
     lastTopic: topic,
     source: "sensor-mqtt",
-    sensorKeys: sensorEntries.map(({ sensorKey }) => sensorKey)
+    sensorKeys: sensorEntries.map(({ sensorKey }) => sensorKey),
+    fwVersion: sanitizeFirmwareText(payload.fwVersion || "", 32)
   });
 
   sensorEntries.forEach(({ sensorKey, sensorType }) => {
@@ -1548,7 +2225,8 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
       clientId: clientId || source,
       lastTopic: topic,
       sensorKey,
-      source: `sensor-mqtt:${sensorType}`
+      source: `sensor-mqtt:${sensorType}`,
+      fwVersion: sanitizeFirmwareText(payload.fwVersion || "", 32)
     });
   });
 
@@ -1606,6 +2284,7 @@ console.log(`MQTT WebSocket broker listening on ws://0.0.0.0:${MQTT_WS_PORT}`);
 const server = http.createServer((req, res) => {
   res._req = req;
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+  const otaDownloadMatch = /^\/api\/device\/ota\/download\/([^/]+)$/.exec(parsedUrl.pathname);
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -1614,6 +2293,136 @@ const server = http.createServer((req, res) => {
       "Access-Control-Allow-Headers": "Content-Type"
     });
     res.end();
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/admin/session") {
+    sendJson(res, 200, { authenticated: isAdminAuthenticated(req) });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/admin/login") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        if (String(payload.password || "") !== ADMIN_PASSWORD) {
+          sendJson(res, 401, { message: "invalid admin password" });
+          return;
+        }
+        const token = createAdminSession();
+        sendJson(
+          res,
+          200,
+          { authenticated: true },
+          {
+            "Set-Cookie": `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(ADMIN_SESSION_TTL_MS / 1000)}`
+          }
+        );
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid login payload" });
+      });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/admin/logout") {
+    const token = parseCookies(req).admin_session;
+    if (token) {
+      adminSessions.delete(token);
+    }
+    sendJson(res, 200, { authenticated: false }, { "Set-Cookie": "admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" });
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/device/ota/check") {
+    const deviceId = canonicalizeDeviceId(parsedUrl.searchParams.get("deviceId") || "");
+    const fwVersion = sanitizeFirmwareText(parsedUrl.searchParams.get("fwVersion") || "", 32);
+    if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+      sendJson(res, 400, { message: "invalid deviceId" });
+      return;
+    }
+    sendJson(res, 200, buildOtaCheckResponse(req, deviceId, fwVersion));
+    return;
+  }
+
+  if (otaDownloadMatch && req.method === "GET") {
+    const jobId = decodeURIComponent(otaDownloadMatch[1]);
+    const token = String(parsedUrl.searchParams.get("token") || "").trim();
+    const job = otaJobs.find((item) => item.id === jobId) || null;
+    const firmware = job ? getFirmwarePackage(job.firmwareId) : null;
+    if (!job || !firmware || token !== job.token) {
+      sendJson(res, 404, { message: "ota package not found" });
+      return;
+    }
+
+    const absolutePath = path.join(firmwareDir, firmware.storedFileName);
+    if (!fs.existsSync(absolutePath)) {
+      sendJson(res, 404, { message: "firmware file missing" });
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": firmware.size,
+      "Cache-Control": "no-store"
+    });
+    fs.createReadStream(absolutePath).pipe(res);
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/device/ota/report") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const updatedJob = updateOtaJobStatus(payload);
+        rememberDevice(updatedJob.deviceId, {
+          alias: DEVICE_ALIAS_BY_ID[updatedJob.deviceId],
+          lastTopic: "http:ota-report",
+          source: "ota-report",
+          fwVersion: sanitizeFirmwareText(payload.fwVersion || "", 32)
+        });
+        sendJson(res, 200, { message: "ota status updated", job: updatedJob });
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid ota report payload" });
+      });
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/device/config/check") {
+    const deviceId = canonicalizeDeviceId(parsedUrl.searchParams.get("deviceId") || "");
+    if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+      sendJson(res, 400, { message: "invalid deviceId" });
+      return;
+    }
+
+    const activeJob = getActiveDeviceConfigJobForDevice(deviceId);
+    sendJson(res, 200, {
+      deviceId,
+      hasUpdate: Boolean(activeJob),
+      job: activeJob
+        ? {
+            id: activeJob.id,
+            config: activeJob.config,
+            lowPower: activeJob.lowPower,
+            message: activeJob.message,
+            createdAt: activeJob.createdAt
+          }
+        : null
+    });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/device/config/report") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const updatedJob = updateDeviceConfigJobStatus(payload);
+        sendJson(res, 200, { message: "config status updated", job: updatedJob });
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid config report payload" });
+      });
     return;
   }
 
@@ -1707,6 +2516,128 @@ const server = http.createServer((req, res) => {
     const deviceId = String(parsedUrl.searchParams.get("deviceId") || "").trim();
     sendJson(res, 200, {
       aliases: getDeviceSensorAliasPayload(deviceId ? canonicalizeDeviceId(deviceId) : null)
+    });
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/device-ota") {
+    const deviceId = canonicalizeDeviceId(parsedUrl.searchParams.get("deviceId") || "");
+    if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+      sendJson(res, 400, { message: "invalid deviceId" });
+      return;
+    }
+    sendJson(res, 200, {
+      deviceId,
+      ...getDeviceAdminOtaSummary(deviceId)
+    });
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/device-admin") {
+    const deviceId = canonicalizeDeviceId(parsedUrl.searchParams.get("deviceId") || "");
+    if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+      sendJson(res, 400, { message: "invalid deviceId" });
+      return;
+    }
+    sendJson(res, 200, {
+      deviceId,
+      ...getDeviceAdminSummary(deviceId)
+    });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/device-admin/config") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const job = createDeviceConfigJob(payload);
+        sendJson(res, 200, {
+          message: "config job created",
+          job,
+          currentConfig: getDeviceRuntimeConfig(job.deviceId)
+        });
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid config payload" });
+      });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/device-ota/upload-and-start") {
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const firmware = saveFirmwarePackage(payload);
+        const job = createOtaJob({
+          deviceId: payload.deviceId,
+          firmwareId: firmware.id,
+          force: payload.force,
+          message: payload.message || "created from direct ota page"
+        });
+        sendJson(res, 200, {
+          message: "firmware uploaded and ota job created",
+          firmware,
+          job
+        });
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid ota upload payload" });
+      });
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/admin/firmware/list") {
+    if (!requireAdmin(req, res)) {
+      return;
+    }
+    sendJson(res, 200, { packages: listFirmwarePackages() });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/admin/firmware/upload") {
+    if (!requireAdmin(req, res)) {
+      return;
+    }
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const entry = saveFirmwarePackage(payload);
+        sendJson(res, 200, { message: "firmware uploaded", firmware: entry });
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid firmware payload" });
+      });
+    return;
+  }
+
+  if (req.method === "POST" && parsedUrl.pathname === "/api/admin/device-ota") {
+    if (!requireAdmin(req, res)) {
+      return;
+    }
+    collectRequestBody(req)
+      .then((bodyText) => {
+        const payload = JSON.parse(bodyText || "{}");
+        const job = createOtaJob(payload);
+        sendJson(res, 200, { message: "ota job created", job });
+      })
+      .catch((error) => {
+        sendJson(res, 400, { message: error.message || "invalid ota job payload" });
+      });
+    return;
+  }
+
+  if (req.method === "GET" && parsedUrl.pathname === "/api/admin/device-ota") {
+    if (!requireAdmin(req, res)) {
+      return;
+    }
+    const deviceId = canonicalizeDeviceId(parsedUrl.searchParams.get("deviceId") || "");
+    if (!DEVICE_ALIAS_BY_ID[deviceId]) {
+      sendJson(res, 400, { message: "invalid deviceId" });
+      return;
+    }
+    sendJson(res, 200, {
+      deviceId,
+      ...getDeviceAdminOtaSummary(deviceId)
     });
     return;
   }

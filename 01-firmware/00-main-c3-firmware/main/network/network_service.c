@@ -46,6 +46,42 @@ static uint8_t               s_selected_bssid[6] = {0};
 static uint8_t               s_selected_channel = 0;
 static wifi_auth_mode_t      s_selected_authmode = WIFI_AUTH_OPEN;
 
+static const char *wifi_disconnect_reason_text(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_UNSPECIFIED:
+        return "unspecified";
+    case WIFI_REASON_AUTH_EXPIRE:
+        return "auth_expire";
+    case WIFI_REASON_AUTH_LEAVE:
+        return "auth_leave";
+    case WIFI_REASON_ASSOC_EXPIRE:
+        return "assoc_expire";
+    case WIFI_REASON_ASSOC_TOOMANY:
+        return "assoc_toomany";
+    case WIFI_REASON_NOT_AUTHED:
+        return "not_authed";
+    case WIFI_REASON_NOT_ASSOCED:
+        return "not_assoced";
+    case WIFI_REASON_ASSOC_LEAVE:
+        return "assoc_leave";
+    case WIFI_REASON_ASSOC_NOT_AUTHED:
+        return "assoc_not_authed";
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        return "4way_timeout";
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        return "handshake_timeout";
+    case WIFI_REASON_NO_AP_FOUND:
+        return "no_ap_found";
+    case WIFI_REASON_AUTH_FAIL:
+        return "auth_fail";
+    case WIFI_REASON_CONNECTION_FAIL:
+        return "connection_fail";
+    default:
+        return "unknown";
+    }
+}
+
 /* ── WiFi list helpers ─────────────────────────────────────────────── */
 
 static void load_wifi_list(void)
@@ -73,24 +109,16 @@ static void apply_wifi_config(int index)
     wifi_config_t cfg = {0};
     strlcpy((char *)cfg.sta.ssid,     s_wifi_list[i].ssid,     sizeof(cfg.sta.ssid));
     strlcpy((char *)cfg.sta.password, s_wifi_list[i].password, sizeof(cfg.sta.password));
-    if (s_scan_before_connect) {
-        cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-        cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-        cfg.sta.threshold.authmode = s_selected_authmode;
-        cfg.sta.pmf_cfg.capable = false;
-        cfg.sta.pmf_cfg.required = false;
-        if (s_selected_bssid_valid) {
-            memcpy(cfg.sta.bssid, s_selected_bssid, sizeof(s_selected_bssid));
-            cfg.sta.bssid_set = true;
-            cfg.sta.channel = s_selected_channel;
-        }
-    } else {
-        cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-        cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-        cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
-        cfg.sta.pmf_cfg.capable = true;
-        cfg.sta.pmf_cfg.required = false;
-        cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+    cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    cfg.sta.pmf_cfg.capable = true;
+    cfg.sta.pmf_cfg.required = false;
+    cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
+    if (s_scan_before_connect && s_selected_bssid_valid) {
+        memcpy(cfg.sta.bssid, s_selected_bssid, sizeof(s_selected_bssid));
+        cfg.sta.bssid_set = true;
+        cfg.sta.channel = s_selected_channel;
     }
 
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
@@ -137,7 +165,7 @@ static bool select_visible_wifi_entry(void)
         memcpy(s_selected_bssid, best_record.bssid, sizeof(s_selected_bssid));
         s_selected_bssid_valid = true;
         s_selected_channel = best_record.primary;
-        s_selected_authmode = best_record.authmode == WIFI_AUTH_OPEN ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
+        s_selected_authmode = best_record.authmode;
         apply_wifi_config(s_wifi_index);
         ESP_LOGI(
             TAG,
@@ -284,16 +312,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
         char event_json[256];
+        const uint8_t reason = event ? event->reason : 0;
         xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
         device_profile_update_wifi(false, NULL, NULL, event ? event->reason : -1);
         device_profile_update_mqtt(false);
         snprintf(
             event_json,
             sizeof(event_json),
-            "{\"connected\":false,\"ssid\":\"--\",\"ip\":\"0.0.0.0\",\"reason\":%d}",
-            event ? event->reason : -1
+            "{\"connected\":false,\"ssid\":\"--\",\"ip\":\"0.0.0.0\",\"reason\":%d,\"reasonText\":\"%s\"}",
+            event ? event->reason : -1,
+            wifi_disconnect_reason_text(reason)
         );
         console_service_emit_event("wifi", event_json);
+        ESP_LOGW(TAG, "wifi disconnected, reason=%u (%s)", reason, wifi_disconnect_reason_text(reason));
         if (s_mqtt_client != NULL) {
             esp_mqtt_client_disconnect(s_mqtt_client);
         }
@@ -301,12 +332,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         if (s_reloading) {
             /* List was just updated — stay at index 0, config already applied */
             s_reloading = false;
-        } else {
-            /* Cycle to next entry on simple boards, scan-select on screen boards */
-            if (!s_scan_before_connect && s_wifi_count > 1) {
-                s_wifi_index = (s_wifi_index + 1) % s_wifi_count;
-                apply_wifi_config(s_wifi_index);
-            }
         }
         connect_using_current_strategy();
 
@@ -349,7 +374,7 @@ esp_err_t network_service_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
     load_wifi_list();
-    s_scan_before_connect = (device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN);
+    s_scan_before_connect = true;
     if (s_scan_before_connect && s_screen_connect_task == NULL) {
         xTaskCreate(screen_connect_task, "screen_wifi_connect", 4096, NULL, 5, &s_screen_connect_task);
     }
@@ -357,7 +382,7 @@ esp_err_t network_service_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     apply_wifi_config(s_wifi_index);
     ESP_ERROR_CHECK(esp_wifi_start());
-    if (s_scan_before_connect) {
+    if (device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN) {
         ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(34));
         ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20));
         ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));

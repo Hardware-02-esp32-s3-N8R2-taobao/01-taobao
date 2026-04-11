@@ -24,6 +24,7 @@ esp_err_t device_profile_init(void);
 const char *device_profile_device_name(void);
 const char *device_profile_device_id(void);
 const char *device_profile_device_alias(void);
+const char *device_profile_firmware_version(void);
 const char *device_profile_mqtt_topic(void);
 device_hw_variant_t device_profile_hardware_variant(void);
 const char *device_profile_hardware_variant_name(void);
@@ -48,5 +49,6 @@ esp_err_t device_profile_set_wifi_list_json(const char *json_text, char *message
 
 bool device_profile_low_power_enabled(void);
 uint32_t device_profile_low_power_interval_sec(void);
+void device_profile_set_low_power_state(bool enabled, uint32_t interval_sec);
 void device_profile_build_low_power_json(char *buffer, size_t buffer_size);
 esp_err_t device_profile_set_low_power_json(const char *json_text, char *message, size_t message_size);

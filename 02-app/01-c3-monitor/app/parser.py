@@ -66,13 +66,13 @@ def default_state() -> dict[str, Any]:
         "mqtt": {
             "status": "未连接",
             "broker": "mqtt://117.72.55.63:1884",
-            "topic": "device/yard-01",
+            "topic": "device/explorer-01",
             "updated_at": "",
         },
         "sensor": {
-            "status": "等待数据",
-            "sensor_count": 1,
-            "sensor_models": ["dht11"],
+            "status": "未配置传感器",
+            "sensor_count": 0,
+            "sensor_models": [],
             "ready_count": 0,
             "readings": {},
             "fail_counts": {},
@@ -88,10 +88,10 @@ def default_state() -> dict[str, Any]:
             "payload_text": "--",
         },
         "config": {
-            "device_id": "yard-01",
-            "device_name": "庭院1号",
-            "device_alias": "庭院 1 号",
-            "sensors": ["dht11"],
+            "device_id": "explorer-01",
+            "device_name": "探索者1号",
+            "device_alias": "探索者 1 号",
+            "sensors": [],
         },
         "hardware": {
             "chip_model": "--",
@@ -102,7 +102,7 @@ def default_state() -> dict[str, Any]:
             "mac": "--",
         },
         "options": {
-            "device_names": ["庭院1号", "卧室1号", "书房1号", "办公室1号"],
+            "device_names": ["探索者1号", "庭院1号", "卧室1号", "书房1号", "办公室1号"],
             "sensor_types": ["dht11", "ds18b20", "bh1750", "bmp180", "shtc3", "soil_moisture", "rain_sensor", "battery", "max17043", "ina226"],
         },
         "alerts": [],
@@ -270,8 +270,8 @@ class StatusParser:
         config["device_name"] = payload.get("deviceName", config["device_name"])
         config["device_alias"] = payload.get("deviceAlias", config["device_alias"])
         sensors = payload.get("sensors")
-        if isinstance(sensors, list) and sensors:
-            config["sensors"] = [str(item) for item in sensors]
+        if isinstance(sensors, list):
+            config["sensors"] = [str(item) for item in sensors if str(item).strip()]
         self._state["sensor"]["sensor_models"] = list(config["sensors"])
         self._state["sensor"]["sensor_count"] = len(config["sensors"])
         hw = payload.get("hardware") or {}
@@ -308,7 +308,10 @@ class StatusParser:
 
         self._state["sensor"]["ready_count"] = int(payload.get("sensorReadyCount", 0) or 0)
         self._state["sensor"]["sensor_count"] = int(payload.get("sensorTotalCount", len(self._state["config"]["sensors"])) or 0)
-        self._state["sensor"]["status"] = "采样正常" if self._state["sensor"]["ready_count"] > 0 else "等待数据"
+        if self._state["sensor"]["sensor_count"] <= 0:
+            self._state["sensor"]["status"] = "未配置传感器"
+        else:
+            self._state["sensor"]["status"] = "采样正常" if self._state["sensor"]["ready_count"] > 0 else "等待数据"
         self._merge_sensor_readings(sensors_data if isinstance(sensors_data, dict) else {})
         self._state["sensor"]["updated_at"] = now_text()
 

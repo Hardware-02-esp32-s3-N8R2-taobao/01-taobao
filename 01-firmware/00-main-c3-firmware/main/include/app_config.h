@@ -1,9 +1,5 @@
 #pragma once
 
-#ifndef PROJECT_VER
-#define PROJECT_VER "dev"
-#endif
-
 #define APP_WIFI_SSID            "ggg"
 #define APP_WIFI_PASSWORD        "gf666666"
 
@@ -12,14 +8,25 @@
 #define APP_MQTT_PASSWORD        ""
 #define APP_MQTT_TOPIC_PREFIX    "device"
 
-#define APP_DEVICE_ID            "yard-01"
-#define APP_DEVICE_ALIAS         "庭院 1 号"
+#define APP_DEVICE_ID            "explorer-01"
+#define APP_DEVICE_ALIAS         "探索者 1 号"
 #define APP_FIRMWARE_VERSION_MAJOR 1
-#define APP_FIRMWARE_VERSION_MINOR 0
-#define APP_FIRMWARE_VERSION     "1.0"
+#define APP_FIRMWARE_VERSION_MINOR 2
+#define APP_FIRMWARE_VERSION     "1.1.17"
 #define APP_SERIAL_PUSH_EVENTS   0
 
+#define APP_OTA_SERVER_BASE_URL  "http://117.72.55.63"
+#define APP_OTA_CHECK_PATH       "/api/device/ota/check"
+#define APP_OTA_REPORT_PATH      "/api/device/ota/report"
+#define APP_REMOTE_CONFIG_CHECK_PATH  "/api/device/config/check"
+#define APP_REMOTE_CONFIG_REPORT_PATH "/api/device/config/report"
+
 #define APP_PUBLISH_INTERVAL_MS  3000
+#define APP_STATUS_LED_GPIO      GPIO_NUM_8
+#define APP_STATUS_LED_ACTIVE_LEVEL 0
+#define APP_STATUS_LED_BLINK_MS  80
+#define APP_SCREEN_PAGE_BUTTON_GPIO GPIO_NUM_9
+#define APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL 0
 
 #define APP_DHT11_GPIO           GPIO_NUM_3
 #define APP_DS18B20_GPIO         GPIO_NUM_2

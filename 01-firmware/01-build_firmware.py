@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import re
 import subprocess
 import sys
@@ -17,14 +18,17 @@ PROJECT_DESCRIPTION_PATH = BUILD_DIR / "project_description.json"
 FLASHER_ARGS_PATH = BUILD_DIR / "flasher_args.json"
 SDKCONFIG_PATH = PROJECT_DIR / "sdkconfig"
 PARTITIONS_CSV_PATH = PROJECT_DIR / "partitions.csv"
+APP_CONFIG_HEADER = PROJECT_DIR / "main" / "include" / "app_config.h"
+SHORT_BIN_PREFIX = "yd-c3"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from project_runtime import ensure_machine_registration, get_idf_command  # noqa: E402
 
 
-def run_idf_command(idf_cmd: list[str], env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def run_idf_command(
+    idf_cmd: list[str], env: dict[str, str], *args: str, echo_output: bool = True
+) -> subprocess.CompletedProcess[str]:
     cmd = [*idf_cmd, *args]
-    print("Command:", " ".join(cmd))
     completed = subprocess.run(
         cmd,
         cwd=PROJECT_DIR,
@@ -35,9 +39,10 @@ def run_idf_command(idf_cmd: list[str], env: dict[str, str], *args: str) -> subp
         encoding="utf-8",
         errors="replace",
     )
-    if completed.stdout:
+    should_echo = echo_output or completed.returncode != 0
+    if should_echo and completed.stdout:
         print(completed.stdout, end="")
-    if completed.stderr:
+    if should_echo and completed.stderr:
         print(completed.stderr, end="", file=sys.stderr)
     return completed
 
@@ -189,6 +194,40 @@ def bar(percent: float | int | None, width: int = 24) -> str:
     value = max(0.0, min(float(percent), 100.0))
     filled = round(width * value / 100.0)
     return f"[{'#' * filled}{'-' * (width - filled)}] {value:.1f}%"
+
+
+def load_app_firmware_version(path: Path) -> str:
+    if not path.exists():
+        return "unknown"
+    content = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r'#define[ \t]+APP_FIRMWARE_VERSION[ \t]+"([^"]+)"', content)
+    if not match:
+        return "unknown"
+    return match.group(1)
+
+
+def sync_versioned_firmware_bin(project_name: str, firmware_version: str) -> Path | None:
+    app_bin_path = BUILD_DIR / f"{project_name}.bin"
+    if not app_bin_path.exists():
+        return None
+
+    for stale_path in BUILD_DIR.glob(f"{project_name}_v*.bin"):
+        if stale_path.name != f"{project_name}_v{firmware_version}.bin":
+            stale_path.unlink(missing_ok=True)
+
+    versioned_bin_path = BUILD_DIR / f"{project_name}_v{firmware_version}.bin"
+    shutil.copy2(app_bin_path, versioned_bin_path)
+    return versioned_bin_path
+
+
+def publish_short_firmware_bin(source_path: Path, firmware_version: str) -> Path:
+    for stale_path in SCRIPT_DIR.glob(f"{SHORT_BIN_PREFIX}_v*.bin"):
+        if stale_path.name != f"{SHORT_BIN_PREFIX}_v{firmware_version}.bin":
+            stale_path.unlink(missing_ok=True)
+
+    short_bin_path = SCRIPT_DIR / f"{SHORT_BIN_PREFIX}_v{firmware_version}.bin"
+    shutil.copy2(source_path, short_bin_path)
+    return short_bin_path
 
 
 def build_report(build_output: str, size_output: str, size_components_output: str) -> str:
@@ -469,7 +508,8 @@ def main() -> int:
     print(f"Building firmware in: {PROJECT_DIR}")
 
     try:
-        build_completed = run_idf_command(idf_cmd, env, "build")
+        print("阶段 1/3：构建固件...")
+        build_completed = run_idf_command(idf_cmd, env, "build", echo_output=False)
     except FileNotFoundError:
         print("idf.py not found. Please configure this machine in .project-machine-config.json or open an ESP-IDF shell.")
         return 1
@@ -477,22 +517,29 @@ def main() -> int:
     if build_completed.returncode != 0:
         return build_completed.returncode
 
-    size_completed = run_idf_command(idf_cmd, env, "size")
+    print("阶段 2/3：生成尺寸统计...")
+    size_completed = run_idf_command(idf_cmd, env, "size", echo_output=False)
     if size_completed.returncode != 0:
         return size_completed.returncode
 
-    size_components_completed = run_idf_command(idf_cmd, env, "size-components")
+    size_components_completed = run_idf_command(idf_cmd, env, "size-components", echo_output=False)
     if size_components_completed.returncode != 0:
         return size_components_completed.returncode
 
+    print("阶段 3/3：整理报告与发布文件...")
     report = build_report(build_completed.stdout, size_completed.stdout, size_components_completed.stdout)
     REPORT_PATH.write_text(report, encoding="utf-8")
+    project_description = load_json_file(PROJECT_DESCRIPTION_PATH)
+    project_name = str(project_description.get("project_name") or PROJECT_DIR.name)
+    firmware_version = load_app_firmware_version(APP_CONFIG_HEADER)
+    versioned_bin_path = sync_versioned_firmware_bin(project_name, firmware_version)
+    short_bin_path = publish_short_firmware_bin(versioned_bin_path or (BUILD_DIR / f"{project_name}.bin"), firmware_version)
 
-    print("\n" + "=" * 60)
-    print("构建报告摘要")
-    print("=" * 60)
-    print(report)
+    print("构建完成。")
     print(f"报告文件已生成：{REPORT_PATH}")
+    if versioned_bin_path is not None:
+        print(f"版本固件已更新：{versioned_bin_path}")
+    print(f"短文件名固件已发布：{short_bin_path}")
     return 0
 
 

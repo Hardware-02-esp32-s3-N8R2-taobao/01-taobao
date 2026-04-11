@@ -6,13 +6,23 @@
 #include "esp_check.h"
 
 #define OLED_TAG "oled_ssd1306"
-#define OLED_H_RES 128
-#define OLED_V_RES 64
+#define OLED_MAX_H_RES 128
+#define OLED_MAX_V_RES 64
 
 static oled_ssd1306_config_t s_oled_cfg;
 static uint8_t s_oled_addr;
-static uint8_t s_oled_buffer[OLED_H_RES * OLED_V_RES / 8];
+static uint8_t s_oled_buffer[OLED_MAX_H_RES * OLED_MAX_V_RES / 8];
 static bool s_oled_ready;
+
+static uint8_t oled_width(void)
+{
+    return s_oled_cfg.width == 0 ? OLED_MAX_H_RES : s_oled_cfg.width;
+}
+
+static uint8_t oled_height(void)
+{
+    return s_oled_cfg.height == 0 ? OLED_MAX_V_RES : s_oled_cfg.height;
+}
 
 static esp_err_t oled_write_command(uint8_t command)
 {
@@ -101,11 +111,14 @@ static const uint8_t *font5x7(char c)
 
 static void oled_set_pixel(int x, int y, bool on)
 {
-    if (x < 0 || x >= OLED_H_RES || y < 0 || y >= OLED_V_RES) {
+    int width = oled_width();
+    int height = oled_height();
+
+    if (x < 0 || x >= width || y < 0 || y >= height) {
         return;
     }
 
-    uint16_t index = (uint16_t)x + (uint16_t)(y / 8) * OLED_H_RES;
+    uint16_t index = (uint16_t)x + (uint16_t)(y / 8) * OLED_MAX_H_RES;
     uint8_t mask = 1U << (y % 8);
 
     if (on) {
@@ -126,11 +139,40 @@ static void oled_draw_char(int x, int y, char c)
     }
 }
 
+static void oled_draw_char_scaled(int x, int y, char c, uint8_t scale)
+{
+    const uint8_t *glyph = font5x7(c);
+    uint8_t actual_scale = scale == 0 ? 1 : scale;
+
+    for (int col = 0; col < 5; col++) {
+        for (int row = 0; row < 7; row++) {
+            if ((glyph[col] & (1 << row)) == 0) {
+                continue;
+            }
+            for (uint8_t dx = 0; dx < actual_scale; dx++) {
+                for (uint8_t dy = 0; dy < actual_scale; dy++) {
+                    oled_set_pixel(
+                        x + (col * actual_scale) + dx,
+                        y + (row * actual_scale) + dy,
+                        true
+                    );
+                }
+            }
+        }
+    }
+}
+
 static esp_err_t oled_panel_init(void)
 {
+    const uint8_t seg_remap = s_oled_cfg.rotate_180 ? 0xA1 : 0xA0;
+    const uint8_t com_scan_dir = s_oled_cfg.rotate_180 ? 0xC8 : 0xC0;
     const uint8_t init_cmds[] = {
-        0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
-        0x8D, 0x14, 0x20, 0x00, 0xA1, 0xC8, 0xDA, 0x12,
+        0xAE, 0xD5, 0x80,
+        0xA8, (uint8_t)(oled_height() - 1),
+        0xD3, s_oled_cfg.display_offset, 0x40,
+        0x8D, 0x14, 0x20, 0x00,
+        seg_remap, com_scan_dir,
+        0xDA, (uint8_t)(oled_height() <= 32 ? 0x02 : 0x12),
         0x81, 0xCF, 0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6, 0xAF
     };
 
@@ -146,6 +188,12 @@ esp_err_t oled_ssd1306_init(const oled_ssd1306_config_t *config)
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, OLED_TAG, "config is null");
 
     s_oled_cfg = *config;
+    if (s_oled_cfg.width == 0 || s_oled_cfg.width > OLED_MAX_H_RES) {
+        s_oled_cfg.width = OLED_MAX_H_RES;
+    }
+    if (s_oled_cfg.height == 0 || s_oled_cfg.height > OLED_MAX_V_RES) {
+        s_oled_cfg.height = OLED_MAX_V_RES;
+    }
     s_oled_ready = false;
     s_oled_addr = s_oled_cfg.primary_addr;
 
@@ -191,10 +239,44 @@ void oled_ssd1306_clear(void)
     memset(s_oled_buffer, 0x00, sizeof(s_oled_buffer));
 }
 
+esp_err_t oled_ssd1306_set_display_enabled(bool enabled)
+{
+    ESP_RETURN_ON_FALSE(s_oled_ready, ESP_ERR_INVALID_STATE, OLED_TAG, "oled not ready");
+    return oled_write_command(enabled ? 0xAF : 0xAE);
+}
+
 void oled_ssd1306_draw_text(int x, int y, const char *text)
 {
+    oled_ssd1306_draw_text_scaled(x, y, text, 1);
+}
+
+void oled_ssd1306_draw_text_scaled(int x, int y, const char *text, uint8_t scale)
+{
+    uint8_t actual_scale = scale == 0 ? 1 : scale;
     while (*text) {
-        oled_draw_char(x, y, *text++);
+        oled_draw_char_scaled(x, y, *text++, actual_scale);
+        x += (6 * actual_scale);
+    }
+}
+
+void oled_ssd1306_draw_text_scaled_bold(int x, int y, const char *text, uint8_t scale)
+{
+    uint8_t actual_scale = scale == 0 ? 1 : scale;
+    while (*text) {
+        char ch = *text++;
+        oled_draw_char_scaled(x, y, ch, actual_scale);
+        oled_draw_char_scaled(x + 1, y, ch, actual_scale);
+        x += (6 * actual_scale);
+    }
+}
+
+void oled_ssd1306_draw_text_emphasis(int x, int y, const char *text)
+{
+    while (*text) {
+        char ch = *text++;
+        oled_draw_char(x, y, ch);
+        oled_draw_char(x + 1, y, ch);
+        oled_draw_char(x, y + 1, ch);
         x += 6;
     }
 }
@@ -225,11 +307,15 @@ esp_err_t oled_ssd1306_present(void)
 {
     ESP_RETURN_ON_FALSE(s_oled_ready, ESP_ERR_INVALID_STATE, OLED_TAG, "oled not ready");
 
-    for (int page = 0; page < OLED_V_RES / 8; page++) {
+    int page_count = (oled_height() + 7) / 8;
+    int width = oled_width();
+
+    for (int page = 0; page < page_count; page++) {
+        uint8_t start_column = s_oled_cfg.column_offset;
         ESP_RETURN_ON_ERROR(oled_write_command((uint8_t)(0xB0 + page)), OLED_TAG, "set page failed");
-        ESP_RETURN_ON_ERROR(oled_write_command(0x00), OLED_TAG, "set low column failed");
-        ESP_RETURN_ON_ERROR(oled_write_command(0x10), OLED_TAG, "set high column failed");
-        ESP_RETURN_ON_ERROR(oled_write_data(&s_oled_buffer[OLED_H_RES * page], OLED_H_RES), OLED_TAG, "page write failed");
+        ESP_RETURN_ON_ERROR(oled_write_command((uint8_t)(start_column & 0x0F)), OLED_TAG, "set low column failed");
+        ESP_RETURN_ON_ERROR(oled_write_command((uint8_t)(0x10 | ((start_column >> 4) & 0x0F))), OLED_TAG, "set high column failed");
+        ESP_RETURN_ON_ERROR(oled_write_data(&s_oled_buffer[OLED_MAX_H_RES * page], (size_t)width), OLED_TAG, "page write failed");
     }
 
     return ESP_OK;

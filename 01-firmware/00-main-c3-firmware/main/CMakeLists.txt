@@ -3,7 +3,10 @@ idf_component_register(
         "app_main.c"
         "app/telemetry_app.c"
         "app/device_profile.c"
+        "app/ota_service.c"
+        "app/remote_config_service.c"
         "app/console_service.c"
+        "app/status_led.c"
         "oled/oled_ssd1306.c"
         "dht11/dht11_sensor.c"
         "sensors/sensor_bus.c"
@@ -27,4 +30,6 @@ idf_component_register(
         nvs_flash
         vfs
         esp_adc
+        esp_http_client
+        app_update
 )

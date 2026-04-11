@@ -1,5 +1,6 @@
 const roomConfigs = [
   { id: "all", name: "全屋", description: "查看全部设备" },
+  { id: "explorer", name: "探索", description: "探索与 OTA 调试设备" },
   { id: "yard", name: "庭院", description: "庭院节点和植物相关设备" },
   { id: "study", name: "书房", description: "书房温湿度监测" },
   { id: "office", name: "办公室", description: "办公室温湿度监测" },
@@ -63,6 +64,23 @@ const sensorCatalog = {
     icon: "💡",
     metrics: [{ key: "illuminance", label: "光照", unit: "lux", color: "#f4ba41" }]
   },
+  wifi_signal: {
+    key: "wifi_signal",
+    title: "WiFi 信号强度",
+    subtitle: "当前连接 WiFi 的信号强度",
+    icon: "📶",
+    metrics: [{ key: "rssi", label: "信号强度", unit: "dBm", color: "#2f7cf6" }]
+  },
+  soil_moisture: {
+    key: "soil_moisture",
+    title: "土壤湿度",
+    subtitle: "土壤湿度原始值与百分比",
+    icon: "🌱",
+    metrics: [
+      { key: "raw", label: "原始值", unit: "", color: "#7d8c52" },
+      { key: "percent", label: "湿度", unit: "%", color: "#3f8cff" }
+    ]
+  },
   battery: {
     key: "battery",
     title: "电池电压",
@@ -97,13 +115,28 @@ const sensorCatalog = {
 };
 
 const deviceCatalog = {
+  "explorer-01": {
+    id: "explorer-01",
+    title: "探索者 1 号",
+    subtitle: "探索与 OTA 验证节点",
+    room: "explorer",
+    type: "iot-device",
+    lowPowerEnabled: false,
+    reportIntervalSec: 300,
+    icon: "🧭",
+    accentClass: "accent-flower",
+    matchIds: ["explorer-01"],
+    historyDevices: ["explorer-01"],
+    sensors: [],
+    summary: "用于探索、调试与 OTA 升级验证的 ESP32-C3 设备。"
+  },
   "yard-01": {
     id: "yard-01",
     title: "庭院 1 号",
     subtitle: "庭院温湿度节点",
     room: "yard",
     type: "iot-device",
-    lowPowerEnabled: true,
+    lowPowerEnabled: false,
     reportIntervalSec: 300,
     icon: "🪴",
     accentClass: "accent-flower",
@@ -121,7 +154,7 @@ const deviceCatalog = {
     subtitle: "书房温湿度节点",
     room: "study",
     type: "iot-device",
-    lowPowerEnabled: true,
+    lowPowerEnabled: false,
     reportIntervalSec: 300,
     icon: "📚",
     accentClass: "accent-flower",
@@ -184,6 +217,9 @@ const deviceCatalog = {
 
 // 默认在线判定窗口（与服务端 DEVICE_ONLINE_WINDOW_MS 保持一致）
 const SENSOR_ONLINE_WINDOW_MS = 90 * 1000;
+const NORMAL_REPORT_INTERVAL_SEC = 3;
+const REQUEST_TIMEOUT_MS = 15000;
+const OTA_STATUS_POLL_INTERVAL_MS = 3000;
 
 // 传感器异常阈值 — 超出范围时在设备卡片和详情页展示告警标记
 const ALERT_THRESHOLDS = {
@@ -203,6 +239,9 @@ const ALERT_THRESHOLDS = {
   shtc3: {
     temperature: { warnHigh: 35, alertHigh: 40, warnLow: 5, alertLow: 0 },
     humidity:    { warnHigh: 90, alertHigh: 95, warnLow: 20, alertLow: 10 }
+  },
+  wifi_signal: {
+    rssi: { warnLow: -75, alertLow: -85 }
   },
   battery: {
     voltage: { warnLow: 3.3, alertLow: 3.1 },
@@ -247,6 +286,17 @@ const appState = {
   sensorAliasEditor: {
     submitting: false,
     status: ""
+  },
+  admin: {
+    authenticated: false,
+    checking: false,
+    loginSubmitting: false,
+    status: "",
+    firmwarePackages: [],
+    deviceData: {},
+    uploadSubmitting: false,
+    createSubmitting: false,
+    pendingFilePickerDeviceId: null
   }
 };
 
@@ -283,6 +333,17 @@ function formatDateLabel(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", weekday: "short" });
 }
 
+function formatCountdownMs(ms) {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}小时 ${String(minutes).padStart(2, "0")}分 ${String(seconds).padStart(2, "0")}秒`;
+  }
+  return `${String(minutes).padStart(2, "0")}分 ${String(seconds).padStart(2, "0")}秒`;
+}
+
 function formatPointTime(tsMs) {
   return new Date(tsMs).toLocaleString("zh-CN", {
     month: "numeric",
@@ -296,6 +357,7 @@ function formatPointTime(tsMs) {
 function formatMetricValue(value, unit) {
   if (value == null || Number.isNaN(Number(value))) return "--";
   if (unit === "lux") return `${Math.round(Number(value))} ${unit}`;
+  if (unit === "dBm") return `${Math.round(Number(value))} ${unit}`;
   if (unit === "V") return `${Number(value).toFixed(3)} ${unit}`;
   if (unit === "mA" || unit === "mW") return `${Number(value).toFixed(3)} ${unit}`;
   return `${Number(value).toFixed(1)} ${unit}`;
@@ -309,16 +371,34 @@ function formatSensorMetricValue(sensorKey, metricKey, value, unit) {
   return formatMetricValue(value, unit);
 }
 
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      cache: "no-store",
+      ...options,
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("请求超时，请检查服务端状态");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, { cache: "no-store", ...options });
+  const response = await fetchWithTimeout(url, options);
   if (!response.ok) throw new Error(url);
   return response.json();
 }
 
 async function postJson(url, payload) {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "POST",
-    cache: "no-store",
     headers: {
       "Content-Type": "application/json"
     },
@@ -331,6 +411,127 @@ async function postJson(url, payload) {
   return data;
 }
 
+async function postJsonWithUploadProgress(url, payload, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const body = JSON.stringify(payload);
+    xhr.open("POST", url, true);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.responseType = "json";
+    xhr.timeout = REQUEST_TIMEOUT_MS * 8;
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress?.(event.loaded, event.total);
+      }
+    };
+    xhr.onload = () => {
+      const responseData = xhr.response && typeof xhr.response === "object"
+        ? xhr.response
+        : JSON.parse(xhr.responseText || "{}");
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(responseData);
+        return;
+      }
+      reject(new Error(responseData.message || url));
+    };
+    xhr.onerror = () => reject(new Error("请求失败，请检查网络连接"));
+    xhr.ontimeout = () => reject(new Error("请求超时，请检查服务端状态"));
+    xhr.send(body);
+  });
+}
+
+function inferFirmwareVersionFromFileName(fileName) {
+  const raw = String(fileName || "").trim();
+  if (!raw) return "";
+  const match = raw.match(/(?:_v|[-_])(\d+\.\d+\.\d+)\.bin$/i) || raw.match(/(\d+\.\d+\.\d+)/);
+  return match?.[1] || "";
+}
+
+function tryOpenFirmwarePicker(deviceId) {
+  const fileInput = document.getElementById("firmwareFileInput");
+  if (!fileInput || appState.activeDeviceId !== deviceId || appState.activeDevicePageKey !== "settings:admin") {
+    return false;
+  }
+  try {
+    if (typeof fileInput.showPicker === "function") {
+      fileInput.showPicker();
+      return true;
+    }
+    fileInput.click();
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      const commaIndex = result.indexOf(",");
+      resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+    };
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function clampPercent(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(100, Number(fallback) || 0));
+  }
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function getOtaStatusLabel(status) {
+  switch (String(status || "").trim()) {
+    case "pending":
+      return "等待设备拉取";
+    case "downloading":
+      return "设备下载中";
+    case "rebooting":
+      return "设备重启中";
+    case "success":
+      return "升级成功";
+    case "failed":
+      return "升级失败";
+    case "rolled_back":
+      return "已经回滚";
+    case "replaced":
+      return "已被新任务替换";
+    default:
+      return status || "暂无任务";
+  }
+}
+
+function getOtaProgressPercent(job) {
+  if (!job) {
+    return 0;
+  }
+  if (Number.isFinite(Number(job.progressPercent))) {
+    return clampPercent(job.progressPercent);
+  }
+  switch (job.status) {
+    case "pending":
+      return 5;
+    case "downloading":
+      return 55;
+    case "rebooting":
+      return 95;
+    case "success":
+      return 100;
+    default:
+      return 0;
+  }
+}
+
+function getOtaDisplayJob(deviceId) {
+  const deviceData = appState.admin.deviceData[deviceId] || {};
+  return deviceData.activeJob || deviceData.jobs?.[0] || null;
+}
+
 function isRecentSensorUpdate(updatedAt) {
   if (!updatedAt) return false;
   const tsMs = new Date(updatedAt).getTime();
@@ -339,6 +540,48 @@ function isRecentSensorUpdate(updatedAt) {
 
 function getDeviceStatusEntry(deviceId) {
   return getDevicesStatusMap().get(deviceId) || null;
+}
+
+function getLatestOtaReportedVersion(deviceId) {
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const recentJob = adminData.activeJob || adminData.jobs?.[0] || null;
+  if (!recentJob) return "";
+  return recentJob.lastReportedVersion || (recentJob.status === "success" ? recentJob.targetVersion || "" : "");
+}
+
+function getDeviceFirmwareVersion(deviceId) {
+  return getDeviceStatusEntry(deviceId)?.fwVersion
+    || getLatestOtaReportedVersion(deviceId)
+    || appState.latestSensor?.devices?.find?.((item) => item.device === deviceId)?.fwVersion
+    || "--";
+}
+
+function getDeviceCurrentLowPower(deviceId) {
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  return adminData.currentConfig?.lowPower || { enabled: false, intervalSec: 300 };
+}
+
+function getAdminWakeCountdownState(deviceId) {
+  const snapshot = getDeviceSnapshot(deviceId);
+  const deviceStatus = getDeviceStatusEntry(deviceId);
+  const currentLowPower = getDeviceCurrentLowPower(deviceId);
+  if (!snapshot || snapshot.online || !currentLowPower?.enabled) {
+    return null;
+  }
+
+  const intervalSec = Number(currentLowPower.intervalSec || deviceStatus?.reportIntervalSec || 0);
+  const lastSeenMs = deviceStatus?.lastSeenAt ? new Date(deviceStatus.lastSeenAt).getTime() : NaN;
+  if (!Number.isFinite(intervalSec) || intervalSec < 10 || !Number.isFinite(lastSeenMs)) {
+    return null;
+  }
+
+  const expectedWakeMs = lastSeenMs + intervalSec * 1000;
+  const remainingMs = expectedWakeMs - Date.now();
+  return {
+    expectedWakeMs,
+    remainingMs,
+    dueSoon: remainingMs <= 0
+  };
 }
 
 function getDeviceOnlineWindowMs(deviceId) {
@@ -523,6 +766,7 @@ function buildDeviceSummaryMetrics(sensors) {
   pushMetric("ina226", "busVoltage");
   pushMetric("battery", "percent");
   pushMetric("battery", "voltage");
+  pushMetric("wifi_signal", "rssi");
   pushMetric("bh1750", "illuminance");
   pushMetric("bmp180", "pressure");
   pushMetric("bmp280", "pressure");
@@ -823,7 +1067,7 @@ function renderDeviceGrid() {
         `;
       }).join("");
       const deviceMeta = catalog.type === "iot-device"
-        ? `<span>${getDeviceSensorCountLabel(snapshot)}</span>`
+        ? `<span>${getDeviceSensorCountLabel(snapshot)}</span><span>固件 ${escapeHtml(getDeviceFirmwareVersion(catalog.id))}</span>`
         : `<span>${catalog.type === "server" ? "系统设备" : "服务设备"}</span>`;
       const historyHint = getDeviceHistoryHint(snapshot, catalog);
       return `
@@ -1024,6 +1268,117 @@ async function saveSensorAliases(deviceId, aliases) {
     deviceId,
     aliases
   });
+}
+
+async function refreshAdminSession() {
+  appState.admin.authenticated = true;
+  return true;
+}
+
+async function loadAdminOtaData(deviceId, { force = false } = {}) {
+  if (!force && appState.admin.deviceData[deviceId]) {
+    return appState.admin.deviceData[deviceId];
+  }
+  const adminResponse = await fetchJson(`/api/device-admin?deviceId=${encodeURIComponent(deviceId)}`);
+  const currentConfig = adminResponse.currentConfig || {};
+  const currentLowPower = currentConfig.lowPower || {};
+  appState.admin.deviceData[deviceId] = {
+    ...(appState.admin.deviceData[deviceId] || {}),
+    options: adminResponse.options || { deviceNames: [], sensorTypes: [] },
+    currentConfig,
+    activeConfigJob: adminResponse.activeConfigJob || null,
+    configJobs: adminResponse.configJobs || [],
+    configDeviceName: appState.admin.deviceData[deviceId]?.configDeviceName || currentConfig.deviceName || "",
+    configSensors: appState.admin.deviceData[deviceId]?.configSensors || currentConfig.sensors || [],
+    configLowPowerEnabled: appState.admin.deviceData[deviceId]?.configLowPowerEnabled ?? Boolean(currentLowPower.enabled),
+    configLowPowerIntervalSec: appState.admin.deviceData[deviceId]?.configLowPowerIntervalSec || Number(currentLowPower.intervalSec || 300),
+    configSubmitting: appState.admin.deviceData[deviceId]?.configSubmitting || false,
+    configStatus: appState.admin.deviceData[deviceId]?.configStatus || "",
+    activeJob: adminResponse.activeJob || null,
+    jobs: adminResponse.jobs || [],
+    uploadVersion: appState.admin.deviceData[deviceId]?.uploadVersion || "",
+    uploadNotes: appState.admin.deviceData[deviceId]?.uploadNotes || "",
+    selectedFile: appState.admin.deviceData[deviceId]?.selectedFile || null,
+    selectedFileName: appState.admin.deviceData[deviceId]?.selectedFileName || "",
+    uploadPercent: appState.admin.deviceData[deviceId]?.uploadPercent || 0,
+    pageStatus: appState.admin.deviceData[deviceId]?.pageStatus || ""
+  };
+  const latestReportedVersion = appState.admin.deviceData[deviceId]?.activeJob?.lastReportedVersion
+    || appState.admin.deviceData[deviceId]?.jobs?.find?.((job) => job.lastReportedVersion)?.lastReportedVersion
+    || appState.admin.deviceData[deviceId]?.jobs?.find?.((job) => job.status === "success" && job.targetVersion)?.targetVersion
+    || "";
+  if (latestReportedVersion && Array.isArray(appState.devicesStatus?.devices)) {
+    appState.devicesStatus = {
+      ...appState.devicesStatus,
+      devices: appState.devicesStatus.devices.map((device) => (
+        device.device === deviceId
+          ? { ...device, fwVersion: latestReportedVersion }
+          : device
+      ))
+    };
+  }
+  return appState.admin.deviceData[deviceId];
+}
+
+async function refreshAdminConfig(deviceId) {
+  try {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configStatus: "正在刷新远程配置..."
+    };
+    renderDeviceDetail(deviceId);
+    await loadAdminOtaData(deviceId, { force: true });
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configStatus: "远程配置已刷新。"
+    };
+    renderDeviceDetail(deviceId);
+  } catch (error) {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configStatus: `刷新失败：${error.message}`
+    };
+    renderDeviceDetail(deviceId);
+  }
+}
+
+async function saveAdminConfig(deviceId) {
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const draft = getAdminConfigDraft(deviceId);
+  try {
+    appState.admin.deviceData[deviceId] = {
+      ...adminData,
+      configSubmitting: true,
+      configStatus: "正在创建配置下发任务..."
+    };
+    renderDeviceDetail(deviceId);
+    const response = await postJson("/api/device-admin/config", {
+      deviceId,
+      deviceName: draft.deviceName,
+      sensors: draft.sensors,
+      lowPower: {
+        enabled: draft.lowPowerEnabled,
+        intervalSec: draft.lowPowerIntervalSec
+      },
+      message: "created from admin page"
+    });
+    await loadAdminOtaData(deviceId, { force: true });
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configSubmitting: false,
+      configStatus: response.job
+        ? `配置任务已创建，等待设备拉取：${response.job.config?.deviceName || "--"}`
+        : "配置任务已创建。"
+    };
+    renderDeviceDetail(deviceId);
+  } catch (error) {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configSubmitting: false,
+      configStatus: `下发失败：${error.message}`
+    };
+    renderDeviceDetail(deviceId);
+  }
 }
 
 function renderExportDialog() {
@@ -2042,7 +2397,9 @@ function getDevicePages(catalog, snapshot) {
   const controlPages = catalog.id === "yard-01"
     ? [{ key: "control:pump", label: "🧯 水泵控制", kind: "control", controlKey: "pump" }]
     : [];
-  const settingsPages = [{ key: "settings:sensor-aliases", label: "⚙️ 名称映射", kind: "settings", settingsKey: "sensor-aliases" }];
+  const settingsPages = [
+    { key: "settings:admin", label: "🛠️ 管理员", kind: "settings", settingsKey: "admin" }
+  ];
   return [...sensorPages, ...controlPages, ...settingsPages];
 }
 
@@ -2119,6 +2476,26 @@ function buildSensorReminder(sensor) {
     return {
       title: "AI 小提醒",
       body: `光照大约 ${Math.round(illuminance)} lux，明暗刚刚好，属于不刺眼也不偷懒的亮度。`
+    };
+  }
+
+  if (sensor.key === "wifi_signal" && Number.isFinite(getMetricNumber(sensor, "rssi"))) {
+    const rssi = getMetricNumber(sensor, "rssi");
+    if (rssi <= -85) {
+      return {
+        title: "AI 小提醒",
+        body: `当前 WiFi 信号只有 ${Math.round(rssi)} dBm，已经偏弱了，设备联网上报可能会开始变得不稳定。`
+      };
+    }
+    if (rssi <= -75) {
+      return {
+        title: "AI 小提醒",
+        body: `WiFi 信号 ${Math.round(rssi)} dBm，勉强够用，但如果隔墙再多一点，连接体验就容易打折。`
+      };
+    }
+    return {
+      title: "AI 小提醒",
+      body: `WiFi 信号 ${Math.round(rssi)} dBm，链路状态挺扎实，远程上报一般会比较从容。`
     };
   }
 
@@ -2237,7 +2614,7 @@ function renderSensorAliasSettingsSection(deviceId, sensors) {
         <div class="detail-helper">保存后，设备分页、历史标题和 CSV 导出列名都会使用这里的名称</div>
       </div>
       <div class="info-list" style="margin-top: 16px;">
-        ${sensors.map((sensor) => `
+        ${sensors.length ? sensors.map((sensor) => `
           <div class="info-row" style="align-items: center; gap: 16px;">
             <div style="flex: 1 1 240px;">
               <div class="info-label">实际上报</div>
@@ -2256,7 +2633,7 @@ function renderSensorAliasSettingsSection(deviceId, sensors) {
               />
             </div>
           </div>
-        `).join("")}
+        `).join("") : '<div class="info-row"><span class="info-label">传感器</span><strong>当前设备还没有可映射的传感器，等配置下发或设备上报后这里会自动出现。</strong></div>'}
       </div>
       <div class="history-toolbar" style="margin-top: 18px;">
         <button class="ghost-btn" id="resetSensorAliasBtn">恢复默认名称</button>
@@ -2319,11 +2696,11 @@ function renderDevicePages(snapshot, catalog, selectedPageKey) {
       </div>
       ${renderDevicePageGroup("在线设备", "正在实时上报的传感器", onlinePages, currentPage)}
       ${renderDevicePageGroup("掉线设备", "离线传感器和历史/控制入口", offlinePages, currentPage)}
-      ${renderDevicePageGroup("设置", "设备内显示名称等本地映射", settingsPages, currentPage)}
+      ${renderDevicePageGroup("设置", "设备内的管理员页面，包含名称映射、OTA 和配置下发", settingsPages, currentPage)}
       ${currentPage?.kind === "control"
         ? renderPumpControlSection(catalog.id)
         : currentPage?.kind === "settings"
-          ? renderSensorAliasSettingsSection(catalog.id, snapshot.sensors)
+          ? renderDeviceAdminSection(catalog.id, snapshot)
           : renderSensorPageContent(currentSensor)}
     </section>
   `;
@@ -2388,6 +2765,188 @@ function renderPumpControlSection(deviceId) {
       <p class="footer-note" id="pumpCommandStatus">默认口令是 1234。发送后，网关会转成 MQTT 消息发给 ESP32。</p>
     </article>
   `;
+}
+
+function getAdminConfigDraft(deviceId) {
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const currentConfig = adminData.currentConfig || {};
+  const currentLowPower = currentConfig.lowPower || {};
+  return {
+    deviceName: adminData.configDeviceName || currentConfig.deviceName || "探索者1号",
+    sensors: Array.isArray(adminData.configSensors) ? adminData.configSensors : (currentConfig.sensors || []),
+    lowPowerEnabled: adminData.configLowPowerEnabled ?? Boolean(currentLowPower.enabled),
+    lowPowerIntervalSec: Number(adminData.configLowPowerIntervalSec || currentLowPower.intervalSec || 300)
+  };
+}
+
+function renderDeviceConfigSettingsSection(deviceId, snapshot) {
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const draft = getAdminConfigDraft(deviceId);
+  const options = adminData.options || {};
+  const sensorTypes = options.sensorTypes || [];
+  const deviceNames = options.deviceNames || [];
+  const currentConfig = adminData.currentConfig || {};
+  const currentLowPower = currentConfig.lowPower || {};
+  const activeConfigJob = adminData.activeConfigJob || null;
+  const configJobs = adminData.configJobs || [];
+  const wakeCountdown = getAdminWakeCountdownState(deviceId);
+  const currentModeText = currentLowPower.enabled
+    ? `已开启，每 ${currentLowPower.intervalSec || 300} 秒唤醒`
+    : `未开启，实时模式约 ${NORMAL_REPORT_INTERVAL_SEC} 秒/次上报`;
+  const statusText = adminData.configStatus || (
+    wakeCountdown
+      ? (wakeCountdown.dueSoon
+        ? "设备低功耗休眠中，预计即将再次上线。"
+        : `设备低功耗休眠中，预计 ${formatCountdownMs(wakeCountdown.remainingMs)} 后再次上线。`)
+      : snapshot.online
+      ? `设备在线，低功耗关闭时固件约 ${NORMAL_REPORT_INTERVAL_SEC} 秒上报一次；保存后会很快拉取新配置。`
+      : "设备离线或休眠时，配置会排队等待它下次上线。"
+  );
+
+  return `
+    <article class="info-card" style="grid-column: span 12; margin-top: 12px;">
+      <div class="detail-block-head">
+        <div class="detail-block-title">远程配置下发</div>
+        <div class="detail-helper">设备名称、传感器挂载和低功耗参数会通过服务器远程下发到设备；关闭低功耗时固件按约 3 秒/次持续上报</div>
+      </div>
+      <div class="info-list">
+        <div class="info-row"><span class="info-label">当前名称</span><strong>${escapeHtml(currentConfig.deviceName || "--")}</strong></div>
+        <div class="info-row"><span class="info-label">当前传感器</span><strong>${escapeHtml((currentConfig.sensors || []).join("、") || "未配置")}</strong></div>
+        <div class="info-row"><span class="info-label">低功耗</span><strong>${escapeHtml(currentModeText)}</strong></div>
+        ${wakeCountdown ? `<div class="info-row"><span class="info-label">预计下次上线</span><strong id="adminWakeCountdownValue">${wakeCountdown.dueSoon ? "预计即将上线" : formatCountdownMs(wakeCountdown.remainingMs)}</strong></div>` : ""}
+        <div class="info-row"><span class="info-label">待执行任务</span><strong>${escapeHtml(activeConfigJob ? `${activeConfigJob.config?.deviceName || "--"} · ${activeConfigJob.config?.sensors?.join("、") || "无传感器"}` : "暂无待执行配置")}</strong></div>
+      </div>
+
+      <div class="history-toolbar" style="margin-top:14px; align-items:center; position:relative; z-index:3;">
+        <select class="date-input" id="adminConfigDeviceName">
+          ${deviceNames.map((name) => `<option value="${escapeAttribute(name)}" ${draft.deviceName === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+        </select>
+        <label class="detail-helper" style="display:inline-flex;align-items:center;gap:8px;">
+          <input id="adminLowPowerEnabled" type="checkbox" ${draft.lowPowerEnabled ? "checked" : ""} />
+          开启低功耗
+        </label>
+        <input class="date-input" id="adminLowPowerInterval" type="number" min="10" max="86400" step="1" value="${Number.isFinite(draft.lowPowerIntervalSec) ? draft.lowPowerIntervalSec : 300}" placeholder="唤醒周期（秒，仅低功耗生效）" />
+        <button type="button" class="range-btn" id="refreshAdminConfigBtn">刷新配置</button>
+        <button type="button" class="range-btn active" id="saveAdminConfigBtn">${adminData.configSubmitting ? "下发中..." : "保存并下发"}</button>
+      </div>
+
+      <div class="info-list" style="margin-top: 16px;">
+        ${sensorTypes.map((sensorKey) => `
+          <label class="info-row" style="cursor:pointer; gap:16px;">
+            <span class="info-label">${escapeHtml(sensorCatalog[sensorKey]?.title || sensorKey)}</span>
+            <strong style="display:inline-flex;align-items:center;gap:8px;">
+              <input type="checkbox" data-admin-sensor-check="${sensorKey}" ${draft.sensors.includes(sensorKey) ? "checked" : ""} />
+              ${escapeHtml(sensorKey)}
+            </strong>
+          </label>
+        `).join("")}
+      </div>
+
+      <div class="detail-block-head" style="margin-top:18px;">
+        <div class="detail-block-title">配置下发记录</div>
+        <div class="detail-helper">最近 10 条配置任务</div>
+      </div>
+      <div class="info-list" style="margin-top:12px;">
+        ${configJobs.length ? configJobs.map((job) => `
+          <div class="info-row">
+            <span class="info-label">${escapeHtml(formatTime(job.createdAt))}</span>
+            <strong>${escapeHtml(`${job.status} · ${job.config?.deviceName || "--"} · ${job.config?.sensors?.join("、") || "无传感器"}`)}</strong>
+          </div>
+        `).join("") : '<div class="info-row"><span class="info-label">配置</span><strong>还没有配置下发记录</strong></div>'}
+      </div>
+
+      <p class="footer-note" id="adminConfigStatus">${escapeHtml(statusText)}</p>
+    </article>
+  `;
+}
+
+function renderDeviceAdminOtaSection(deviceId, snapshot) {
+  const deviceStatus = getDeviceStatusEntry(deviceId);
+  const firmwareVersion = getDeviceFirmwareVersion(deviceId);
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const activeJob = getOtaDisplayJob(deviceId);
+  const jobs = adminData.jobs || [];
+  const uploadPercent = clampPercent(adminData.uploadPercent || 0);
+  const progressPercent = appState.admin.uploadSubmitting
+    ? uploadPercent
+    : getOtaProgressPercent(activeJob);
+  const progressLabel = appState.admin.uploadSubmitting
+    ? `固件上传到服务器：${Math.round(uploadPercent)}%`
+    : activeJob
+      ? `${getOtaStatusLabel(activeJob.status)} · ${Math.round(progressPercent)}%`
+      : "暂无升级任务";
+  const progressHint = appState.admin.uploadSubmitting
+    ? "浏览器正在把 bin 文件上传到 OTA 服务器。"
+    : activeJob
+      ? `${activeJob.targetVersion || "--"} · ${activeJob.message || "等待设备上报新的升级状态"}`
+      : "选择 bin 后点“开始 OTA 升级”，服务端会自动上传固件并创建升级任务。";
+  const pageStatus = adminData.pageStatus || (snapshot.online
+    ? "设备在线，可以直接开始远程 OTA。"
+    : "设备当前可能在低功耗休眠，任务创建后会等待它下次唤醒。");
+
+  return `
+    <article class="info-card" style="grid-column: span 12; margin-top: 12px;">
+      <div class="detail-block-head">
+        <div class="detail-block-title">设备 OTA 升级</div>
+        <div class="detail-helper">当前固件 ${escapeHtml(firmwareVersion)}</div>
+      </div>
+      <div class="info-list">
+        <div class="info-row"><span class="info-label">设备</span><strong>${escapeHtml(deviceCatalog[deviceId]?.title || deviceId)}</strong></div>
+        <div class="info-row"><span class="info-label">当前版本</span><strong>${escapeHtml(firmwareVersion)}</strong></div>
+        <div class="info-row"><span class="info-label">设备在线</span><strong>${snapshot.online ? "在线，可立即检查 OTA" : "离线，等待下次唤醒"}</strong></div>
+        <div class="info-row"><span class="info-label">最近上报</span><strong>${escapeHtml(deviceStatus?.lastSeenAt ? formatTime(deviceStatus.lastSeenAt) : "--")}</strong></div>
+        <div class="info-row"><span class="info-label">当前任务</span><strong>${escapeHtml(activeJob ? `${getOtaStatusLabel(activeJob.status)} -> ${activeJob.targetVersion}` : "暂无活动任务")}</strong></div>
+      </div>
+
+      <div class="history-toolbar" style="margin-top:14px;">
+        <input class="date-input" id="firmwareVersionInput" type="text" value="${escapeAttribute(adminData.uploadVersion || "")}" placeholder="上传固件版本，如 1.1.0" />
+        <input class="date-input" id="firmwareNotesInput" type="text" value="${escapeAttribute(adminData.uploadNotes || "")}" placeholder="发布说明" />
+        <input class="date-input" id="firmwareFileInput" type="file" accept=".bin,application/octet-stream" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0;" />
+        <label class="range-btn" id="selectFirmwareFileBtn" for="firmwareFileInput" style="display:inline-flex;align-items:center;justify-content:center;cursor:pointer;">选择固件</label>
+        <button class="range-btn" id="refreshAdminOtaBtn">刷新状态</button>
+        <button class="range-btn active" id="uploadFirmwareBtn">${appState.admin.uploadSubmitting || appState.admin.createSubmitting ? "处理中..." : "开始 OTA 升级"}</button>
+      </div>
+      <p class="footer-note" style="margin-top:10px;">${escapeHtml(adminData.selectedFileName ? `已选择文件：${adminData.selectedFileName}` : "点击“选择固件”后会弹出文件管理器。")}</p>
+
+      <div class="detail-block-head" style="margin-top:18px;">
+        <div class="detail-block-title">升级进度</div>
+        <div class="detail-helper">${escapeHtml(progressLabel)}</div>
+      </div>
+      <div style="margin-top:12px;padding:14px 16px;border-radius:18px;background:rgba(255,255,255,0.75);border:1px solid rgba(130,154,190,0.18);">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+          <strong style="color:#22324d;">${escapeHtml(progressLabel)}</strong>
+          <span class="detail-helper">${Math.round(progressPercent)}%</span>
+        </div>
+        <div style="margin-top:10px;height:12px;border-radius:999px;background:rgba(37,68,112,0.08);overflow:hidden;">
+          <div style="height:100%;width:${Math.max(0, Math.min(100, progressPercent))}%;border-radius:999px;background:linear-gradient(90deg,#6ca7ff 0%,#345a93 100%);transition:width .25s ease;"></div>
+        </div>
+        <p class="footer-note" style="margin-top:10px;">${escapeHtml(progressHint)}</p>
+      </div>
+
+      <div class="detail-block-head" style="margin-top:18px;">
+        <div class="detail-block-title">OTA 历史</div>
+        <div class="detail-helper">最近 10 条设备升级记录</div>
+      </div>
+      <div class="info-list" style="margin-top:12px;">
+        ${jobs.length ? jobs.map((job) => `
+          <div class="info-row">
+            <span class="info-label">${escapeHtml(formatTime(job.createdAt))}</span>
+            <strong>${escapeHtml(`${getOtaStatusLabel(job.status)} · ${job.targetVersion} · ${Math.round(getOtaProgressPercent(job))}%`)}</strong>
+          </div>
+        `).join("") : '<div class="info-row"><span class="info-label">OTA</span><strong>还没有升级记录</strong></div>'}
+      </div>
+
+      <p class="footer-note" id="adminOtaStatus">${escapeHtml(pageStatus)}</p>
+    </article>
+  `;
+}
+
+function renderDeviceAdminSection(deviceId, snapshot) {
+  return [
+    renderSensorAliasSettingsSection(deviceId, snapshot.sensors),
+    renderDeviceConfigSettingsSection(deviceId, snapshot),
+    renderDeviceAdminOtaSection(deviceId, snapshot)
+  ].join("");
 }
 
 function getDeviceSceneConfig(catalog) {
@@ -2516,6 +3075,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         <div class="detail-title">${catalog.title}</div>
         ${hideHeaderCopy ? "" : `<div class="detail-subtitle">${catalog.subtitle}</div>`}
         ${hideHeaderCopy ? "" : `<p class="footer-note">${catalog.summary}</p>`}
+        <p class="footer-note">固件版本：${escapeHtml(getDeviceFirmwareVersion(deviceId))}</p>
         ${offlineHint}
       </div>
       <div class="detail-topbar-actions">
@@ -2656,6 +3216,9 @@ function bindIoTDeviceEvents(deviceId) {
       renderDeviceDetail(deviceId);
       if (appState.activeDevicePageKey.startsWith("sensor:")) {
         await refreshSensorHistory(deviceId, appState.activeSensorKey);
+      } else if (appState.activeDevicePageKey === "settings:admin") {
+        await loadAdminOtaData(deviceId, { force: true });
+        renderDeviceDetail(deviceId);
       }
     });
   });
@@ -2801,6 +3364,154 @@ function bindIoTDeviceEvents(deviceId) {
       }
     }
   });
+
+  document.getElementById("adminConfigDeviceName")?.addEventListener("change", (event) => {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configDeviceName: event.target.value
+    };
+  });
+
+  document.querySelectorAll("[data-admin-sensor-check]").forEach((input) => {
+    input.addEventListener("change", () => {
+      appState.admin.deviceData[deviceId] = {
+        ...(appState.admin.deviceData[deviceId] || {}),
+        configSensors: Array.from(document.querySelectorAll("[data-admin-sensor-check]"))
+          .filter((checkbox) => checkbox.checked)
+          .map((checkbox) => checkbox.dataset.adminSensorCheck)
+      };
+    });
+  });
+
+  document.getElementById("adminLowPowerEnabled")?.addEventListener("change", (event) => {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configLowPowerEnabled: event.target.checked
+    };
+  });
+
+  document.getElementById("adminLowPowerInterval")?.addEventListener("input", (event) => {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      configLowPowerIntervalSec: Number(event.target.value || 300)
+    };
+  });
+
+  document.getElementById("refreshAdminOtaBtn")?.addEventListener("click", async () => {
+    try {
+      const adminData = appState.admin.deviceData[deviceId] || {};
+      adminData.pageStatus = "正在刷新 OTA 数据...";
+      appState.admin.deviceData[deviceId] = adminData;
+      renderDeviceDetail(deviceId);
+      await loadAdminOtaData(deviceId, { force: true });
+      appState.admin.deviceData[deviceId].pageStatus = "OTA 数据已刷新。";
+      renderDeviceDetail(deviceId);
+    } catch (error) {
+      appState.admin.deviceData[deviceId] = {
+        ...(appState.admin.deviceData[deviceId] || {}),
+        pageStatus: `刷新失败：${error.message}`
+      };
+      renderDeviceDetail(deviceId);
+    }
+  });
+
+  document.getElementById("firmwareVersionInput")?.addEventListener("input", (event) => {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      uploadVersion: event.target.value
+    };
+  });
+
+  document.getElementById("firmwareNotesInput")?.addEventListener("input", (event) => {
+    appState.admin.deviceData[deviceId] = {
+      ...(appState.admin.deviceData[deviceId] || {}),
+      uploadNotes: event.target.value
+    };
+  });
+
+  document.getElementById("firmwareFileInput")?.addEventListener("change", (event) => {
+    const file = event.target?.files?.[0];
+    const nextVersion = inferFirmwareVersionFromFileName(file?.name || "");
+    const currentAdminData = appState.admin.deviceData[deviceId] || {};
+    appState.admin.deviceData[deviceId] = {
+      ...currentAdminData,
+      selectedFile: file || null,
+      selectedFileName: file?.name || "",
+      uploadVersion: nextVersion || currentAdminData.uploadVersion || "",
+      pageStatus: file?.name ? `已选择固件：${file.name}` : currentAdminData.pageStatus || ""
+    };
+    renderDeviceDetail(deviceId);
+  });
+
+  document.getElementById("uploadFirmwareBtn")?.addEventListener("click", async () => {
+    const fileInput = document.getElementById("firmwareFileInput");
+    const adminData = appState.admin.deviceData[deviceId] || {};
+    const currentSnapshot = getDeviceSnapshot(deviceId) || { online: false };
+    const file = fileInput?.files?.[0] || adminData.selectedFile;
+    if (!file) {
+      appState.admin.deviceData[deviceId] = { ...adminData, pageStatus: "请先选择一个 .bin 固件文件。" };
+      renderDeviceDetail(deviceId);
+      return;
+    }
+    if (!adminData.uploadVersion) {
+      appState.admin.deviceData[deviceId] = { ...adminData, pageStatus: "请先填写要上传的固件版本号。" };
+      renderDeviceDetail(deviceId);
+      return;
+    }
+
+    try {
+      appState.admin.uploadSubmitting = true;
+      appState.admin.createSubmitting = true;
+      appState.admin.deviceData[deviceId] = {
+        ...adminData,
+        uploadPercent: 0,
+        pageStatus: currentSnapshot.online
+          ? "正在上传固件并创建 OTA 任务..."
+          : "正在上传固件并创建 OTA 任务，设备离线时会等待它下次唤醒..."
+      };
+      renderDeviceDetail(deviceId);
+      const dataBase64 = await readFileAsBase64(file);
+      const response = await postJsonWithUploadProgress("/api/device-ota/upload-and-start", {
+        deviceId,
+        fileName: file.name,
+        version: adminData.uploadVersion,
+        notes: adminData.uploadNotes || "",
+        message: currentSnapshot.online ? "created from direct ota page" : "created from direct ota page while device offline",
+        dataBase64
+      }, (loaded, total) => {
+        appState.admin.deviceData[deviceId] = {
+          ...(appState.admin.deviceData[deviceId] || {}),
+          uploadPercent: total > 0 ? (loaded / total) * 100 : 0,
+          pageStatus: `正在上传固件到服务端... ${Math.round(total > 0 ? (loaded / total) * 100 : 0)}%`
+        };
+        renderDeviceDetail(deviceId);
+      });
+      await loadAdminOtaData(deviceId, { force: true });
+      appState.admin.deviceData[deviceId] = {
+        ...(appState.admin.deviceData[deviceId] || {}),
+        selectedFile: null,
+        selectedFileName: "",
+        uploadPercent: 100,
+        pageStatus: currentSnapshot.online
+          ? `固件 ${response.firmware?.version || "--"} 已上传，OTA 任务已创建。`
+          : `固件 ${response.firmware?.version || "--"} 已上传，设备离线，等待它下次唤醒后开始 OTA。`
+      };
+      if (fileInput) {
+        fileInput.value = "";
+      }
+      renderDeviceDetail(deviceId);
+    } catch (error) {
+      appState.admin.deviceData[deviceId] = {
+        ...(appState.admin.deviceData[deviceId] || {}),
+        pageStatus: `上传失败：${error.message}`
+      };
+      renderDeviceDetail(deviceId);
+    } finally {
+      appState.admin.uploadSubmitting = false;
+      appState.admin.createSubmitting = false;
+      renderDeviceDetail(deviceId);
+    }
+  });
 }
 
 function renderServerCharts() {
@@ -2854,6 +3565,17 @@ function renderDeviceDetail(deviceId) {
     els.detailPanel.innerHTML = renderIoTDeviceDetail(deviceId, catalog, snapshot);
     bindIoTDeviceEvents(deviceId);
     renderExportDialog();
+    if (appState.activeDevicePageKey === "settings:admin" && !appState.admin.deviceData[deviceId]) {
+      loadAdminOtaData(deviceId, { force: true })
+        .then(() => {
+          if (appState.activeDeviceId === deviceId) {
+            renderDeviceDetail(deviceId);
+          }
+        })
+        .catch(() => {
+          // keep current UI state if admin fetch fails
+        });
+    }
     if (appState.activeDevicePageKey?.startsWith("sensor:") && appState.activeSensorKey) {
       refreshSensorHistory(deviceId, appState.activeSensorKey).catch(() => {
         const summary = document.getElementById("historySummary");
@@ -2947,7 +3669,12 @@ async function refreshAll() {
     appState.roomPhotos = roomPhotoResponse?.photos || {};
     appState.refreshAt = new Date().toISOString();
     renderOverview();
-    if (appState.activeDeviceId) renderDeviceDetail(appState.activeDeviceId);
+    if (appState.activeDeviceId) {
+      if (appState.activeDevicePageKey === "settings:admin") {
+        await loadAdminOtaData(appState.activeDeviceId, { force: true }).catch(() => null);
+      }
+      renderDeviceDetail(appState.activeDeviceId);
+    }
   } catch (error) {
     els.lastRefreshText.textContent = "数据读取失败，请检查网关服务。";
   }
@@ -2961,7 +3688,68 @@ async function refreshAll() {
     .catch((err) => console.warn("[weather]", err.message));
 }
 
+async function pollActiveOtaStatus() {
+  if (!appState.activeDeviceId || appState.activeDevicePageKey !== "settings:admin") {
+    return;
+  }
+  if (appState.admin.uploadSubmitting) {
+    return;
+  }
+  try {
+    await loadAdminOtaData(appState.activeDeviceId, { force: true });
+    if (appState.activeDeviceId) {
+      renderDeviceDetail(appState.activeDeviceId);
+    }
+  } catch (_error) {
+    // Keep the current page state and try again on the next poll cycle.
+  }
+}
+
+function updateAdminWakeCountdown() {
+  if (!appState.activeDeviceId || appState.activeDevicePageKey !== "settings:admin") {
+    return;
+  }
+
+  const valueEl = document.getElementById("adminWakeCountdownValue");
+  const statusEl = document.getElementById("adminConfigStatus");
+  if (!valueEl && !statusEl) {
+    return;
+  }
+
+  const countdown = getAdminWakeCountdownState(appState.activeDeviceId);
+  if (!countdown) {
+    return;
+  }
+
+  const text = countdown.dueSoon ? "预计即将上线" : formatCountdownMs(countdown.remainingMs);
+  if (valueEl) {
+    valueEl.textContent = text;
+  }
+  if (statusEl && !String(statusEl.textContent || "").startsWith("刷新失败") && !String(statusEl.textContent || "").startsWith("下发失败")) {
+    statusEl.textContent = countdown.dueSoon
+      ? "设备低功耗休眠中，预计即将再次上线。"
+      : `设备低功耗休眠中，预计 ${text} 后再次上线。`;
+  }
+}
+
 els.backToOverviewBtn.addEventListener("click", () => closeDetail());
+els.detailPanel.addEventListener("click", async (event) => {
+  const target = event.target.closest("button");
+  if (!target || !appState.activeDeviceId || appState.activeDevicePageKey !== "settings:admin") {
+    return;
+  }
+
+  if (target.id === "refreshAdminConfigBtn") {
+    event.preventDefault();
+    await refreshAdminConfig(appState.activeDeviceId);
+    return;
+  }
+
+  if (target.id === "saveAdminConfigBtn") {
+    event.preventDefault();
+    await saveAdminConfig(appState.activeDeviceId);
+  }
+});
 window.addEventListener("hashchange", () => syncRoute());
 window.addEventListener("resize", () => {
   if (appState.activeDeviceId) renderDeviceDetail(appState.activeDeviceId);
@@ -2970,3 +3758,5 @@ window.addEventListener("resize", () => {
 renderOverview();
 refreshAll().then(() => syncRoute());
 setInterval(refreshAll, 60 * 1000);
+setInterval(pollActiveOtaStatus, OTA_STATUS_POLL_INTERVAL_MS);
+setInterval(updateAdminWakeCountdown, 1000);

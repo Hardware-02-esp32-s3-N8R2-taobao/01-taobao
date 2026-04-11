@@ -6,9 +6,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "cJSON.h"
+#include "esp_app_desc.h"
 #include "esp_chip_info.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "driver/i2c.h"
@@ -38,8 +41,8 @@ typedef struct {
 static wifi_entry_t s_wifi_entries[WIFI_MAX_ENTRIES];
 static int s_wifi_count = 0;
 
-#define DEFAULT_DEVICE_NAME   "庭院1号"
-#define DEFAULT_SENSOR_LIST   "dht11"
+#define DEFAULT_DEVICE_NAME   "探索者1号"
+#define DEFAULT_SENSOR_LIST   ""
 
 typedef struct {
     char device_name[32];
@@ -72,6 +75,7 @@ static device_profile_state_t s_state;
 static SemaphoreHandle_t s_lock;
 
 static const device_option_t s_device_options[] = {
+    { "探索者1号", "explorer-01", "探索者 1 号" },
     { "庭院1号", "yard-01", "庭院 1 号" },
     { "卧室1号", "bedroom-01", "卧室 1 号" },
     { "书房1号", "study-01", "书房 1 号" },
@@ -99,6 +103,15 @@ static const char *normalize_sensor_type(const char *sensor_type)
         return "bmp180";
     }
     return sensor_type;
+}
+
+static const char *current_app_firmware_version(void)
+{
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    if (app_desc != NULL && app_desc->version[0] != '\0') {
+        return app_desc->version;
+    }
+    return APP_FIRMWARE_VERSION;
 }
 
 static const device_option_t *find_device_option(const char *device_name)
@@ -131,7 +144,7 @@ static void set_default_strings(void)
     snprintf(s_state.device_name, sizeof(s_state.device_name), "%s", DEFAULT_DEVICE_NAME);
     snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", DEFAULT_SENSOR_LIST);
     snprintf(s_state.sensors_json, sizeof(s_state.sensors_json), "%s", "{}");
-    snprintf(s_state.fw_version, sizeof(s_state.fw_version), "%s", APP_FIRMWARE_VERSION);
+    snprintf(s_state.fw_version, sizeof(s_state.fw_version), "%s", current_app_firmware_version());
     snprintf(s_state.wifi_ssid, sizeof(s_state.wifi_ssid), "--");
     snprintf(s_state.wifi_ip, sizeof(s_state.wifi_ip), "0.0.0.0");
     snprintf(s_state.publish.payload, sizeof(s_state.publish.payload), "{}");
@@ -158,6 +171,17 @@ static void save_nvs_strings(void)
     nvs_set_u32(handle, "lp_interval", s_state.low_power_interval_sec);
     nvs_commit(handle);
     nvs_close(handle);
+}
+
+static void apply_low_power_state(bool enabled, uint32_t interval_sec, bool persist)
+{
+    profile_lock();
+    s_state.low_power_enabled = enabled;
+    s_state.low_power_interval_sec = interval_sec >= 10U ? interval_sec : 300U;
+    if (persist) {
+        save_nvs_strings();
+    }
+    profile_unlock();
 }
 
 static const char *chip_model_to_text(esp_chip_model_t model)
@@ -444,6 +468,10 @@ esp_err_t device_profile_init(void)
         s_wifi_count = 1;
     }
 
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
+        apply_low_power_state(false, s_state.low_power_interval_sec, true);
+    }
+
     return ESP_OK;
 }
 
@@ -460,6 +488,11 @@ const char *device_profile_device_id(void)
 const char *device_profile_device_alias(void)
 {
     return find_device_option(s_state.device_name)->device_alias;
+}
+
+const char *device_profile_firmware_version(void)
+{
+    return s_state.fw_version[0] != '\0' ? s_state.fw_version : current_app_firmware_version();
 }
 
 const char *device_profile_mqtt_topic(void)
@@ -595,11 +628,6 @@ void device_profile_build_status_json(char *buffer, size_t buffer_size)
 
     cJSON_AddNumberToObject(root, "sensorReadyCount", s_state.sensors_ready_count);
     cJSON_AddNumberToObject(root, "sensorTotalCount", s_state.sensors_total_count);
-
-    cJSON *sensor = cJSON_AddObjectToObject(root, "dht11");
-    cJSON_AddBoolToObject(sensor, "ready", s_state.dht11_ready);
-    cJSON_AddNumberToObject(sensor, "temperature", s_state.dht11_temperature_c);
-    cJSON_AddNumberToObject(sensor, "humidity", s_state.dht11_humidity_pct);
 
     cJSON *sensors_data = cJSON_Parse(s_state.sensors_json);
     if (!cJSON_IsObject(sensors_data)) {
@@ -749,9 +777,6 @@ esp_err_t device_profile_apply_config_json(const char *json_text, char *message,
             }
             strlcat(s_state.sensors_csv, normalize_sensor_type(item->valuestring), sizeof(s_state.sensors_csv));
         }
-        if (s_state.sensors_csv[0] == '\0') {
-            snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", DEFAULT_SENSOR_LIST);
-        }
     }
     save_nvs_strings();
     profile_unlock();
@@ -778,6 +803,11 @@ uint32_t device_profile_low_power_interval_sec(void)
     interval = s_state.low_power_interval_sec;
     profile_unlock();
     return interval;
+}
+
+void device_profile_set_low_power_state(bool enabled, uint32_t interval_sec)
+{
+    apply_low_power_state(enabled, interval_sec, true);
 }
 
 void device_profile_build_low_power_json(char *buffer, size_t buffer_size)
@@ -823,11 +853,11 @@ esp_err_t device_profile_set_low_power_json(const char *json_text, char *message
         return ESP_ERR_INVALID_ARG;
     }
 
-    profile_lock();
-    s_state.low_power_enabled = cJSON_IsTrue(enabled) || (cJSON_IsNumber(enabled) && enabled->valuedouble != 0);
-    s_state.low_power_interval_sec = interval;
-    save_nvs_strings();
-    profile_unlock();
+    apply_low_power_state(
+        cJSON_IsTrue(enabled) || (cJSON_IsNumber(enabled) && enabled->valuedouble != 0),
+        interval,
+        true
+    );
 
     snprintf(
         message,
