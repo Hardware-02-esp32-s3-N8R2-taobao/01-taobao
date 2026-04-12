@@ -552,10 +552,6 @@ esp_err_t ota_service_serial_write_hex(const char *hex_payload, size_t *written_
         message[0] = '\0';
     }
 
-    if (!s_state.serial_active || s_state.serial_handle == 0) {
-        set_message(message, message_size, "serial ota not active");
-        return ESP_ERR_INVALID_STATE;
-    }
     if (hex_payload == NULL) {
         set_message(message, message_size, "empty payload");
         return ESP_ERR_INVALID_ARG;
@@ -582,7 +578,39 @@ esp_err_t ota_service_serial_write_hex(const char *hex_payload, size_t *written_
         binary[i / 2] = (uint8_t)((hex_char_to_nibble(hex_payload[i]) << 4) | hex_char_to_nibble(hex_payload[i + 1]));
     }
 
-    esp_err_t err = esp_ota_write(s_state.serial_handle, binary, byte_len);
+    return ota_service_serial_write_binary(binary, byte_len, written_size, message, message_size);
+}
+
+esp_err_t ota_service_serial_write_binary(
+    const uint8_t *payload,
+    size_t payload_size,
+    size_t *written_size,
+    char *message,
+    size_t message_size
+)
+{
+    if (written_size != NULL) {
+        *written_size = 0;
+    }
+    if (message != NULL && message_size > 0) {
+        message[0] = '\0';
+    }
+
+    if (!s_state.serial_active || s_state.serial_handle == 0) {
+        set_message(message, message_size, "serial ota not active");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (payload == NULL || payload_size == 0) {
+        set_message(message, message_size, "empty payload");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((s_state.serial_received_size + payload_size) > s_state.serial_total_size) {
+        ota_service_serial_abort("image larger than declared size", NULL, 0);
+        set_message(message, message_size, "image larger than declared size");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    esp_err_t err = esp_ota_write(s_state.serial_handle, payload, payload_size);
     if (err != ESP_OK) {
         ota_service_serial_abort("ota write failed", NULL, 0);
         if (message != NULL && message_size > 0) {
@@ -591,16 +619,16 @@ esp_err_t ota_service_serial_write_hex(const char *hex_payload, size_t *written_
         return err;
     }
 
-    if (mbedtls_sha256_update(&s_state.serial_sha256, binary, byte_len) != 0) {
+    if (mbedtls_sha256_update(&s_state.serial_sha256, payload, payload_size) != 0) {
         ota_service_serial_abort("sha256 update failed", NULL, 0);
         set_message(message, message_size, "sha256 update failed");
         return ESP_FAIL;
     }
 
-    s_state.serial_received_size += byte_len;
+    s_state.serial_received_size += payload_size;
     set_serial_status("receiving", "serial ota receiving");
     if (written_size != NULL) {
-        *written_size = byte_len;
+        *written_size = payload_size;
     }
     if (message != NULL && message_size > 0) {
         snprintf(message, message_size, "received %u/%u bytes", (unsigned)s_state.serial_received_size, (unsigned)s_state.serial_total_size);

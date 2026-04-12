@@ -102,7 +102,7 @@ def default_state() -> dict[str, Any]:
             "mac": "--",
         },
         "options": {
-            "device_names": ["探索者1号", "庭院1号", "卧室1号", "书房1号", "办公室1号"],
+            "device_names": ["探索者1号", "探索者网关", "庭院1号", "卧室1号", "书房1号", "办公室1号"],
             "sensor_types": ["dht11", "ds18b20", "bh1750", "bmp180", "shtc3", "soil_moisture", "rain_sensor", "battery", "max17043", "ina226"],
         },
         "alerts": [],

@@ -108,6 +108,7 @@ typedef struct {
 static bool s_oled_initialized = false;
 static uint32_t s_oled_page_index = 0;
 static bool s_oled_button_initialized = false;
+static bool s_oled_button_page_step_enabled = false;
 static volatile uint32_t s_oled_page_step_requests = 0;
 static volatile TickType_t s_oled_button_last_tick = 0;
 static volatile TickType_t s_oled_button_press_tick = 0;
@@ -159,17 +160,37 @@ static bool oled_should_show_boot_screen(void)
     return oled_is_compact_layout() && esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER;
 }
 
+static bool low_power_button_supported(void)
+{
+    device_hw_variant_t variant = device_profile_hardware_variant();
+    return variant == DEVICE_HW_VARIANT_OLED_SCREEN || variant == DEVICE_HW_VARIANT_SUPERMINI;
+}
+
+static bool low_power_button_should_step_pages(void)
+{
+    return device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN;
+}
+
+static bool low_power_button_should_wake_from_sleep(void)
+{
+    return device_profile_hardware_variant() == DEVICE_HW_VARIANT_SUPERMINI;
+}
+
 static void oled_note_activity(TickType_t now)
 {
     s_oled_last_activity_tick = now;
 }
 
-static bool oled_idle_auto_sleep_due(bool low_power_enabled)
+static bool idle_auto_sleep_due(bool low_power_enabled)
 {
     TickType_t last_activity = s_oled_last_activity_tick;
     TickType_t now = xTaskGetTickCount();
 
-    if (!oled_is_compact_layout() || low_power_enabled || ota_service_should_skip_sleep()) {
+    if (!low_power_button_supported() || low_power_enabled || ota_service_should_skip_sleep()) {
+        return false;
+    }
+
+    if (!network_service_is_wifi_ready()) {
         return false;
     }
 
@@ -202,10 +223,17 @@ static void IRAM_ATTR oled_page_button_isr_handler(void *arg)
     if (pressed_at == 0) {
         return;
     }
+    bool should_notify = false;
     if ((now - pressed_at) >= pdMS_TO_TICKS(OLED_PAGE_BUTTON_LONG_PRESS_MS)) {
         s_oled_low_power_request = true;
-    } else {
+        should_notify = true;
+    } else if (s_oled_button_page_step_enabled) {
         s_oled_page_step_requests++;
+        should_notify = true;
+    }
+
+    if (!should_notify) {
+        return;
     }
 
     BaseType_t higher_priority_task_woken = pdFALSE;
@@ -386,7 +414,7 @@ static void oled_try_init(void)
 
 static void oled_page_button_try_init(void)
 {
-    if (s_oled_button_initialized || device_profile_hardware_variant() != DEVICE_HW_VARIANT_OLED_SCREEN) {
+    if (s_oled_button_initialized || !low_power_button_supported()) {
         return;
     }
 
@@ -413,6 +441,7 @@ static void oled_page_button_try_init(void)
     }
 
     oled_note_activity(xTaskGetTickCount());
+    s_oled_button_page_step_enabled = low_power_button_should_step_pages();
     s_oled_button_initialized = true;
 }
 
@@ -678,6 +707,24 @@ static void enter_low_power_sleep(void)
         (void)oled_ssd1306_set_display_enabled(false);
     }
     network_service_prepare_for_sleep();
+    if (low_power_button_should_wake_from_sleep()) {
+        gpio_config_t button_conf = {
+            .pin_bit_mask = 1ULL << APP_SCREEN_PAGE_BUTTON_GPIO,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL == 0 ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+            .pull_down_en = APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL == 0 ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        esp_err_t button_ret = gpio_config(&button_conf);
+        if (button_ret == ESP_OK && esp_sleep_is_valid_wakeup_gpio(APP_SCREEN_PAGE_BUTTON_GPIO)) {
+            esp_deepsleep_gpio_wake_up_mode_t wake_mode =
+                APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL == 0 ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH;
+            button_ret = esp_deep_sleep_enable_gpio_wakeup(1ULL << APP_SCREEN_PAGE_BUTTON_GPIO, wake_mode);
+        }
+        if (button_ret != ESP_OK) {
+            ESP_LOGW(TAG, "gpio9 wakeup enable failed: %s", esp_err_to_name(button_ret));
+        }
+    }
     esp_sleep_enable_timer_wakeup(interval_us);
     esp_deep_sleep_start();
 }
@@ -1256,7 +1303,7 @@ void telemetry_app_run(void)
                 "{\"enabled\":true,\"action\":\"button_long_press\",\"reason\":\"manual_request\"}"
             );
             enter_low_power_sleep();
-        } else if (oled_idle_auto_sleep_due(low_power_enabled)) {
+        } else if (idle_auto_sleep_due(low_power_enabled)) {
             device_profile_set_low_power_state(true, device_profile_low_power_interval_sec());
             publish_low_power_transition(topic);
             console_service_emit_event(

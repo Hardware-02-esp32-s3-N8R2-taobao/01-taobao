@@ -29,6 +29,7 @@ class SerialReader(QtCore.QObject):
         self._reader_thread: threading.Thread | None = None
         self._write_queue: queue.Queue[bytes] = queue.Queue()
         self._rx_buffer = bytearray()
+        self._write_blocked = False
 
     @property
     def port_name(self) -> str:
@@ -38,11 +39,23 @@ class SerialReader(QtCore.QObject):
     def baudrate(self) -> int:
         return self._baudrate
 
+    @property
+    def write_blocked(self) -> bool:
+        return self._write_blocked
+
+    def _clear_write_queue(self) -> None:
+        while True:
+            try:
+                self._write_queue.get_nowait()
+            except queue.Empty:
+                break
+
     @QtCore.Slot()
     def start(self) -> None:
         if self._reader_thread is not None and self._reader_thread.is_alive():
             return
         self._stop_event.clear()
+        self._write_blocked = False
         self._reader_thread = threading.Thread(
             target=self._read_loop,
             name=f"SerialReader-{self._port_name}",
@@ -90,9 +103,15 @@ class SerialReader(QtCore.QObject):
                         break
                     if not payload:
                         continue
+                    if self._write_blocked:
+                        continue
                     try:
                         ser.write(payload)
-                        ser.flush()
+                    except serial.SerialTimeoutException as exc:
+                        self._write_blocked = True
+                        self._clear_write_queue()
+                        self.error_occurred.emit(f"串口发送超时，已切换为只读监听模式：{exc}")
+                        break
                     except Exception as exc:
                         self.error_occurred.emit(str(exc))
                         self.stop()
@@ -127,10 +146,19 @@ class SerialReader(QtCore.QObject):
 
     @QtCore.Slot(str)
     def write_line(self, text: str) -> None:
-        if self._serial is None:
+        if self._serial is None or self._write_blocked:
             return
         try:
             payload = (text.rstrip("\r\n") + "\n").encode("utf-8")
+            self._write_queue.put_nowait(payload)
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+            self.stop()
+
+    def write_bytes(self, payload: bytes) -> None:
+        if self._serial is None or self._write_blocked or not payload:
+            return
+        try:
             self._write_queue.put_nowait(payload)
         except Exception as exc:
             self.error_occurred.emit(str(exc))

@@ -25,6 +25,10 @@ const DEVICE_PRESENCE_CONFIG = {
     lowPowerEnabled: false,
     reportIntervalSec: 300
   },
+  "explorer-gateway": {
+    lowPowerEnabled: false,
+    reportIntervalSec: 300
+  },
   "yard-01": {
     lowPowerEnabled: false,
     reportIntervalSec: 300
@@ -117,6 +121,8 @@ const SENSOR_TYPE_TO_KEY = {
 const DEVICE_ID_ALIASES = {
   "explorer-01": "explorer-01",
   "explorer01": "explorer-01",
+  "explorer-gateway": "explorer-gateway",
+  "explorergateway": "explorer-gateway",
   "yard-01": "yard-01",
   "yard01": "yard-01",
   "study-01": "study-01",
@@ -128,6 +134,7 @@ const DEVICE_ID_ALIASES = {
 };
 const DEVICE_ALIAS_BY_ID = {
   "explorer-01": "探索者 1 号",
+  "explorer-gateway": "探索者网关",
   "yard-01": "庭院 1 号",
   "study-01": "书房 1 号",
   "office-01": "办公室 1 号",
@@ -135,6 +142,7 @@ const DEVICE_ALIAS_BY_ID = {
 };
 const DEVICE_OPTIONS = [
   { id: "explorer-01", name: "探索者1号", alias: "探索者 1 号" },
+  { id: "explorer-gateway", name: "探索者网关", alias: "探索者网关" },
   { id: "yard-01", name: "庭院1号", alias: "庭院 1 号" },
   { id: "bedroom-01", name: "卧室1号", alias: "卧室 1 号" },
   { id: "study-01", name: "书房1号", alias: "书房 1 号" },

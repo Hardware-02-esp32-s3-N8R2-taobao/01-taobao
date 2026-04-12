@@ -22,6 +22,9 @@
 #include "telemetry_app.h"
 
 #define TAG "console_service"
+#define CONSOLE_LINE_BUFFER_SIZE 4096
+#define CONSOLE_READ_BUFFER_SIZE 512
+#define OTA_RAW_CHUNK_MAX 2048
 
 static SemaphoreHandle_t s_usb_lock;
 
@@ -171,9 +174,12 @@ void console_service_emit_event(const char *event_type, const char *json_payload
 static void console_task(void *arg)
 {
     (void)arg;
-    char line[1024] = {0};
+    char line[CONSOLE_LINE_BUFFER_SIZE] = {0};
     size_t line_len = 0;
-    uint8_t buffer[64];
+    uint8_t buffer[CONSOLE_READ_BUFFER_SIZE];
+    uint8_t ota_raw_chunk[OTA_RAW_CHUNK_MAX];
+    size_t ota_raw_expected_size = 0;
+    size_t ota_raw_received_size = 0;
 
     while (1) {
         int read_len = usb_serial_jtag_read_bytes(buffer, sizeof(buffer), pdMS_TO_TICKS(20));
@@ -183,6 +189,32 @@ static void console_task(void *arg)
 
         for (int i = 0; i < read_len; ++i) {
             uint8_t ch = buffer[i];
+
+            if (ota_raw_expected_size > 0) {
+                ota_raw_chunk[ota_raw_received_size++] = ch;
+                if (ota_raw_received_size >= ota_raw_expected_size) {
+                    char message[128];
+                    char response[192];
+                    size_t written_size = 0;
+                    esp_err_t ret = ota_service_serial_write_binary(
+                        ota_raw_chunk,
+                        ota_raw_expected_size,
+                        &written_size,
+                        message,
+                        sizeof(message)
+                    );
+                    if (ret == ESP_OK) {
+                        emit_ota_status_line();
+                    } else {
+                        snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                        usb_write_text(response);
+                        emit_ota_status_line();
+                    }
+                    ota_raw_expected_size = 0;
+                    ota_raw_received_size = 0;
+                }
+                continue;
+            }
 
             if (ch == '\r') {
                 continue;
@@ -229,6 +261,17 @@ static void console_task(void *arg)
                         }
                     }
                     cJSON_Delete(root);
+                }
+            } else if (strncmp(line, "OTA_WRITE_RAW ", 14) == 0) {
+                char *endptr = NULL;
+                unsigned long requested_size = strtoul(line + 14, &endptr, 10);
+                if (endptr == (line + 14) || (endptr != NULL && *endptr != '\0')) {
+                    usb_write_text("APP_ERROR:{\"message\":\"ota raw size invalid\"}\n");
+                } else if (requested_size == 0 || requested_size > OTA_RAW_CHUNK_MAX) {
+                    usb_write_text("APP_ERROR:{\"message\":\"ota raw size out of range\"}\n");
+                } else {
+                    ota_raw_expected_size = (size_t)requested_size;
+                    ota_raw_received_size = 0;
                 }
             } else if (strncmp(line, "OTA_WRITE ", 10) == 0) {
                 char message[128];
@@ -344,7 +387,7 @@ static void console_task(void *arg)
                     usb_write_text(response);
                 }
             } else if (strcmp(line, "HELP") == 0) {
-                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {...}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\",\"OTA_STATUS\",\"OTA_BEGIN {...}\",\"OTA_WRITE <hex>\",\"OTA_FINISH\",\"OTA_ABORT\"]}\n");
+                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {...}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\",\"OTA_STATUS\",\"OTA_BEGIN {...}\",\"OTA_WRITE_RAW <size> + raw-bytes\",\"OTA_WRITE <hex>\",\"OTA_FINISH\",\"OTA_ABORT\"]}\n");
             } else if (line[0] != '\0') {
                 usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
             }
@@ -385,8 +428,8 @@ static void console_snapshot_task(void *arg)
 esp_err_t console_service_start(void)
 {
     usb_serial_jtag_driver_config_t usb_cfg = {
-        .tx_buffer_size = 4096,
-        .rx_buffer_size = 4096,
+        .tx_buffer_size = 8192,
+        .rx_buffer_size = 16384,
     };
     s_usb_lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(s_usb_lock != NULL, ESP_ERR_NO_MEM, TAG, "usb lock create failed");

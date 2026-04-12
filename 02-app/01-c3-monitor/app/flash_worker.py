@@ -20,6 +20,45 @@ class FullFlashWorker(QtCore.QObject):
         self._port_name = port_name
         self._baudrate = baudrate
 
+    def _resolve_esptool_cmd(self) -> list[str]:
+        candidates: list[list[str]] = [[sys.executable, "-m", "esptool"]]
+
+        try:
+            from project_runtime import get_idf_command
+
+            idf_cmd, _env = get_idf_command()
+            if idf_cmd and idf_cmd[0].lower().endswith("python.exe"):
+                candidates.append([idf_cmd[0], "-m", "esptool"])
+        except Exception:
+            pass
+
+        tried: list[str] = []
+        seen: set[tuple[str, ...]] = set()
+        for candidate in candidates:
+            key = tuple(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            tried.append(" ".join(candidate))
+            try:
+                completed = subprocess.run(
+                    [*candidate, "version"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except OSError:
+                continue
+            if completed.returncode == 0:
+                return candidate
+
+        raise RuntimeError(
+            "未找到可用的 esptool 运行环境。已尝试："
+            + "；".join(tried)
+        )
+
     @QtCore.Slot()
     def run(self) -> None:
         temp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -41,9 +80,7 @@ class FullFlashWorker(QtCore.QObject):
             flash_settings = package.flash_settings or {}
             chip = str(package.chip or "esp32c3").strip() or "esp32c3"
             cmd = [
-                sys.executable,
-                "-m",
-                "esptool",
+                *self._resolve_esptool_cmd(),
                 "--chip",
                 chip,
                 "--port",

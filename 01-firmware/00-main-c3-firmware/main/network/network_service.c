@@ -53,6 +53,8 @@ static uint8_t               s_selected_channel = 0;
 static wifi_auth_mode_t      s_selected_authmode = WIFI_AUTH_OPEN;
 static int                   s_last_publish_msg_id = -1;
 static int64_t               s_connect_attempt_started_ms = 0;
+static int64_t               s_last_connect_kick_ms = 0;
+static bool                  s_sta_compat_mode = false;
 
 static const char *wifi_disconnect_reason_text(uint8_t reason)
 {
@@ -90,6 +92,21 @@ static const char *wifi_disconnect_reason_text(uint8_t reason)
     }
 }
 
+static bool wifi_disconnect_reason_needs_sta_compat(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:
+    case WIFI_REASON_AUTH_LEAVE:
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_CONNECTION_FAIL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* ── WiFi list helpers ─────────────────────────────────────────────── */
 
 static void load_wifi_list(void)
@@ -120,13 +137,17 @@ static void apply_wifi_config(int index)
     cfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     cfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
     cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
-    cfg.sta.pmf_cfg.capable = true;
-    cfg.sta.pmf_cfg.required = false;
-    cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
-    if (s_scan_before_connect && s_selected_bssid_valid) {
-        memcpy(cfg.sta.bssid, s_selected_bssid, sizeof(s_selected_bssid));
-        cfg.sta.bssid_set = true;
-        cfg.sta.channel = s_selected_channel;
+    cfg.sta.failure_retry_cnt = 2;
+    cfg.sta.bssid_set = false;
+    cfg.sta.channel = 0;
+    if (s_sta_compat_mode) {
+        cfg.sta.pmf_cfg.capable = false;
+        cfg.sta.pmf_cfg.required = false;
+        cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_UNSPECIFIED;
+    } else {
+        cfg.sta.pmf_cfg.capable = true;
+        cfg.sta.pmf_cfg.required = false;
+        cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
     }
 
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
@@ -196,13 +217,17 @@ static bool select_visible_wifi_entry(void)
 
 static void connect_using_current_strategy(void)
 {
+    s_last_connect_kick_ms = esp_timer_get_time() / 1000;
     if (s_scan_before_connect) {
         if (s_screen_connect_task != NULL) {
             xTaskNotifyGive(s_screen_connect_task);
         }
         return;
     }
-    esp_wifi_connect();
+    esp_err_t ret = esp_wifi_connect();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(ret));
+    }
 }
 
 static void network_monitor_task(void *arg)
@@ -218,11 +243,14 @@ static void network_monitor_task(void *arg)
         } else if (!provisioning_service_is_active()) {
             if (s_connect_attempt_started_ms == 0) {
                 s_connect_attempt_started_ms = now_ms;
+                connect_using_current_strategy();
             } else if ((now_ms - s_connect_attempt_started_ms) >= APP_WIFI_PROVISIONING_TIMEOUT_MS) {
                 ESP_LOGW(TAG, "wifi unavailable for %d ms, entering softap provisioning", APP_WIFI_PROVISIONING_TIMEOUT_MS);
                 if (provisioning_service_start() == ESP_OK) {
                     s_connect_attempt_started_ms = 0;
                 }
+            } else if ((now_ms - s_last_connect_kick_ms) >= 5000) {
+                connect_using_current_strategy();
             }
         }
 
@@ -249,7 +277,10 @@ static void screen_connect_task(void *arg)
         if (provisioning_service_is_active()) {
             continue;
         }
-        esp_wifi_connect();
+        esp_err_t ret = esp_wifi_connect();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "esp_wifi_connect after scan failed: %s", esp_err_to_name(ret));
+        }
     }
 }
 
@@ -379,6 +410,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             esp_mqtt_client_disconnect(s_mqtt_client);
         }
 
+        if (wifi_disconnect_reason_needs_sta_compat(reason) && !s_sta_compat_mode) {
+            s_sta_compat_mode = true;
+            s_selected_bssid_valid = false;
+            s_selected_channel = 0;
+            ESP_LOGW(TAG, "switching STA reconnect strategy to compatibility mode");
+            apply_wifi_config(s_wifi_index);
+        }
+
         if (s_reloading) {
             /* List was just updated — stay at index 0, config already applied */
             s_reloading = false;
@@ -408,6 +447,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         );
         console_service_emit_event("wifi", event_json);
         mqtt_start();
+        s_sta_compat_mode = false;
         s_connect_attempt_started_ms = 0;
     }
 }
@@ -430,6 +470,7 @@ esp_err_t network_service_start(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
@@ -442,13 +483,14 @@ esp_err_t network_service_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     apply_wifi_config(s_wifi_index);
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20));
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     if (device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN) {
         ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(34));
-        ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20));
-        ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     }
     network_service_set_power_save(device_profile_low_power_enabled());
     s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
+    s_last_connect_kick_ms = 0;
     if (s_network_monitor_task == NULL) {
         xTaskCreate(network_monitor_task, "network_monitor", 3072, NULL, 4, &s_network_monitor_task);
     }
@@ -464,7 +506,9 @@ void network_service_reload_wifi_list(void)
     s_selected_bssid_valid = false;
     s_selected_channel = 0;
     s_selected_authmode = WIFI_AUTH_OPEN;
+    s_sta_compat_mode = false;
     s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
+    s_last_connect_kick_ms = 0;
     xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
     device_profile_update_wifi(false, NULL, NULL, 0);
     device_profile_update_mqtt(false);

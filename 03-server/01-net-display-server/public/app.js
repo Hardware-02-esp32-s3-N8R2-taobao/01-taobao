@@ -130,6 +130,21 @@ const deviceCatalog = {
     sensors: [],
     summary: "用于探索、调试与 OTA 升级验证的 ESP32-C3 设备。"
   },
+  "explorer-gateway": {
+    id: "explorer-gateway",
+    title: "探索者网关",
+    subtitle: "探索者系列网关节点",
+    room: "explorer",
+    type: "iot-device",
+    lowPowerEnabled: false,
+    reportIntervalSec: 300,
+    icon: "🛰️",
+    accentClass: "accent-server",
+    matchIds: ["explorer-gateway"],
+    historyDevices: ["explorer-gateway"],
+    sensors: [],
+    summary: "用于协议桥接、网关联调与系统联通性验证的探索者网关设备。"
+  },
   "yard-01": {
     id: "yard-01",
     title: "庭院 1 号",

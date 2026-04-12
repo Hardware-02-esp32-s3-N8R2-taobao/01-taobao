@@ -12,8 +12,8 @@
 #define APP_DEVICE_ALIAS         "探索者 1 号"
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 2
-#define APP_FIRMWARE_VERSION     "1.1.23"
-#define APP_FIRMWARE_RELEASE_NOTES "修正 lowPower 上报 JSON 结构并等待 MQTT 发布确认后再休眠，修复网页低功耗模式识别和状态回报"
+#define APP_FIRMWARE_VERSION     "1.1.29"
+#define APP_FIRMWARE_RELEASE_NOTES "修复部分 C3 板子重启后 WiFi 认证过期问题并增强开机重连；WiFi 未连接时不自动休眠；手机配网成功后会持久化保存 WiFi 列表"
 #define APP_SERIAL_PUSH_EVENTS   0
 
 #define APP_OTA_SERVER_BASE_URL  "http://117.72.55.63"

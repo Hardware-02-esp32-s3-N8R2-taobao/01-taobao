@@ -67,6 +67,7 @@ const SENSOR_CONFIG = {
 };
 
 const DEVICE_ALIAS_BY_ID = {
+  "explorer-gateway": "探索者网关",
   "yard-01": "庭院 1 号",
   "study-01": "书房 1 号",
   "office-01": "办公室 1 号",
@@ -74,6 +75,7 @@ const DEVICE_ALIAS_BY_ID = {
 };
 
 const DEVICE_SENSORS = {
+  "explorer-gateway": [],
   "yard-01": ["dht11", "battery"],
   "study-01": ["dht11", "max17043", "ina226"],
   "office-01": ["dht11"],

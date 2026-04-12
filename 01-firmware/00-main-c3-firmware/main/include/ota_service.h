@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 esp_err_t ota_service_init(void);
@@ -15,6 +16,7 @@ esp_err_t ota_service_serial_begin(
     char *message,
     size_t message_size
 );
+esp_err_t ota_service_serial_write_binary(const uint8_t *payload, size_t payload_size, size_t *written_size, char *message, size_t message_size);
 esp_err_t ota_service_serial_write_hex(const char *hex_payload, size_t *written_size, char *message, size_t message_size);
 esp_err_t ota_service_serial_finish(char *message, size_t message_size);
 esp_err_t ota_service_serial_abort(const char *reason, char *message, size_t message_size);
