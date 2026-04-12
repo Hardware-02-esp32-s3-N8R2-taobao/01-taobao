@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
+from pathlib import Path
 from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from .ota_client import (
+    SERVER_BASE_URL,
+    build_firmware_upload_payload,
+    fetch_device_ota_summary,
+    fetch_devices_status,
+    upload_and_start_device_ota,
+)
 from .parser import StatusParser, clean_serial_line
 from .serial_worker import SerialReader, list_serial_ports
 
@@ -131,6 +140,15 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._wifi_form_dirty = False
         self._updating_config_form = False
         self._updating_wifi_form = False
+        self._ota_selected_file = ""
+        self._serial_ota_active = False
+        self._serial_ota_waiting_ack = False
+        self._serial_ota_finish_sent = False
+        self._serial_ota_bytes = b""
+        self._serial_ota_offset = 0
+        self._serial_ota_sha256 = ""
+        self._serial_ota_version = ""
+        self._serial_ota_chunk_size = 240
         self._status_poll_timer = QtCore.QTimer(self)
         self._status_poll_timer.setInterval(2500)
         self._status_poll_timer.timeout.connect(self._handle_auto_status_poll)
@@ -413,6 +431,62 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         low_power_row.addWidget(self.low_power_interval_spin)
         low_power_row.addWidget(self.low_power_status_label, 1)
         config_layout.addLayout(low_power_row)
+
+        ota_divider = QtWidgets.QFrame()
+        ota_divider.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        ota_divider.setStyleSheet("color: #dbe4f0;")
+        config_layout.addWidget(ota_divider)
+
+        ota_head = QtWidgets.QHBoxLayout()
+        ota_title = QtWidgets.QLabel("OTA 升级")
+        ota_title.setObjectName("subTitle")
+        self.ota_refresh_btn = QtWidgets.QPushButton("刷新 OTA 状态")
+        self.ota_upload_btn = QtWidgets.QPushButton("上传并开始云端 OTA")
+        self.ota_serial_btn = QtWidgets.QPushButton("串口直升 OTA")
+        ota_head.addWidget(ota_title)
+        ota_head.addStretch(1)
+        ota_head.addWidget(self.ota_refresh_btn)
+        ota_head.addWidget(self.ota_serial_btn)
+        ota_head.addWidget(self.ota_upload_btn)
+        config_layout.addLayout(ota_head)
+
+        self.ota_target_label = QtWidgets.QLabel(f"目标服务器：{SERVER_BASE_URL}  |  设备：--")
+        self.ota_target_label.setObjectName("pageSubtitle")
+        self.ota_target_label.setWordWrap(True)
+        config_layout.addWidget(self.ota_target_label)
+
+        ota_file_row = QtWidgets.QHBoxLayout()
+        ota_file_label = QtWidgets.QLabel("固件 bin")
+        ota_file_label.setFixedWidth(80)
+        self.ota_file_edit = QtWidgets.QLineEdit()
+        self.ota_file_edit.setReadOnly(True)
+        self.ota_file_edit.setPlaceholderText("请选择要用于云端 OTA 或串口直升 OTA 的 .bin 固件")
+        self.ota_pick_btn = QtWidgets.QPushButton("选择 bin 文件")
+        ota_file_row.addWidget(ota_file_label)
+        ota_file_row.addWidget(self.ota_file_edit, 1)
+        ota_file_row.addWidget(self.ota_pick_btn)
+        config_layout.addLayout(ota_file_row)
+
+        ota_note_row = QtWidgets.QHBoxLayout()
+        ota_note_label = QtWidgets.QLabel("升级备注")
+        ota_note_label.setFixedWidth(80)
+        self.ota_note_edit = QtWidgets.QLineEdit()
+        self.ota_note_edit.setPlaceholderText("例如：修复 SoftAP 配网热点不稳定")
+        self.ota_force_check = QtWidgets.QCheckBox("强制升级")
+        self.ota_force_check.setChecked(True)
+        ota_note_row.addWidget(ota_note_label)
+        ota_note_row.addWidget(self.ota_note_edit, 1)
+        ota_note_row.addWidget(self.ota_force_check)
+        config_layout.addLayout(ota_note_row)
+
+        self.ota_status_label = QtWidgets.QLabel("OTA 状态：--")
+        self.ota_status_label.setObjectName("pageSubtitle")
+        self.ota_status_label.setWordWrap(True)
+        config_layout.addWidget(self.ota_status_label)
+        self.ota_progress_bar = QtWidgets.QProgressBar()
+        self.ota_progress_bar.setRange(0, 100)
+        self.ota_progress_bar.setValue(0)
+        config_layout.addWidget(self.ota_progress_bar)
         config_layout.addStretch(1)
 
         config_tab_layout.addWidget(config_frame, 1)
@@ -438,6 +512,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.low_power_read_btn.clicked.connect(self._request_low_power)
         self.low_power_enable_btn.clicked.connect(self.enable_low_power)
         self.low_power_disable_btn.clicked.connect(self.disable_low_power)
+        self.ota_pick_btn.clicked.connect(self._pick_ota_file)
+        self.ota_upload_btn.clicked.connect(self._start_ota_upgrade)
+        self.ota_refresh_btn.clicked.connect(self._refresh_ota_status)
+        self.ota_serial_btn.clicked.connect(self._start_serial_ota_upgrade)
 
         combo_line_edit = self.device_name_combo.lineEdit()
         if combo_line_edit is not None:
@@ -587,6 +665,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def disconnect_serial(self) -> None:
         self._status_poll_timer.stop()
+        if self._serial_ota_active:
+            self._fail_serial_ota("串口已断开，串口 OTA 中止")
         if self._reader is not None:
             try:
                 self.command_requested.disconnect(self._reader.write_line)
@@ -647,6 +727,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
                 self.config_result_label.setText("最近操作：保存失败，请查看串口日志")
                 self._pending_config_save = False
                 self._pending_config_name = ""
+            if self._serial_ota_active:
+                self._fail_serial_ota("设备返回 OTA 错误，请查看日志")
+        elif cleaned.startswith("APP_OTA:"):
+            self._handle_ota_status(result.state.get("ota") or {})
         elif cleaned.startswith("APP_CONFIG:"):
             config = result.state["config"]
             self.statusBar().showMessage(f"当前设备已更新为：{config['device_name']} ({config['device_id']})")
@@ -654,7 +738,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self._render_state(result.state)
 
     def query_device_state(self) -> None:
-        if self._reader is None:
+        if self._reader is None or self._serial_ota_active:
             return
         self._send_command("GET_STATUS")
 
@@ -704,7 +788,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.auto_refresh_label.setText(f"自动刷新：{self._last_auto_refresh_at}")
 
     def _handle_auto_status_poll(self) -> None:
-        if not self._initial_load_done:
+        if not self._initial_load_done or self._serial_ota_active:
             return
         if self.tab_widget.currentIndex() not in (0, 1):
             return
@@ -760,6 +844,163 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._send_command("GET_LOW_POWER")
         self.statusBar().showMessage("正在读取低功耗配置...")
 
+    def _pick_ota_file(self) -> None:
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "选择 OTA 固件",
+            str(QtCore.QDir.currentPath()),
+            "Firmware Binary (*.bin)",
+        )
+        if not file_path:
+            return
+        self._ota_selected_file = file_path
+        self.ota_file_edit.setText(file_path)
+        try:
+            payload = build_firmware_upload_payload(
+                file_path,
+                device_id=self._parser.state["config"].get("device_id", ""),
+                force=self.ota_force_check.isChecked(),
+                notes=self.ota_note_edit.text().strip(),
+            )
+        except RuntimeError as exc:
+            self.ota_status_label.setText(f"OTA 状态：文件检查失败，{exc}")
+            self.statusBar().showMessage(str(exc))
+            return
+
+        version = payload.get("version") or "--"
+        self._serial_ota_version = str(version)
+        notes = payload.get("notes") or "未填写备注"
+        self.ota_status_label.setText(
+            f"OTA 状态：已选择 {Path(file_path).name}，识别版本 {version}，备注：{notes}"
+        )
+        self.statusBar().showMessage(f"已选择 OTA 固件：{Path(file_path).name}")
+        self.ota_progress_bar.setValue(0)
+
+    def _start_ota_upgrade(self) -> None:
+        if self._serial_ota_active:
+            self.ota_status_label.setText("OTA 状态：串口 OTA 进行中，请等待完成后再发起云端 OTA")
+            return
+        device_id = str(self._parser.state["config"].get("device_id") or "").strip()
+        if not device_id or device_id == "--":
+            self.statusBar().showMessage("当前没有可用的设备 ID")
+            self.ota_status_label.setText("OTA 状态：无法识别设备 ID，请先连接设备并读取配置")
+            return
+        if not self._ota_selected_file:
+            self.statusBar().showMessage("请先选择 OTA 固件文件")
+            self.ota_status_label.setText("OTA 状态：请先选择 .bin 固件文件")
+            return
+
+        note_text = self.ota_note_edit.text().strip()
+        try:
+            result = upload_and_start_device_ota(
+                self._ota_selected_file,
+                device_id=device_id,
+                force=self.ota_force_check.isChecked(),
+                notes=note_text,
+            )
+            firmware = result.get("firmware") or {}
+            job = result.get("job") or {}
+            self.ota_status_label.setText(
+                "OTA 状态："
+                f"已创建任务 {job.get('id', '--')}，目标版本 {job.get('targetVersion') or firmware.get('version') or '--'}，"
+                f"状态 {job.get('status', '--')}。若设备当前离线，待其联网后会自动拉取。"
+            )
+            self.statusBar().showMessage(f"OTA 任务已创建：{job.get('id', '--')}")
+        except RuntimeError as exc:
+            self.ota_status_label.setText(f"OTA 状态：创建 OTA 任务失败，{exc}")
+            self.statusBar().showMessage(str(exc))
+
+    def _start_serial_ota_upgrade(self) -> None:
+        if self._reader is None:
+            self.ota_status_label.setText("OTA 状态：请先连接设备串口")
+            self.statusBar().showMessage("请先连接设备串口")
+            return
+        if self._serial_ota_active:
+            self.statusBar().showMessage("串口 OTA 已在进行中")
+            return
+        if not self._ota_selected_file:
+            self.ota_status_label.setText("OTA 状态：请先选择 .bin 固件文件")
+            self.statusBar().showMessage("请先选择 .bin 固件文件")
+            return
+
+        firmware_path = Path(self._ota_selected_file)
+        try:
+            payload = firmware_path.read_bytes()
+        except OSError as exc:
+            self.ota_status_label.setText(f"OTA 状态：读取固件失败，{exc}")
+            self.statusBar().showMessage(str(exc))
+            return
+
+        self._serial_ota_bytes = payload
+        self._serial_ota_offset = 0
+        self._serial_ota_sha256 = hashlib.sha256(payload).hexdigest()
+        if not self._serial_ota_version:
+            self._serial_ota_version = firmware_path.stem
+        self._serial_ota_active = True
+        self._serial_ota_waiting_ack = True
+        self._serial_ota_finish_sent = False
+        self.ota_progress_bar.setValue(0)
+        self.ota_status_label.setText(
+            f"OTA 状态：正在启动串口 OTA，文件 {firmware_path.name}，大小 {len(payload)} 字节，版本 {self._serial_ota_version}"
+        )
+        self.statusBar().showMessage("正在启动串口 OTA...")
+        meta = {
+            "size": len(payload),
+            "sha256": self._serial_ota_sha256,
+            "version": self._serial_ota_version,
+        }
+        self._send_command(f"OTA_BEGIN {json.dumps(meta, ensure_ascii=False)}")
+
+    def _refresh_ota_status(self) -> None:
+        if self._serial_ota_active:
+            self._send_command("OTA_STATUS")
+            self.statusBar().showMessage("已请求串口 OTA 状态")
+            return
+        device_id = str(self._parser.state["config"].get("device_id") or "").strip()
+        if not device_id or device_id == "--":
+            self.ota_status_label.setText("OTA 状态：无法识别设备 ID，请先连接设备并读取配置")
+            return
+
+        try:
+            summary = fetch_device_ota_summary(device_id)
+            active_job = summary.get("activeJob")
+            jobs = summary.get("jobs") or []
+            devices_status = fetch_devices_status()
+            online = False
+            last_seen_text = "--"
+            for item in devices_status.get("devices", []):
+                if str(item.get("device")) == device_id:
+                    online = bool(item.get("online"))
+                    last_seen_text = str(item.get("lastSeenAt") or "--")
+                    break
+
+            if active_job:
+                self.ota_status_label.setText(
+                    "OTA 状态："
+                    f"设备在线={online}，活跃任务 {active_job.get('id', '--')}，"
+                    f"目标版本 {active_job.get('targetVersion', '--')}，"
+                    f"状态 {active_job.get('status', '--')}，"
+                    f"进度 {active_job.get('progressPercent', 0)}%，"
+                    f"最近上线 {last_seen_text}"
+                )
+            elif jobs:
+                latest = jobs[0]
+                self.ota_status_label.setText(
+                    "OTA 状态："
+                    f"设备在线={online}，最近任务 {latest.get('id', '--')}，"
+                    f"目标版本 {latest.get('targetVersion', '--')}，"
+                    f"状态 {latest.get('status', '--')}，"
+                    f"最近上线 {last_seen_text}"
+                )
+            else:
+                self.ota_status_label.setText(
+                    f"OTA 状态：设备在线={online}，暂无 OTA 任务，最近上线 {last_seen_text}"
+                )
+            self.statusBar().showMessage("已刷新 OTA 状态")
+        except RuntimeError as exc:
+            self.ota_status_label.setText(f"OTA 状态：刷新失败，{exc}")
+            self.statusBar().showMessage(str(exc))
+
     def enable_low_power(self) -> None:
         interval_sec = int(self.low_power_interval_spin.value())
         payload = {
@@ -811,6 +1052,62 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             return
         self.log_edit.appendPlainText(f">>> {text}")
         self.command_requested.emit(text)
+
+    def _handle_ota_status(self, ota_state: dict[str, Any]) -> None:
+        state = str(ota_state.get("state") or "--")
+        received = int(ota_state.get("received") or 0)
+        total = int(ota_state.get("total") or 0)
+        progress = int(ota_state.get("progress") or 0)
+        target_version = str(ota_state.get("target_version") or ota_state.get("targetVersion") or "--")
+        message = str(ota_state.get("message") or "--")
+        self.ota_progress_bar.setValue(max(0, min(progress, 100)))
+        self.ota_status_label.setText(
+            f"OTA 状态：串口 OTA {state}，进度 {progress}%（{received}/{total}），目标版本 {target_version}，消息：{message}"
+        )
+        if not self._serial_ota_active:
+            return
+        self._serial_ota_waiting_ack = False
+        if state == "done":
+            self._finish_serial_ota("串口 OTA 已写入完成，设备即将重启")
+            return
+        if state not in ("ready", "receiving"):
+            return
+        if self._serial_ota_offset < len(self._serial_ota_bytes):
+            QtCore.QTimer.singleShot(0, self._send_next_serial_ota_chunk)
+            return
+        if not self._serial_ota_finish_sent and received >= len(self._serial_ota_bytes):
+            self._serial_ota_finish_sent = True
+            self._serial_ota_waiting_ack = True
+            self._send_command("OTA_FINISH")
+
+    def _send_next_serial_ota_chunk(self) -> None:
+        if not self._serial_ota_active or self._serial_ota_waiting_ack or self._reader is None:
+            return
+        if self._serial_ota_offset >= len(self._serial_ota_bytes):
+            return
+        chunk = self._serial_ota_bytes[self._serial_ota_offset:self._serial_ota_offset + self._serial_ota_chunk_size]
+        self._serial_ota_offset += len(chunk)
+        self._serial_ota_waiting_ack = True
+        self._send_command(f"OTA_WRITE {chunk.hex()}")
+
+    def _finish_serial_ota(self, message: str) -> None:
+        self._serial_ota_active = False
+        self._serial_ota_waiting_ack = False
+        self._serial_ota_finish_sent = False
+        self._serial_ota_bytes = b""
+        self._serial_ota_offset = 0
+        self.statusBar().showMessage(message)
+
+    def _fail_serial_ota(self, message: str) -> None:
+        if self._reader is not None:
+            self.command_requested.emit("OTA_ABORT")
+        self._serial_ota_active = False
+        self._serial_ota_waiting_ack = False
+        self._serial_ota_finish_sent = False
+        self._serial_ota_bytes = b""
+        self._serial_ota_offset = 0
+        self.ota_status_label.setText(f"OTA 状态：{message}")
+        self.statusBar().showMessage(message)
 
     def _render_state(self, state: dict[str, Any]) -> None:
         wifi = state["wifi"]
@@ -877,6 +1174,12 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             f"fw={hardware['fw_version']}  target={hardware['target']}  cores={hardware['cores'] or '--'}  "
             f"rev={hardware['revision'] or '--'}  mac={hardware['mac']}"
         )
+        self.ota_target_label.setText(
+            f"目标服务器：{SERVER_BASE_URL}  |  设备：{config['device_id']}  |  当前固件：{hardware['fw_version']}"
+        )
+        ota = state.get("ota") or {}
+        if not self._serial_ota_active and ota.get("total"):
+            self.ota_progress_bar.setValue(int(ota.get("progress") or 0))
 
         # Device config tab
         options = state["options"]

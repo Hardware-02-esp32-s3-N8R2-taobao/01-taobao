@@ -14,3 +14,4 @@ void network_service_reload_wifi_list(void);
 void network_service_get_scan_json(char *buffer, size_t buffer_size);
 void network_service_set_power_save(bool enabled);
 void network_service_prepare_for_sleep(void);
+bool network_service_is_provisioning_active(void);

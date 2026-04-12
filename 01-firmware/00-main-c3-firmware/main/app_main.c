@@ -6,6 +6,7 @@
 #include "device_profile.h"
 #include "network_service.h"
 #include "ota_service.h"
+#include "provisioning_service.h"
 #include "remote_config_service.h"
 #include "status_led.h"
 #include "telemetry_app.h"
@@ -33,6 +34,7 @@ void app_main(void)
     ESP_ERROR_CHECK(device_profile_init());
     ESP_ERROR_CHECK(console_service_start());
     ESP_ERROR_CHECK(network_service_start());
+    ESP_ERROR_CHECK(provisioning_service_init());
     ESP_ERROR_CHECK(ota_service_init());
     ESP_ERROR_CHECK(remote_config_service_init());
     ESP_ERROR_CHECK(status_led_init());

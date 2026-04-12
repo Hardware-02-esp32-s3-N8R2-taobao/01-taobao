@@ -14,7 +14,7 @@ WIFI_CONNECTED_RE = re.compile(r"WiFi connected,(?: ssid=(.*?) )?ip=([0-9.]+)")
 WIFI_DISCONNECTED_RE = re.compile(r"WiFi disconnected, reason=([-0-9]+)")
 DHT_RE = re.compile(r"DHT11 sample: temperature=([-0-9.]+)\s*C humidity=([-0-9.]+)\s*%RH")
 PUBLISH_RE = re.compile(r"publish ok:\s*(\{.*\})")
-APP_LINE_RE = re.compile(r"APP_(CONFIG|STATUS|OPTIONS|EVENT|WIFI_LIST|LOW_POWER|OK|ERROR):")
+APP_LINE_RE = re.compile(r"APP_(CONFIG|STATUS|OPTIONS|EVENT|WIFI_LIST|LOW_POWER|OTA|OK|ERROR):")
 
 
 def now_text() -> str:
@@ -112,6 +112,15 @@ def default_state() -> dict[str, Any]:
             "enabled": False,
             "interval_sec": 300,
         },
+        "ota": {
+            "active": False,
+            "state": "--",
+            "received": 0,
+            "total": 0,
+            "progress": 0,
+            "target_version": "--",
+            "message": "--",
+        },
     }
 
 
@@ -182,6 +191,10 @@ class StatusParser:
             elif app_type == "LOW_POWER":
                 payload = self._safe_load_json(raw_payload)
                 self._apply_low_power_payload(payload)
+                changed = True
+            elif app_type == "OTA":
+                payload = self._safe_load_json(raw_payload)
+                self._apply_ota_payload(payload)
                 changed = True
             elif app_type == "OK":
                 payload = self._safe_load_json(raw_payload)
@@ -391,6 +404,18 @@ class StatusParser:
         interval = payload.get("intervalSec", low_power["interval_sec"])
         if isinstance(interval, (int, float)) and int(interval) > 0:
             low_power["interval_sec"] = int(interval)
+
+    def _apply_ota_payload(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        ota = self._state["ota"]
+        ota["active"] = bool(payload.get("active", ota["active"]))
+        ota["state"] = str(payload.get("state", ota["state"]) or "--")
+        ota["received"] = int(payload.get("received", ota["received"]) or 0)
+        ota["total"] = int(payload.get("total", ota["total"]) or 0)
+        ota["progress"] = int(payload.get("progress", ota["progress"]) or 0)
+        ota["target_version"] = str(payload.get("targetVersion", ota["target_version"]) or "--")
+        ota["message"] = str(payload.get("message", ota["message"]) or "--")
 
     def _merge_sensor_readings(self, incoming: dict[str, Any]) -> None:
         readings = self._state["sensor"].setdefault("readings", {})

@@ -1,6 +1,7 @@
 #include "ota_service.h"
 
 #include <stdio.h>
+#include <strings.h>
 #include <string.h>
 
 #include "cJSON.h"
@@ -13,6 +14,7 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "mbedtls/sha256.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -29,10 +31,19 @@
 typedef struct {
     bool initialized;
     bool busy;
+    bool serial_active;
     int64_t last_check_ms;
     char persisted_status[32];
     char job_id[64];
     char target_version[32];
+    size_t serial_total_size;
+    size_t serial_received_size;
+    esp_ota_handle_t serial_handle;
+    const esp_partition_t *serial_partition;
+    mbedtls_sha256_context serial_sha256;
+    char serial_expected_sha256[65];
+    char serial_stage[24];
+    char serial_message[96];
 } ota_state_t;
 
 typedef struct {
@@ -44,6 +55,20 @@ typedef struct {
 } ota_job_t;
 
 static ota_state_t s_state = {0};
+
+static void set_message(char *message, size_t message_size, const char *text)
+{
+    if (message == NULL || message_size == 0) {
+        return;
+    }
+    snprintf(message, message_size, "%s", text != NULL ? text : "");
+}
+
+static void set_serial_status(const char *stage, const char *message)
+{
+    snprintf(s_state.serial_stage, sizeof(s_state.serial_stage), "%s", stage != NULL ? stage : "");
+    snprintf(s_state.serial_message, sizeof(s_state.serial_message), "%s", message != NULL ? message : "");
+}
 
 static const char *running_firmware_version(void)
 {
@@ -84,6 +109,22 @@ static void update_persisted_state(const char *status, const char *job_id, const
 static void clear_persisted_state(void)
 {
     update_persisted_state("", "", "");
+}
+
+static void clear_serial_state(void)
+{
+    if (s_state.serial_active && s_state.serial_handle != 0) {
+        esp_ota_abort(s_state.serial_handle);
+    }
+    mbedtls_sha256_free(&s_state.serial_sha256);
+    s_state.serial_active = false;
+    s_state.serial_total_size = 0;
+    s_state.serial_received_size = 0;
+    s_state.serial_handle = 0;
+    s_state.serial_partition = NULL;
+    s_state.serial_expected_sha256[0] = '\0';
+    set_serial_status("", "");
+    s_state.busy = false;
 }
 
 static esp_err_t http_post_json(const char *url, const char *json_payload)
@@ -401,4 +442,262 @@ void ota_service_process(void)
 bool ota_service_should_skip_sleep(void)
 {
     return s_state.busy;
+}
+
+bool ota_service_is_busy(void)
+{
+    return s_state.busy;
+}
+
+static bool is_hex_char(char ch)
+{
+    return (ch >= '0' && ch <= '9')
+        || (ch >= 'a' && ch <= 'f')
+        || (ch >= 'A' && ch <= 'F');
+}
+
+static uint8_t hex_char_to_nibble(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return (uint8_t)(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return (uint8_t)(10 + ch - 'a');
+    }
+    return (uint8_t)(10 + ch - 'A');
+}
+
+static void format_sha256_hex(const uint8_t digest[32], char out[65])
+{
+    static const char *hex = "0123456789abcdef";
+    for (size_t i = 0; i < 32; ++i) {
+        out[i * 2] = hex[(digest[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = hex[digest[i] & 0x0F];
+    }
+    out[64] = '\0';
+}
+
+esp_err_t ota_service_serial_begin(
+    size_t image_size,
+    const char *expected_sha256,
+    const char *target_version,
+    char *message,
+    size_t message_size
+)
+{
+    if (message != NULL && message_size > 0) {
+        message[0] = '\0';
+    }
+
+    if (s_state.busy) {
+        set_message(message, message_size, "ota busy");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (image_size == 0) {
+        set_message(message, message_size, "image size invalid");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (expected_sha256 != NULL && expected_sha256[0] != '\0' && strlen(expected_sha256) != 64) {
+        set_message(message, message_size, "sha256 length invalid");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+    if (update_partition == NULL) {
+        set_message(message, message_size, "no ota partition");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t handle = 0;
+    esp_err_t err = esp_ota_begin(update_partition, image_size, &handle);
+    if (err != ESP_OK) {
+        if (message != NULL && message_size > 0) {
+            snprintf(message, message_size, "ota begin failed: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+
+    memset(&s_state.serial_sha256, 0, sizeof(s_state.serial_sha256));
+    mbedtls_sha256_init(&s_state.serial_sha256);
+    if (mbedtls_sha256_starts(&s_state.serial_sha256, 0) != 0) {
+        esp_ota_abort(handle);
+        mbedtls_sha256_free(&s_state.serial_sha256);
+        set_message(message, message_size, "sha256 init failed");
+        return ESP_FAIL;
+    }
+
+    s_state.busy = true;
+    s_state.serial_active = true;
+    s_state.serial_total_size = image_size;
+    s_state.serial_received_size = 0;
+    s_state.serial_handle = handle;
+    s_state.serial_partition = update_partition;
+    snprintf(s_state.serial_expected_sha256, sizeof(s_state.serial_expected_sha256), "%s", expected_sha256 != NULL ? expected_sha256 : "");
+    snprintf(s_state.target_version, sizeof(s_state.target_version), "%s", target_version != NULL ? target_version : "");
+    set_serial_status("ready", "serial ota ready");
+    set_message(message, message_size, "ready");
+    return ESP_OK;
+}
+
+esp_err_t ota_service_serial_write_hex(const char *hex_payload, size_t *written_size, char *message, size_t message_size)
+{
+    uint8_t binary[256];
+    size_t hex_len;
+    size_t byte_len;
+
+    if (written_size != NULL) {
+        *written_size = 0;
+    }
+    if (message != NULL && message_size > 0) {
+        message[0] = '\0';
+    }
+
+    if (!s_state.serial_active || s_state.serial_handle == 0) {
+        set_message(message, message_size, "serial ota not active");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (hex_payload == NULL) {
+        set_message(message, message_size, "empty payload");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    hex_len = strlen(hex_payload);
+    if (hex_len == 0 || (hex_len % 2) != 0 || hex_len > sizeof(binary) * 2) {
+        set_message(message, message_size, "hex payload invalid");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    byte_len = hex_len / 2;
+    if ((s_state.serial_received_size + byte_len) > s_state.serial_total_size) {
+        ota_service_serial_abort("image larger than declared size", NULL, 0);
+        set_message(message, message_size, "image larger than declared size");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (size_t i = 0; i < hex_len; i += 2) {
+        if (!is_hex_char(hex_payload[i]) || !is_hex_char(hex_payload[i + 1])) {
+            set_message(message, message_size, "hex payload invalid");
+            return ESP_ERR_INVALID_ARG;
+        }
+        binary[i / 2] = (uint8_t)((hex_char_to_nibble(hex_payload[i]) << 4) | hex_char_to_nibble(hex_payload[i + 1]));
+    }
+
+    esp_err_t err = esp_ota_write(s_state.serial_handle, binary, byte_len);
+    if (err != ESP_OK) {
+        ota_service_serial_abort("ota write failed", NULL, 0);
+        if (message != NULL && message_size > 0) {
+            snprintf(message, message_size, "ota write failed: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+
+    if (mbedtls_sha256_update(&s_state.serial_sha256, binary, byte_len) != 0) {
+        ota_service_serial_abort("sha256 update failed", NULL, 0);
+        set_message(message, message_size, "sha256 update failed");
+        return ESP_FAIL;
+    }
+
+    s_state.serial_received_size += byte_len;
+    set_serial_status("receiving", "serial ota receiving");
+    if (written_size != NULL) {
+        *written_size = byte_len;
+    }
+    if (message != NULL && message_size > 0) {
+        snprintf(message, message_size, "received %u/%u bytes", (unsigned)s_state.serial_received_size, (unsigned)s_state.serial_total_size);
+    }
+    return ESP_OK;
+}
+
+esp_err_t ota_service_serial_finish(char *message, size_t message_size)
+{
+    uint8_t digest[32];
+    char digest_hex[65];
+    esp_err_t err;
+
+    if (message != NULL && message_size > 0) {
+        message[0] = '\0';
+    }
+    if (!s_state.serial_active || s_state.serial_handle == 0) {
+        set_message(message, message_size, "serial ota not active");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_state.serial_received_size != s_state.serial_total_size) {
+        set_message(message, message_size, "image incomplete");
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (mbedtls_sha256_finish(&s_state.serial_sha256, digest) != 0) {
+        ota_service_serial_abort("sha256 finish failed", NULL, 0);
+        set_message(message, message_size, "sha256 finish failed");
+        return ESP_FAIL;
+    }
+    format_sha256_hex(digest, digest_hex);
+
+    if (s_state.serial_expected_sha256[0] != '\0' && strcasecmp(digest_hex, s_state.serial_expected_sha256) != 0) {
+        ota_service_serial_abort("sha256 mismatch", NULL, 0);
+        set_message(message, message_size, "sha256 mismatch");
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    err = esp_ota_end(s_state.serial_handle);
+    if (err != ESP_OK) {
+        ota_service_serial_abort("ota end failed", NULL, 0);
+        if (message != NULL && message_size > 0) {
+            snprintf(message, message_size, "ota end failed: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+
+    s_state.serial_handle = 0;
+    err = esp_ota_set_boot_partition(s_state.serial_partition);
+    if (err != ESP_OK) {
+        ota_service_serial_abort("set boot partition failed", NULL, 0);
+        if (message != NULL && message_size > 0) {
+            snprintf(message, message_size, "set boot partition failed: %s", esp_err_to_name(err));
+        }
+        return err;
+    }
+
+    update_persisted_state("rebooting", "serial-local", s_state.target_version[0] != '\0' ? s_state.target_version : running_firmware_version());
+    set_serial_status("done", "serial ota image ready");
+    set_message(message, message_size, "done");
+    mbedtls_sha256_free(&s_state.serial_sha256);
+    s_state.serial_active = false;
+    s_state.busy = false;
+    return ESP_OK;
+}
+
+esp_err_t ota_service_serial_abort(const char *reason, char *message, size_t message_size)
+{
+    const bool was_active = s_state.serial_active;
+    clear_serial_state();
+    if (message != NULL && message_size > 0) {
+        snprintf(message, message_size, "%s", reason != NULL && reason[0] != '\0' ? reason : "serial ota aborted");
+    }
+    return was_active ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+void ota_service_build_serial_status_json(char *buffer, size_t buffer_size)
+{
+    unsigned progress = 0;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return;
+    }
+
+    if (s_state.serial_total_size > 0) {
+        progress = (unsigned)((s_state.serial_received_size * 100U) / s_state.serial_total_size);
+    }
+    snprintf(
+        buffer,
+        buffer_size,
+        "{\"active\":%s,\"state\":\"%s\",\"received\":%u,\"total\":%u,\"progress\":%u,\"targetVersion\":\"%s\",\"message\":\"%s\"}",
+        s_state.serial_active ? "true" : "false",
+        s_state.serial_stage,
+        (unsigned)s_state.serial_received_size,
+        (unsigned)s_state.serial_total_size,
+        progress,
+        s_state.target_version,
+        s_state.serial_message
+    );
 }

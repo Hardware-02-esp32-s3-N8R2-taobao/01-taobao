@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "mqtt_client.h"
 #include "nvs_flash.h"
@@ -18,6 +19,7 @@
 #include "app_config.h"
 #include "console_service.h"
 #include "device_profile.h"
+#include "provisioning_service.h"
 
 #define TAG "network_service"
 #define WIFI_CONNECTED_BIT BIT0
@@ -33,6 +35,8 @@ typedef struct {
 
 static EventGroupHandle_t    s_event_group;
 static esp_mqtt_client_handle_t s_mqtt_client;
+static esp_netif_t          *s_wifi_sta_netif = NULL;
+static esp_netif_t          *s_wifi_ap_netif = NULL;
 static esp_ip4_addr_t        s_ip_addr;
 static int                   s_last_rssi = -127;
 
@@ -42,11 +46,13 @@ static int                   s_wifi_index = 0;
 static bool                  s_reloading  = false;
 static bool                  s_scan_before_connect = false;
 static TaskHandle_t          s_screen_connect_task = NULL;
+static TaskHandle_t          s_network_monitor_task = NULL;
 static bool                  s_selected_bssid_valid = false;
 static uint8_t               s_selected_bssid[6] = {0};
 static uint8_t               s_selected_channel = 0;
 static wifi_auth_mode_t      s_selected_authmode = WIFI_AUTH_OPEN;
 static int                   s_last_publish_msg_id = -1;
+static int64_t               s_connect_attempt_started_ms = 0;
 
 static const char *wifi_disconnect_reason_text(uint8_t reason)
 {
@@ -199,15 +205,49 @@ static void connect_using_current_strategy(void)
     esp_wifi_connect();
 }
 
+static void network_monitor_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        bool wifi_ready = network_service_is_wifi_ready();
+
+        if (wifi_ready) {
+            s_connect_attempt_started_ms = 0;
+        } else if (!provisioning_service_is_active()) {
+            if (s_connect_attempt_started_ms == 0) {
+                s_connect_attempt_started_ms = now_ms;
+            } else if ((now_ms - s_connect_attempt_started_ms) >= APP_WIFI_PROVISIONING_TIMEOUT_MS) {
+                ESP_LOGW(TAG, "wifi unavailable for %d ms, entering softap provisioning", APP_WIFI_PROVISIONING_TIMEOUT_MS);
+                if (provisioning_service_start() == ESP_OK) {
+                    s_connect_attempt_started_ms = 0;
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 static void screen_connect_task(void *arg)
 {
     (void)arg;
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (provisioning_service_is_active()) {
+            continue;
+        }
         vTaskDelay(pdMS_TO_TICKS(600));
+        if (provisioning_service_is_active()) {
+            continue;
+        }
 
         if (!select_visible_wifi_entry()) {
             ESP_LOGW(TAG, "no configured ssid visible during scan");
+        }
+        if (provisioning_service_is_active()) {
+            continue;
         }
         esp_wifi_connect();
     }
@@ -315,7 +355,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     (void)arg;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        connect_using_current_strategy();
+        if (!provisioning_service_is_active()) {
+            connect_using_current_strategy();
+        }
 
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
@@ -341,7 +383,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             /* List was just updated — stay at index 0, config already applied */
             s_reloading = false;
         }
-        connect_using_current_strategy();
+        if (!provisioning_service_is_active()) {
+            if (s_connect_attempt_started_ms == 0) {
+                s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
+            }
+            connect_using_current_strategy();
+        }
 
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
@@ -361,6 +408,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         );
         console_service_emit_event("wifi", event_json);
         mqtt_start();
+        s_connect_attempt_started_ms = 0;
     }
 }
 
@@ -375,7 +423,10 @@ esp_err_t network_service_start(void)
     /* nvs_flash_init already called in device_profile_init; skip if already done */
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    s_wifi_sta_netif = esp_netif_create_default_wifi_sta();
+    ESP_RETURN_ON_FALSE(s_wifi_sta_netif != NULL, ESP_FAIL, TAG, "create default wifi sta netif failed");
+    s_wifi_ap_netif = esp_netif_create_default_wifi_ap();
+    ESP_RETURN_ON_FALSE(s_wifi_ap_netif != NULL, ESP_FAIL, TAG, "create default wifi ap netif failed");
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -397,6 +448,10 @@ esp_err_t network_service_start(void)
         ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N));
     }
     network_service_set_power_save(device_profile_low_power_enabled());
+    s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
+    if (s_network_monitor_task == NULL) {
+        xTaskCreate(network_monitor_task, "network_monitor", 3072, NULL, 4, &s_network_monitor_task);
+    }
 
     return ESP_OK;
 }
@@ -409,6 +464,7 @@ void network_service_reload_wifi_list(void)
     s_selected_bssid_valid = false;
     s_selected_channel = 0;
     s_selected_authmode = WIFI_AUTH_OPEN;
+    s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
     xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
     device_profile_update_wifi(false, NULL, NULL, 0);
     device_profile_update_mqtt(false);
@@ -581,4 +637,9 @@ void network_service_prepare_for_sleep(void)
 
     esp_wifi_disconnect();
     esp_wifi_stop();
+}
+
+bool network_service_is_provisioning_active(void)
+{
+    return provisioning_service_is_active();
 }

@@ -7,6 +7,7 @@ idf_component_register(
         "app/remote_config_service.c"
         "app/console_service.c"
         "app/status_led.c"
+        "app/provisioning_service.c"
         "oled/oled_ssd1306.c"
         "dht11/dht11_sensor.c"
         "sensors/sensor_bus.c"
@@ -32,4 +33,7 @@ idf_component_register(
         esp_adc
         esp_http_client
         app_update
+        wifi_provisioning
+        protocomm
+        esp_http_server
 )

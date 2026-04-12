@@ -14,12 +14,16 @@ set(PROJECT_VER "${APP_FIRMWARE_VERSION}")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(yd_esp32c3_wifi_mqtt_forward_demo)
 
-set(VERSIONED_FIRMWARE_BIN "${CMAKE_BINARY_DIR}/${PROJECT_NAME}_v${APP_FIRMWARE_VERSION}.bin")
+set(VERSIONED_FIRMWARE_BIN "${CMAKE_BINARY_DIR}/yd-c3_v${APP_FIRMWARE_VERSION}.bin")
+set(ROOT_VERSIONED_FIRMWARE_BIN "${CMAKE_CURRENT_LIST_DIR}/../yd-c3_v${APP_FIRMWARE_VERSION}.bin")
 add_custom_target(versioned_firmware ALL
     DEPENDS gen_project_binary
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin"
             "${VERSIONED_FIRMWARE_BIN}"
-    COMMENT "Creating versioned firmware binary: ${PROJECT_NAME}_v${APP_FIRMWARE_VERSION}.bin"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin"
+            "${ROOT_VERSIONED_FIRMWARE_BIN}"
+    COMMENT "Creating versioned firmware binary: yd-c3_v${APP_FIRMWARE_VERSION}.bin"
     VERBATIM
 )

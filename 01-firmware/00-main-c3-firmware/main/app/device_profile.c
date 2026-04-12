@@ -17,6 +17,7 @@
 #include "driver/i2c.h"
 
 #include "app_config.h"
+#include "provisioning_service.h"
 
 #define TAG "device_profile"
 #define DEVICE_PROFILE_NAMESPACE "device_cfg"
@@ -620,6 +621,7 @@ void device_profile_build_status_json(char *buffer, size_t buffer_size)
     cJSON_AddStringToObject(wifi, "ssid", s_state.wifi_ssid);
     cJSON_AddStringToObject(wifi, "ip", s_state.wifi_ip);
     cJSON_AddNumberToObject(wifi, "disconnectReason", s_state.wifi_disconnect_reason);
+    cJSON_AddBoolToObject(wifi, "provisioning", provisioning_service_is_active());
 
     cJSON *mqtt = cJSON_AddObjectToObject(root, "mqtt");
     cJSON_AddBoolToObject(mqtt, "connected", s_state.mqtt_connected);
@@ -747,6 +749,25 @@ esp_err_t device_profile_set_wifi_list_json(const char *json_text, char *message
 
     snprintf(message, message_size, "wifi list saved (%d entries)", new_count);
     return ESP_OK;
+}
+
+esp_err_t device_profile_replace_wifi_credential(const char *ssid, const char *password, char *message, size_t message_size)
+{
+    char json_text[192];
+
+    if (ssid == NULL || ssid[0] == '\0') {
+        snprintf(message, message_size, "ssid is required");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    snprintf(
+        json_text,
+        sizeof(json_text),
+        "[{\"ssid\":\"%s\",\"password\":\"%s\"}]",
+        ssid,
+        password != NULL ? password : ""
+    );
+    return device_profile_set_wifi_list_json(json_text, message, message_size);
 }
 
 esp_err_t device_profile_apply_config_json(const char *json_text, char *message, size_t message_size)

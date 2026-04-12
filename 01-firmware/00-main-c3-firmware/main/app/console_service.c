@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -10,11 +11,13 @@
 #include "driver/i2c.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_system.h"
 
 #include "app_config.h"
 #include "bmp180_sensor.h"
 #include "device_profile.h"
 #include "network_service.h"
+#include "ota_service.h"
 #include "sensor_bus.h"
 #include "telemetry_app.h"
 
@@ -131,6 +134,16 @@ static void emit_i2c_scan_line(void)
     usb_write_text(line);
 }
 
+static void emit_ota_status_line(void)
+{
+    char json[320];
+    char line[384];
+
+    ota_service_build_serial_status_json(json, sizeof(json));
+    snprintf(line, sizeof(line), "APP_OTA:%s\n", json);
+    usb_write_text(line);
+}
+
 void console_service_emit_event(const char *event_type, const char *json_payload)
 {
     char line[896];
@@ -185,7 +198,76 @@ static void console_task(void *arg)
                 continue;
             }
 
-            if (strcmp(line, "GET_STATUS") == 0) {
+            if (strcmp(line, "OTA_STATUS") == 0) {
+                emit_ota_status_line();
+            } else if (strncmp(line, "OTA_BEGIN ", 10) == 0) {
+                char message[128];
+                cJSON *root = cJSON_Parse(line + 10);
+                if (root == NULL) {
+                    usb_write_text("APP_ERROR:{\"message\":\"invalid ota metadata\"}\n");
+                } else {
+                    cJSON *size_item = cJSON_GetObjectItemCaseSensitive(root, "size");
+                    cJSON *sha_item = cJSON_GetObjectItemCaseSensitive(root, "sha256");
+                    cJSON *version_item = cJSON_GetObjectItemCaseSensitive(root, "version");
+                    if (!cJSON_IsNumber(size_item)) {
+                        usb_write_text("APP_ERROR:{\"message\":\"ota size missing\"}\n");
+                    } else {
+                        esp_err_t ret = ota_service_serial_begin(
+                            (size_t)cJSON_GetNumberValue(size_item),
+                            cJSON_IsString(sha_item) ? sha_item->valuestring : "",
+                            cJSON_IsString(version_item) ? version_item->valuestring : "",
+                            message,
+                            sizeof(message)
+                        );
+                        if (ret == ESP_OK) {
+                            emit_ota_status_line();
+                        } else {
+                            char response[192];
+                            snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                            usb_write_text(response);
+                            emit_ota_status_line();
+                        }
+                    }
+                    cJSON_Delete(root);
+                }
+            } else if (strncmp(line, "OTA_WRITE ", 10) == 0) {
+                char message[128];
+                size_t written_size = 0;
+                esp_err_t ret = ota_service_serial_write_hex(line + 10, &written_size, message, sizeof(message));
+                if (ret == ESP_OK) {
+                    emit_ota_status_line();
+                } else {
+                    char response[192];
+                    snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                    emit_ota_status_line();
+                }
+            } else if (strcmp(line, "OTA_FINISH") == 0) {
+                char message[128];
+                esp_err_t ret = ota_service_serial_finish(message, sizeof(message));
+                if (ret == ESP_OK) {
+                    emit_ota_status_line();
+                    usb_write_text("APP_OK:{\"message\":\"serial ota complete, rebooting\"}\n");
+                    vTaskDelay(pdMS_TO_TICKS(800));
+                    esp_restart();
+                } else {
+                    char response[192];
+                    snprintf(response, sizeof(response), "APP_ERROR:{\"message\":\"%s\"}\n", message);
+                    usb_write_text(response);
+                    emit_ota_status_line();
+                }
+            } else if (strcmp(line, "OTA_ABORT") == 0) {
+                char message[128];
+                esp_err_t ret = ota_service_serial_abort("serial ota aborted", message, sizeof(message));
+                if (ret == ESP_OK) {
+                    usb_write_text("APP_OK:{\"message\":\"serial ota aborted\"}\n");
+                    emit_ota_status_line();
+                } else {
+                    usb_write_text("APP_ERROR:{\"message\":\"serial ota not active\"}\n");
+                }
+            } else if (ota_service_is_busy()) {
+                usb_write_text("APP_ERROR:{\"message\":\"ota busy, only OTA_* commands allowed\"}\n");
+            } else if (strcmp(line, "GET_STATUS") == 0) {
                 emit_json_line("APP_STATUS", device_profile_build_status_json);
             } else if (strcmp(line, "GET_CONFIG") == 0) {
                 emit_json_line("APP_CONFIG", device_profile_build_config_json);
@@ -262,7 +344,7 @@ static void console_task(void *arg)
                     usb_write_text(response);
                 }
             } else if (strcmp(line, "HELP") == 0) {
-                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {...}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\"]}\n");
+                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {...}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\",\"OTA_STATUS\",\"OTA_BEGIN {...}\",\"OTA_WRITE <hex>\",\"OTA_FINISH\",\"OTA_ABORT\"]}\n");
             } else if (line[0] != '\0') {
                 usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
             }
@@ -281,6 +363,11 @@ static void console_snapshot_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     while (1) {
+        if (ota_service_is_busy()) {
+            vTaskDelay(pdMS_TO_TICKS(400));
+            continue;
+        }
+
         emit_json_line("APP_STATUS", device_profile_build_status_json);
 
         if (last_full_dump == 0 || (xTaskGetTickCount() - last_full_dump) >= pdMS_TO_TICKS(8000)) {
