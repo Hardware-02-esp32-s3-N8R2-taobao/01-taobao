@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">YD 配网助手</string>
+    <string name="app_title">ESP32-C3 配网</string>
+    <string name="app_hint">先在系统 Wi‑Fi 里连接板子的 YD-PROV-* 热点。回到 App 后，只需要填写家里 Wi‑Fi 名称和密码，点发送即可；如果没有连板子热点，App 会直接提醒你。</string>
+    <string name="device_ap_not_connected">当前未连接板子热点</string>
+    <string name="refresh_board_wifi">刷新板子热点状态</string>
+    <string name="home_ssid">家里 Wi‑Fi 名称</string>
+    <string name="home_password">家里 Wi‑Fi 密码</string>
+    <string name="fill_current_wifi">用当前手机 Wi‑Fi 名称填充</string>
+    <string name="send_home_wifi">发送家里 Wi‑Fi 给板子</string>
+    <string name="status_idle">状态：等待开始配网</string>
+</resources>

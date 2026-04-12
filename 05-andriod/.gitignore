@@ -1,0 +1,18 @@
+# Android / Gradle local state
+.gradle/
+.idea/
+local.properties
+
+# Local tooling and reverse-engineering scratch files
+.tooling/
+.tmp-aar/
+
+# Build outputs
+build/
+app/build/
+captures/
+
+# OS/editor noise
+*.iml
+Thumbs.db
+Desktop.ini
