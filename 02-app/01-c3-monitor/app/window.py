@@ -8,6 +8,8 @@ from typing import Any
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from firmware_package import FirmwarePackage, FirmwarePackageError, load_firmware_package
+from .flash_worker import FullFlashWorker
 from .ota_client import (
     SERVER_BASE_URL,
     build_firmware_upload_payload,
@@ -141,6 +143,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._updating_config_form = False
         self._updating_wifi_form = False
         self._ota_selected_file = ""
+        self._selected_firmware_package: FirmwarePackage | None = None
         self._serial_ota_active = False
         self._serial_ota_waiting_ack = False
         self._serial_ota_finish_sent = False
@@ -149,6 +152,10 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._serial_ota_sha256 = ""
         self._serial_ota_version = ""
         self._serial_ota_chunk_size = 240
+        self._flash_thread: QtCore.QThread | None = None
+        self._flash_worker: FullFlashWorker | None = None
+        self._reconnect_after_flash = False
+        self._flash_port_name = ""
         self._status_poll_timer = QtCore.QTimer(self)
         self._status_poll_timer.setInterval(2500)
         self._status_poll_timer.timeout.connect(self._handle_auto_status_poll)
@@ -437,35 +444,77 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         ota_divider.setStyleSheet("color: #dbe4f0;")
         config_layout.addWidget(ota_divider)
 
-        ota_head = QtWidgets.QHBoxLayout()
-        ota_title = QtWidgets.QLabel("OTA 升级")
-        ota_title.setObjectName("subTitle")
-        self.ota_refresh_btn = QtWidgets.QPushButton("刷新 OTA 状态")
-        self.ota_upload_btn = QtWidgets.QPushButton("上传并开始云端 OTA")
-        self.ota_serial_btn = QtWidgets.QPushButton("串口直升 OTA")
-        ota_head.addWidget(ota_title)
-        ota_head.addStretch(1)
-        ota_head.addWidget(self.ota_refresh_btn)
-        ota_head.addWidget(self.ota_serial_btn)
-        ota_head.addWidget(self.ota_upload_btn)
-        config_layout.addLayout(ota_head)
+        ota_notice_title = QtWidgets.QLabel("固件升级")
+        ota_notice_title.setObjectName("subTitle")
+        config_layout.addWidget(ota_notice_title)
+        ota_notice = QtWidgets.QLabel("固件升级已独立到“固件升级”页面，支持统一升级包自动判断：带应用时走串口 OTA，空板走全烧录，云端 OTA 也复用同一份包。")
+        ota_notice.setObjectName("pageSubtitle")
+        ota_notice.setWordWrap(True)
+        config_layout.addWidget(ota_notice)
+        config_layout.addStretch(1)
+
+        config_tab_layout.addWidget(config_frame, 1)
+        self.tab_widget.addTab(config_tab, "设备配置")
+
+        # ── Tab 4: 固件升级 ───────────────────────────────────────────────
+        upgrade_tab = QtWidgets.QWidget()
+        upgrade_tab_layout = QtWidgets.QVBoxLayout(upgrade_tab)
+        upgrade_tab_layout.setContentsMargins(0, 12, 0, 0)
+        upgrade_tab_layout.setSpacing(12)
+
+        upgrade_frame = QtWidgets.QFrame()
+        upgrade_frame.setObjectName("panelCard")
+        upgrade_layout = QtWidgets.QVBoxLayout(upgrade_frame)
+        upgrade_layout.setContentsMargins(16, 14, 16, 14)
+        upgrade_layout.setSpacing(12)
+
+        upgrade_head = QtWidgets.QHBoxLayout()
+        upgrade_title = QtWidgets.QLabel("固件升级")
+        upgrade_title.setObjectName("panelTitle")
+        upgrade_hint = QtWidgets.QLabel("统一升级包 .bin：空板自动全烧录，已运行本项目固件的板子优先走串口 OTA，云端 OTA 也从同一包中提取 app 段。")
+        upgrade_hint.setObjectName("pageSubtitle")
+        upgrade_hint.setWordWrap(True)
+        upgrade_head.addWidget(upgrade_title)
+        upgrade_head.addStretch(1)
+        upgrade_layout.addLayout(upgrade_head)
+        upgrade_layout.addWidget(upgrade_hint)
 
         self.ota_target_label = QtWidgets.QLabel(f"目标服务器：{SERVER_BASE_URL}  |  设备：--")
         self.ota_target_label.setObjectName("pageSubtitle")
         self.ota_target_label.setWordWrap(True)
-        config_layout.addWidget(self.ota_target_label)
+        upgrade_layout.addWidget(self.ota_target_label)
+
+        self.upgrade_device_label = QtWidgets.QLabel("设备识别：--")
+        self.upgrade_device_label.setObjectName("pageSubtitle")
+        self.upgrade_device_label.setWordWrap(True)
+        upgrade_layout.addWidget(self.upgrade_device_label)
+
+        self.upgrade_plan_label = QtWidgets.QLabel("自动策略：--")
+        self.upgrade_plan_label.setObjectName("pageSubtitle")
+        self.upgrade_plan_label.setWordWrap(True)
+        upgrade_layout.addWidget(self.upgrade_plan_label)
 
         ota_file_row = QtWidgets.QHBoxLayout()
-        ota_file_label = QtWidgets.QLabel("固件 bin")
+        ota_file_label = QtWidgets.QLabel("升级包")
         ota_file_label.setFixedWidth(80)
         self.ota_file_edit = QtWidgets.QLineEdit()
         self.ota_file_edit.setReadOnly(True)
-        self.ota_file_edit.setPlaceholderText("请选择要用于云端 OTA 或串口直升 OTA 的 .bin 固件")
+        self.ota_file_edit.setPlaceholderText("请选择统一升级包 .bin")
         self.ota_pick_btn = QtWidgets.QPushButton("选择 bin 文件")
         ota_file_row.addWidget(ota_file_label)
         ota_file_row.addWidget(self.ota_file_edit, 1)
         ota_file_row.addWidget(self.ota_pick_btn)
-        config_layout.addLayout(ota_file_row)
+        upgrade_layout.addLayout(ota_file_row)
+
+        self.upgrade_package_label = QtWidgets.QLabel("升级包信息：--")
+        self.upgrade_package_label.setObjectName("pageSubtitle")
+        self.upgrade_package_label.setWordWrap(True)
+        upgrade_layout.addWidget(self.upgrade_package_label)
+
+        self.upgrade_package_segments_label = QtWidgets.QLabel("固件分段：--")
+        self.upgrade_package_segments_label.setObjectName("pageSubtitle")
+        self.upgrade_package_segments_label.setWordWrap(True)
+        upgrade_layout.addWidget(self.upgrade_package_segments_label)
 
         ota_note_row = QtWidgets.QHBoxLayout()
         ota_note_label = QtWidgets.QLabel("升级备注")
@@ -477,20 +526,39 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         ota_note_row.addWidget(ota_note_label)
         ota_note_row.addWidget(self.ota_note_edit, 1)
         ota_note_row.addWidget(self.ota_force_check)
-        config_layout.addLayout(ota_note_row)
+        upgrade_layout.addLayout(ota_note_row)
+
+        upgrade_btn_row = QtWidgets.QHBoxLayout()
+        upgrade_btn_row.setSpacing(8)
+        self.ota_refresh_btn = QtWidgets.QPushButton("刷新 OTA 状态")
+        self.ota_auto_btn = QtWidgets.QPushButton("自动判断并升级")
+        self.ota_serial_btn = QtWidgets.QPushButton("强制串口 OTA")
+        self.ota_full_flash_btn = QtWidgets.QPushButton("强制全烧录")
+        self.ota_upload_btn = QtWidgets.QPushButton("上传并开始云端 OTA")
+        upgrade_btn_row.addWidget(self.ota_refresh_btn)
+        upgrade_btn_row.addWidget(self.ota_auto_btn)
+        upgrade_btn_row.addWidget(self.ota_serial_btn)
+        upgrade_btn_row.addWidget(self.ota_full_flash_btn)
+        upgrade_btn_row.addWidget(self.ota_upload_btn)
+        upgrade_layout.addLayout(upgrade_btn_row)
 
         self.ota_status_label = QtWidgets.QLabel("OTA 状态：--")
         self.ota_status_label.setObjectName("pageSubtitle")
         self.ota_status_label.setWordWrap(True)
-        config_layout.addWidget(self.ota_status_label)
+        upgrade_layout.addWidget(self.ota_status_label)
         self.ota_progress_bar = QtWidgets.QProgressBar()
         self.ota_progress_bar.setRange(0, 100)
         self.ota_progress_bar.setValue(0)
-        config_layout.addWidget(self.ota_progress_bar)
-        config_layout.addStretch(1)
+        upgrade_layout.addWidget(self.ota_progress_bar)
 
-        config_tab_layout.addWidget(config_frame, 1)
-        self.tab_widget.addTab(config_tab, "设备配置")
+        self.upgrade_log_edit = QtWidgets.QPlainTextEdit()
+        self.upgrade_log_edit.setReadOnly(True)
+        self.upgrade_log_edit.setPlaceholderText("全烧录输出和升级决策日志会显示在这里。")
+        self.upgrade_log_edit.document().setMaximumBlockCount(800)
+        upgrade_layout.addWidget(self.upgrade_log_edit, 1)
+
+        upgrade_tab_layout.addWidget(upgrade_frame, 1)
+        self.tab_widget.addTab(upgrade_tab, "固件升级")
 
         # ── Signal connections ────────────────────────────────────────────
         self.statusBar().showMessage("准备就绪")
@@ -515,7 +583,9 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.ota_pick_btn.clicked.connect(self._pick_ota_file)
         self.ota_upload_btn.clicked.connect(self._start_ota_upgrade)
         self.ota_refresh_btn.clicked.connect(self._refresh_ota_status)
+        self.ota_auto_btn.clicked.connect(self._start_auto_upgrade)
         self.ota_serial_btn.clicked.connect(self._start_serial_ota_upgrade)
+        self.ota_full_flash_btn.clicked.connect(self._start_full_flash_upgrade)
 
         combo_line_edit = self.device_name_combo.lineEdit()
         if combo_line_edit is not None:
@@ -629,6 +699,115 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self.sensor_detail_grid.addWidget(card["frame"], index // 2, index % 2)
         self.sensor_detail_grid.setRowStretch((len(sensor_types) + 1) // 2, 1)
 
+    def _append_upgrade_log(self, text: str) -> None:
+        if not text:
+            return
+        self.upgrade_log_edit.appendPlainText(text)
+
+    def _current_serial_port_name(self) -> str:
+        if self._reader is not None:
+            return self._reader.port_name
+        return str(self.port_combo.currentData() or "").strip()
+
+    def _select_serial_port(self, port_name: str) -> None:
+        target = str(port_name or "").strip()
+        if not target:
+            return
+        index = self.port_combo.findData(target)
+        if index < 0:
+            self.refresh_ports()
+            index = self.port_combo.findData(target)
+        if index >= 0:
+            self.port_combo.setCurrentIndex(index)
+
+    def _device_supports_serial_ota(self) -> bool:
+        if self._reader is None:
+            return False
+        state = self._parser.state
+        hardware = state.get("hardware") or {}
+        fw_version = str(hardware.get("fw_version") or "").strip()
+        last_line = str(state.get("last_line") or "").strip()
+        return fw_version not in ("", "--") or last_line.startswith("APP_")
+
+    def _describe_auto_upgrade_strategy(self) -> tuple[str, str]:
+        package = self._selected_firmware_package
+        if package is None:
+            return ("none", "请先选择统一升级包 .bin")
+
+        state = self._parser.state
+        if self._device_supports_serial_ota():
+            hardware = state.get("hardware") or {}
+            fw_version = str(hardware.get("fw_version") or "--")
+            return ("serial-ota", f"检测到设备正在运行本项目固件（当前版本 {fw_version}），自动策略将走串口 OTA。")
+
+        if self._reader is not None:
+            port_name = self._current_serial_port_name() or "--"
+            last_line = str(state.get("last_line") or "").strip()
+            if not last_line:
+                return ("pending-detect", f"串口 {port_name} 已连接，但还没有收到设备响应。为避免误判，自动策略会先等待识别结果。")
+            if package.supports_full_flash:
+                return ("full-flash", f"串口 {port_name} 已连接，但未识别到本项目 OTA 协议，自动策略将按空板/非项目固件执行全烧录。")
+            return ("unsupported", "当前文件只包含 app OTA 镜像，而串口侧又未识别到本项目 OTA 协议，无法自动升级。")
+
+        if package.supports_full_flash:
+            port_name = self._current_serial_port_name()
+            if port_name:
+                return ("full-flash", f"当前未识别到可用 OTA 固件会话，自动策略将通过 {port_name} 执行全烧录。")
+            return ("full-flash", "当前未识别到可用 OTA 固件会话，自动策略将执行全烧录。")
+
+        return ("unsupported", "当前文件只包含 app OTA 镜像，不包含 bootloader/partition，无法用于空板全烧录。")
+
+    def _update_upgrade_page(self) -> None:
+        package = self._selected_firmware_package
+        state = self._parser.state
+        hardware = state.get("hardware") or {}
+        device_id = str((state.get("config") or {}).get("device_id") or "--")
+        fw_version = str(hardware.get("fw_version") or "--")
+        port_name = self._current_serial_port_name() or "--"
+
+        if self._device_supports_serial_ota():
+            self.upgrade_device_label.setText(
+                f"设备识别：串口 {port_name} 已连接到运行中设备，deviceId={device_id}，当前固件={fw_version}，支持串口 OTA。"
+            )
+        elif self._reader is not None:
+            self.upgrade_device_label.setText(
+                f"设备识别：串口 {port_name} 已连接，但暂未识别到本项目运行态协议，可能是空板、ROM 下载态或其他固件。"
+            )
+        else:
+            self.upgrade_device_label.setText(
+                f"设备识别：当前未连接串口，若直接自动升级，将优先尝试按空板全烧录处理。"
+            )
+
+        if package is None:
+            self.upgrade_package_label.setText("升级包信息：--")
+            self.upgrade_package_segments_label.setText("固件分段：--")
+        else:
+            mode_text = "支持空板全烧录" if package.supports_full_flash else "仅支持 OTA"
+            self.upgrade_package_label.setText(
+                f"升级包信息：格式 {package.package_format}，版本 {package.package_version or '--'}，备注 {package.release_notes or '未填写'}，芯片 {package.chip or '--'}，{mode_text}。"
+            )
+            segment_text = "；".join(
+                f"{segment.role}@0x{segment.flash_offset:X} ({segment.size}B)"
+                for segment in package.segments
+            )
+            self.upgrade_package_segments_label.setText(
+                f"固件分段：{segment_text or '--'}"
+            )
+
+        _strategy, strategy_text = self._describe_auto_upgrade_strategy()
+        self.upgrade_plan_label.setText(f"自动策略：{strategy_text}")
+
+    def _set_upgrade_controls_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.ota_pick_btn,
+            self.ota_upload_btn,
+            self.ota_refresh_btn,
+            self.ota_auto_btn,
+            self.ota_serial_btn,
+            self.ota_full_flash_btn,
+        ):
+            widget.setEnabled(enabled)
+
     @QtCore.Slot()
     def refresh_ports(self) -> None:
         current = self.port_combo.currentData()
@@ -661,6 +840,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(True)
         self.statusBar().showMessage(f"正在连接 {port_name}")
+        self._update_upgrade_page()
 
     @QtCore.Slot()
     def disconnect_serial(self) -> None:
@@ -678,6 +858,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self._reader = None
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
+        self._update_upgrade_page()
 
     @QtCore.Slot(bool, str)
     def _handle_connection_change(self, connected: bool, message: str) -> None:
@@ -686,6 +867,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         state = self._parser.set_connection(port_name, baudrate, connected)
         self._render_state(state)
         self.statusBar().showMessage(message)
+        self._update_upgrade_page()
         if connected:
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
@@ -706,6 +888,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"串口错误：{message}")
         self.log_edit.appendPlainText(f"!!! 串口错误：{message}")
         self.config_result_label.setText(f"最近操作：串口错误：{message}")
+        self._append_upgrade_log(f"[serial-error] {message}")
 
     @QtCore.Slot(str)
     def _handle_serial_line(self, line: str) -> None:
@@ -790,7 +973,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     def _handle_auto_status_poll(self) -> None:
         if not self._initial_load_done or self._serial_ota_active:
             return
-        if self.tab_widget.currentIndex() not in (0, 1):
+        if self.tab_widget.currentIndex() not in (0, 1, 3):
             return
         self._mark_auto_refresh()
         self.query_device_state()
@@ -800,6 +983,12 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self._config_form_dirty = False
             self._wifi_form_dirty = False
             self.read_device_config()
+            return
+        if index == 3:
+            self._update_upgrade_page()
+            if self._reader is not None and not self._serial_ota_active:
+                QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_STATUS"))
+                QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_CONFIG"))
 
     def save_device_config(self) -> None:
         sensors = [name for name, checkbox in self._sensor_checks.items() if checkbox.isChecked()]
@@ -847,7 +1036,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     def _pick_ota_file(self) -> None:
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "选择 OTA 固件",
+            "选择统一升级包",
             str(QtCore.QDir.currentPath()),
             "Firmware Binary (*.bin)",
         )
@@ -856,25 +1045,32 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._ota_selected_file = file_path
         self.ota_file_edit.setText(file_path)
         try:
+            self._selected_firmware_package = load_firmware_package(file_path)
             payload = build_firmware_upload_payload(
                 file_path,
                 device_id=self._parser.state["config"].get("device_id", ""),
                 force=self.ota_force_check.isChecked(),
                 notes=self.ota_note_edit.text().strip(),
             )
-        except RuntimeError as exc:
+        except (RuntimeError, FirmwarePackageError) as exc:
+            self._selected_firmware_package = None
             self.ota_status_label.setText(f"OTA 状态：文件检查失败，{exc}")
             self.statusBar().showMessage(str(exc))
+            self._update_upgrade_page()
             return
 
         version = payload.get("version") or "--"
         self._serial_ota_version = str(version)
         notes = payload.get("notes") or "未填写备注"
+        if notes != "未填写备注" and not self.ota_note_edit.text().strip():
+            self.ota_note_edit.setText(str(notes))
         self.ota_status_label.setText(
             f"OTA 状态：已选择 {Path(file_path).name}，识别版本 {version}，备注：{notes}"
         )
         self.statusBar().showMessage(f"已选择 OTA 固件：{Path(file_path).name}")
         self.ota_progress_bar.setValue(0)
+        self._append_upgrade_log(f"[package] selected {Path(file_path).name}")
+        self._update_upgrade_page()
 
     def _start_ota_upgrade(self) -> None:
         if self._serial_ota_active:
@@ -910,6 +1106,18 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self.ota_status_label.setText(f"OTA 状态：创建 OTA 任务失败，{exc}")
             self.statusBar().showMessage(str(exc))
 
+    def _start_auto_upgrade(self) -> None:
+        strategy, message = self._describe_auto_upgrade_strategy()
+        self._append_upgrade_log(f"[auto] {message}")
+        if strategy == "serial-ota":
+            self._start_serial_ota_upgrade()
+            return
+        if strategy == "full-flash":
+            self._start_full_flash_upgrade()
+            return
+        self.ota_status_label.setText(f"OTA 状态：{message}")
+        self.statusBar().showMessage(message)
+
     def _start_serial_ota_upgrade(self) -> None:
         if self._reader is None:
             self.ota_status_label.setText("OTA 状态：请先连接设备串口")
@@ -922,34 +1130,119 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self.ota_status_label.setText("OTA 状态：请先选择 .bin 固件文件")
             self.statusBar().showMessage("请先选择 .bin 固件文件")
             return
+        if not self._device_supports_serial_ota():
+            message = "当前串口没有识别到本项目运行态固件，请改用“自动串口升级”或“强制全烧录”。"
+            self.ota_status_label.setText(f"OTA 状态：{message}")
+            self.statusBar().showMessage(message)
+            return
 
-        firmware_path = Path(self._ota_selected_file)
+        package = self._selected_firmware_package
+        if package is None:
+            self.ota_status_label.setText("OTA 状态：请先重新选择升级包")
+            self.statusBar().showMessage("请先重新选择升级包")
+            return
+
         try:
-            payload = firmware_path.read_bytes()
-        except OSError as exc:
-            self.ota_status_label.setText(f"OTA 状态：读取固件失败，{exc}")
+            payload = package.ota_bytes()
+        except (FirmwarePackageError, RuntimeError) as exc:
+            self.ota_status_label.setText(f"OTA 状态：提取 OTA 镜像失败，{exc}")
             self.statusBar().showMessage(str(exc))
             return
 
         self._serial_ota_bytes = payload
         self._serial_ota_offset = 0
-        self._serial_ota_sha256 = hashlib.sha256(payload).hexdigest()
+        self._serial_ota_sha256 = package.ota_sha256()
         if not self._serial_ota_version:
-            self._serial_ota_version = firmware_path.stem
+            self._serial_ota_version = package.package_version or Path(self._ota_selected_file).stem
         self._serial_ota_active = True
         self._serial_ota_waiting_ack = True
         self._serial_ota_finish_sent = False
         self.ota_progress_bar.setValue(0)
         self.ota_status_label.setText(
-            f"OTA 状态：正在启动串口 OTA，文件 {firmware_path.name}，大小 {len(payload)} 字节，版本 {self._serial_ota_version}"
+            f"OTA 状态：正在启动串口 OTA，app 段大小 {len(payload)} 字节，版本 {self._serial_ota_version}"
         )
         self.statusBar().showMessage("正在启动串口 OTA...")
+        self._append_upgrade_log(
+            f"[serial-ota] send app segment only, size={len(payload)}, sha256={self._serial_ota_sha256}"
+        )
         meta = {
             "size": len(payload),
             "sha256": self._serial_ota_sha256,
             "version": self._serial_ota_version,
         }
         self._send_command(f"OTA_BEGIN {json.dumps(meta, ensure_ascii=False)}")
+
+    def _start_full_flash_upgrade(self) -> None:
+        if self._flash_thread is not None:
+            self.statusBar().showMessage("当前已有全烧录任务在进行中")
+            return
+        if not self._ota_selected_file or self._selected_firmware_package is None:
+            self.ota_status_label.setText("OTA 状态：请先选择统一升级包 .bin")
+            self.statusBar().showMessage("请先选择统一升级包 .bin")
+            return
+        if not self._selected_firmware_package.supports_full_flash:
+            message = "当前固件文件仅包含 OTA app，不包含 bootloader/partition，无法用于空板全烧录。"
+            self.ota_status_label.setText(f"OTA 状态：{message}")
+            self.statusBar().showMessage(message)
+            return
+
+        port_name = self._current_serial_port_name()
+        if not port_name:
+            self.ota_status_label.setText("OTA 状态：请先选择一个串口")
+            self.statusBar().showMessage("请先选择一个串口")
+            return
+
+        baudrate = int(self.baud_combo.currentText())
+        self._flash_port_name = port_name
+        self._reconnect_after_flash = self._reader is not None and self._reader.port_name == port_name
+        self._append_upgrade_log(
+            f"[full-flash] plan start on {port_name}, baud={baudrate}, package={Path(self._ota_selected_file).name}"
+        )
+
+        if self._reader is not None:
+            self.disconnect_serial()
+
+        QtCore.QTimer.singleShot(250, lambda: self._launch_full_flash_worker(port_name, baudrate))
+
+    def _launch_full_flash_worker(self, port_name: str, baudrate: int) -> None:
+        self._set_upgrade_controls_enabled(False)
+        self.ota_progress_bar.setRange(0, 0)
+        self.ota_status_label.setText(
+            f"OTA 状态：正在通过 {port_name} 执行全烧录，将写入 bootloader / partition / app。"
+        )
+        self.statusBar().showMessage("正在执行全烧录...")
+
+        thread = QtCore.QThread(self)
+        worker = FullFlashWorker(self._ota_selected_file, port_name, baudrate)
+        worker.moveToThread(thread)
+        worker.log_line.connect(self._append_upgrade_log)
+        worker.finished.connect(self._handle_full_flash_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(worker.run)
+        self._flash_thread = thread
+        self._flash_worker = worker
+        thread.start()
+
+    @QtCore.Slot(bool, str)
+    def _handle_full_flash_finished(self, success: bool, message: str) -> None:
+        self.ota_progress_bar.setRange(0, 100)
+        self.ota_progress_bar.setValue(100 if success else 0)
+        self.ota_status_label.setText(f"OTA 状态：{message}")
+        self.statusBar().showMessage(message)
+        self._append_upgrade_log(f"[full-flash] {'done' if success else 'failed'}: {message}")
+        self._set_upgrade_controls_enabled(True)
+        self._flash_thread = None
+        self._flash_worker = None
+        reconnect_after_flash = self._reconnect_after_flash
+        flash_port_name = self._flash_port_name
+        self._reconnect_after_flash = False
+        self._flash_port_name = ""
+        self._update_upgrade_page()
+        if success and reconnect_after_flash and flash_port_name:
+            self._select_serial_port(flash_port_name)
+            QtCore.QTimer.singleShot(1500, self.connect_serial)
 
     def _refresh_ota_status(self) -> None:
         if self._serial_ota_active:
@@ -1096,6 +1389,9 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._serial_ota_finish_sent = False
         self._serial_ota_bytes = b""
         self._serial_ota_offset = 0
+        self.ota_progress_bar.setValue(100)
+        self.ota_status_label.setText(f"OTA 状态：{message}")
+        self._append_upgrade_log(f"[serial-ota] done: {message}")
         self.statusBar().showMessage(message)
 
     def _fail_serial_ota(self, message: str) -> None:
@@ -1107,6 +1403,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._serial_ota_bytes = b""
         self._serial_ota_offset = 0
         self.ota_status_label.setText(f"OTA 状态：{message}")
+        self._append_upgrade_log(f"[serial-ota] failed: {message}")
         self.statusBar().showMessage(message)
 
     def _render_state(self, state: dict[str, Any]) -> None:
@@ -1218,6 +1515,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self.low_power_status_label.setText(f"状态：已开启，每 {interval_sec} 秒唤醒一次")
         else:
             self.low_power_status_label.setText(f"状态：未开启，当前配置周期 {interval_sec} 秒")
+        self._update_upgrade_page()
 
     def _sync_combo(self, combo: QtWidgets.QComboBox, items: list[str], current_text: str) -> None:
         self._updating_config_form = True

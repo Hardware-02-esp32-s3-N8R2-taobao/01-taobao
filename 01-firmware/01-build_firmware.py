@@ -22,6 +22,7 @@ APP_CONFIG_HEADER = PROJECT_DIR / "main" / "include" / "app_config.h"
 SHORT_BIN_PREFIX = "yd-c3"
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from firmware_package import build_firmware_package  # noqa: E402
 from project_runtime import ensure_machine_registration, get_idf_command  # noqa: E402
 
 
@@ -206,6 +207,16 @@ def load_app_firmware_version(path: Path) -> str:
     return match.group(1)
 
 
+def load_app_release_notes(path: Path) -> str:
+    if not path.exists():
+        return ""
+    content = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r'#define[ \t]+APP_FIRMWARE_RELEASE_NOTES[ \t]+"([^"]*)"', content)
+    if not match:
+        return ""
+    return match.group(1)
+
+
 def sync_versioned_firmware_bin(project_name: str, firmware_version: str) -> Path | None:
     app_bin_path = BUILD_DIR / f"{project_name}.bin"
     if not app_bin_path.exists():
@@ -228,6 +239,72 @@ def publish_short_firmware_bin(source_path: Path, firmware_version: str) -> Path
     short_bin_path = SCRIPT_DIR / f"{SHORT_BIN_PREFIX}_v{firmware_version}.bin"
     shutil.copy2(source_path, short_bin_path)
     return short_bin_path
+
+
+def build_upgrade_package(
+    project_name: str,
+    firmware_version: str,
+    release_notes: str,
+    project_description: dict[str, object],
+    flasher_args: dict[str, object],
+) -> Path:
+    for stale_path in BUILD_DIR.glob(f"{project_name}_package_v*.bin"):
+        if stale_path.name != f"{project_name}_package_v{firmware_version}.bin":
+            stale_path.unlink(missing_ok=True)
+
+    flash_files = flasher_args.get("flash_files") or {}
+    if not isinstance(flash_files, dict):
+        raise RuntimeError("flasher_args.json 缺少 flash_files")
+
+    segment_priority = {
+        "bootloader": 0,
+        "partition-table": 1,
+        "otadata": 2,
+        "app": 3,
+    }
+    name_map = {
+        "bootloader": "bootloader",
+        "partition-table": "partition-table",
+        "otadata": "otadata",
+        "app": "app",
+    }
+
+    segment_entries: list[dict[str, object]] = []
+    for offset_text, relative_path in sorted(flash_files.items(), key=lambda item: int(item[0], 0)):
+        role = "segment"
+        relative_name = str(relative_path).replace("\\", "/")
+        for candidate_key, candidate_name in name_map.items():
+            candidate_entry = flasher_args.get(candidate_key) or {}
+            if isinstance(candidate_entry, dict) and str(candidate_entry.get("file") or "").replace("\\", "/") == relative_name:
+                role = candidate_name
+                break
+        segment_entries.append(
+            {
+                "name": Path(str(relative_path)).name,
+                "role": role,
+                "flash_offset": int(offset_text, 0),
+                "path": BUILD_DIR / str(relative_path),
+            }
+        )
+
+    segment_entries.sort(
+        key=lambda item: (
+            segment_priority.get(str(item.get("role") or ""), 99),
+            int(item.get("flash_offset") or 0),
+        )
+    )
+
+    package_path = BUILD_DIR / f"{project_name}_package_v{firmware_version}.bin"
+    return build_firmware_package(
+        package_path,
+        package_version=firmware_version,
+        release_notes=release_notes,
+        chip=str(project_description.get("target") or "esp32c3"),
+        flash_settings=dict(flasher_args.get("flash_settings") or {}),
+        segments=segment_entries,
+        ota_segment_role="app",
+        source_name=package_path.name,
+    )
 
 
 def build_report(build_output: str, size_output: str, size_components_output: str) -> str:
@@ -530,15 +607,25 @@ def main() -> int:
     report = build_report(build_completed.stdout, size_completed.stdout, size_components_completed.stdout)
     REPORT_PATH.write_text(report, encoding="utf-8")
     project_description = load_json_file(PROJECT_DESCRIPTION_PATH)
+    flasher_args = load_json_file(FLASHER_ARGS_PATH)
     project_name = str(project_description.get("project_name") or PROJECT_DIR.name)
     firmware_version = load_app_firmware_version(APP_CONFIG_HEADER)
+    release_notes = load_app_release_notes(APP_CONFIG_HEADER)
     versioned_bin_path = sync_versioned_firmware_bin(project_name, firmware_version)
-    short_bin_path = publish_short_firmware_bin(versioned_bin_path or (BUILD_DIR / f"{project_name}.bin"), firmware_version)
+    package_path = build_upgrade_package(
+        project_name,
+        firmware_version,
+        release_notes,
+        project_description,
+        flasher_args,
+    )
+    short_bin_path = publish_short_firmware_bin(package_path, firmware_version)
 
     print("构建完成。")
     print(f"报告文件已生成：{REPORT_PATH}")
     if versioned_bin_path is not None:
         print(f"版本固件已更新：{versioned_bin_path}")
+    print(f"统一升级包已生成：{package_path}")
     print(f"短文件名固件已发布：{short_bin_path}")
     return 0
 

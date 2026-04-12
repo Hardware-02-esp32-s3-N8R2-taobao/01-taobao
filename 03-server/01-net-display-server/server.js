@@ -172,6 +172,8 @@ const firmwareMetaPath = path.join(dataDir, "firmware-packages.json");
 const otaJobsMetaPath = path.join(dataDir, "ota-jobs.json");
 const deviceConfigMetaPath = path.join(dataDir, "device-runtime-configs.json");
 const deviceConfigJobsMetaPath = path.join(dataDir, "device-config-jobs.json");
+const FIRMWARE_PACKAGE_MAGIC = Buffer.from("YDFWPKG1", "utf8");
+const DEFAULT_APP_FLASH_OFFSET = 0x10000;
 
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -598,12 +600,111 @@ function extractFirmwareEmbeddedMetadata(buffer) {
   };
 }
 
+function parseFirmwarePackage(buffer, sourceName = "firmware.bin") {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) {
+    throw new Error("empty firmware payload");
+  }
+
+  if (!buffer.subarray(0, FIRMWARE_PACKAGE_MAGIC.length).equals(FIRMWARE_PACKAGE_MAGIC)) {
+    const embedded = extractFirmwareEmbeddedMetadata(buffer);
+    return {
+      packageFormat: "raw-app-bin",
+      schema: 0,
+      version: sanitizeFirmwareText(embedded.version || inferFirmwareVersionFromFileName(sourceName), 32),
+      notes: sanitizeFirmwareText(embedded.notes || "", 240),
+      chip: "esp32c3",
+      flashSettings: {},
+      otaSegmentRole: "app",
+      supportsFullFlash: false,
+      segments: [
+        {
+          name: "app",
+          role: "app",
+          flashOffset: DEFAULT_APP_FLASH_OFFSET,
+          fileOffset: 0,
+          size: buffer.length,
+          sha256: crypto.createHash("sha256").update(buffer).digest("hex")
+        }
+      ]
+    };
+  }
+
+  if (buffer.length < FIRMWARE_PACKAGE_MAGIC.length + 4) {
+    throw new Error("firmware package header is incomplete");
+  }
+
+  const manifestSize = buffer.readUInt32LE(FIRMWARE_PACKAGE_MAGIC.length);
+  const manifestStart = FIRMWARE_PACKAGE_MAGIC.length + 4;
+  const manifestEnd = manifestStart + manifestSize;
+  if (manifestEnd > buffer.length) {
+    throw new Error("firmware package manifest is truncated");
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(buffer.subarray(manifestStart, manifestEnd).toString("utf8"));
+  } catch (_error) {
+    throw new Error("firmware package manifest is invalid");
+  }
+
+  const payloadBase = manifestEnd;
+  const segments = Array.isArray(manifest.segments) ? manifest.segments.map((entry) => {
+    const payloadOffset = Number(entry.payloadOffset || 0);
+    const size = Number(entry.size || 0);
+    const fileOffset = payloadBase + payloadOffset;
+    const fileEnd = fileOffset + size;
+    if (!Number.isFinite(fileOffset) || !Number.isFinite(size) || fileOffset < payloadBase || fileEnd > buffer.length) {
+      throw new Error(`segment out of range: ${entry.name || entry.role || "segment"}`);
+    }
+    const segmentBuffer = buffer.subarray(fileOffset, fileEnd);
+    return {
+      name: String(entry.name || entry.role || "segment"),
+      role: String(entry.role || entry.name || "segment"),
+      flashOffset: Number(entry.flashOffset || 0),
+      fileOffset,
+      size,
+      sha256: String(entry.sha256 || crypto.createHash("sha256").update(segmentBuffer).digest("hex"))
+    };
+  }) : [];
+
+  const roleSet = new Set(segments.map((segment) => String(segment.role || "").toLowerCase()));
+  return {
+    packageFormat: String(manifest.format || "yd-esp32-firmware-package"),
+    schema: Number(manifest.schema || 1),
+    version: sanitizeFirmwareText(manifest.packageVersion || "", 32),
+    notes: sanitizeFirmwareText(manifest.releaseNotes || "", 240),
+    chip: sanitizeFirmwareText(manifest.chip || "esp32c3", 32),
+    flashSettings: manifest.flashSettings && typeof manifest.flashSettings === "object" ? manifest.flashSettings : {},
+    otaSegmentRole: sanitizeFirmwareText(manifest.otaSegmentRole || "app", 32) || "app",
+    supportsFullFlash: roleSet.has("bootloader") && roleSet.has("partition-table") && roleSet.has("app"),
+    segments
+  };
+}
+
+function getFirmwareOtaSegment(parsedPackage, buffer) {
+  const otaRole = String(parsedPackage?.otaSegmentRole || "app").trim().toLowerCase();
+  const segment = (parsedPackage?.segments || []).find((item) => String(item.role || "").toLowerCase() === otaRole)
+    || (parsedPackage?.segments || []).find((item) => String(item.name || "").toLowerCase() === otaRole);
+  if (!segment) {
+    throw new Error(`ota segment missing: ${otaRole}`);
+  }
+  const fileOffset = Number(segment.fileOffset || 0);
+  const fileEnd = fileOffset + Number(segment.size || 0);
+  if (!Number.isFinite(fileOffset) || !Number.isFinite(fileEnd) || fileOffset < 0 || fileEnd > buffer.length) {
+    throw new Error(`ota segment out of range: ${segment.name || segment.role || otaRole}`);
+  }
+  return {
+    ...segment,
+    data: buffer.subarray(fileOffset, fileEnd)
+  };
+}
+
 function saveFirmwarePackage(payload) {
   const requestedVersion = sanitizeFirmwareText(payload.version || "", 32);
   const originalFileName = sanitizeFirmwareText(payload.fileName || "firmware.bin", 120) || "firmware.bin";
   const buffer = decodeFirmwarePayload(payload);
-  const embeddedMeta = extractFirmwareEmbeddedMetadata(buffer);
-  const embeddedVersion = sanitizeFirmwareText(embeddedMeta.version || "", 32);
+  const parsedPackage = parseFirmwarePackage(buffer, originalFileName);
+  const embeddedVersion = sanitizeFirmwareText(parsedPackage.version || "", 32);
   const inferredVersion = inferFirmwareVersionFromFileName(originalFileName);
   if (requestedVersion && inferredVersion && requestedVersion !== inferredVersion) {
     throw new Error(`firmware version mismatch: input=${requestedVersion}, file=${inferredVersion}`);
@@ -619,12 +720,13 @@ function saveFirmwarePackage(payload) {
     throw new Error("version is required");
   }
 
-  const notes = sanitizeFirmwareText(payload.notes || embeddedMeta.notes || "", 240);
+  const notes = sanitizeFirmwareText(payload.notes || parsedPackage.notes || "", 240);
   const ext = path.extname(originalFileName || "").toLowerCase() || ".bin";
   const firmwareId = `fw_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
   const storedFileName = `${firmwareId}${ext === ".bin" ? ".bin" : ext}`;
   const absolutePath = path.join(firmwareDir, storedFileName);
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+  const otaSegment = getFirmwareOtaSegment(parsedPackage, buffer);
 
   fs.writeFileSync(absolutePath, buffer);
 
@@ -636,6 +738,21 @@ function saveFirmwarePackage(payload) {
     storedFileName,
     size: buffer.length,
     sha256,
+    packageFormat: parsedPackage.packageFormat,
+    schema: parsedPackage.schema,
+    chip: parsedPackage.chip,
+    flashSettings: parsedPackage.flashSettings,
+    otaSegmentRole: parsedPackage.otaSegmentRole,
+    otaSize: otaSegment.size,
+    otaSha256: otaSegment.sha256,
+    supportsFullFlash: Boolean(parsedPackage.supportsFullFlash),
+    segments: (parsedPackage.segments || []).map((segment) => ({
+      name: segment.name,
+      role: segment.role,
+      flashOffset: segment.flashOffset,
+      size: segment.size,
+      sha256: segment.sha256
+    })),
     uploadedAt: new Date().toISOString()
   };
 
@@ -1047,8 +1164,8 @@ function buildOtaCheckResponse(req, deviceId, currentVersion) {
     hasUpdate: true,
     jobId: job.id,
     targetVersion: job.targetVersion,
-    size: firmware.size,
-    sha256: firmware.sha256,
+    size: firmware.otaSize || firmware.size,
+    sha256: firmware.otaSha256 || firmware.sha256,
     force: Boolean(job.force),
     url: `${baseUrl}/api/device/ota/download/${encodeURIComponent(job.id)}?token=${encodeURIComponent(job.token)}`
   };
@@ -1056,12 +1173,14 @@ function buildOtaCheckResponse(req, deviceId, currentVersion) {
 
 function getDeviceAdminOtaSummary(deviceId) {
   const jobs = getOtaJobsForDevice(deviceId);
+  const decoratedJobs = jobs.slice(0, 10).map((job) => ({
+    ...job,
+    firmware: getFirmwarePackage(job.firmwareId)
+  }));
+  const activeJob = jobs.find((job) => ["pending", "downloading", "rebooting"].includes(job.status)) || null;
   return {
-    activeJob: jobs.find((job) => ["pending", "downloading", "rebooting"].includes(job.status)) || null,
-    jobs: jobs.slice(0, 10).map((job) => ({
-      ...job,
-      firmware: getFirmwarePackage(job.firmwareId)
-    }))
+    activeJob: activeJob ? { ...activeJob, firmware: getFirmwarePackage(activeJob.firmwareId) } : null,
+    jobs: decoratedJobs
   };
 }
 
@@ -2425,12 +2544,22 @@ const server = http.createServer((req, res) => {
       return;
     }
 
+    let otaBuffer;
+    try {
+      const packageBuffer = fs.readFileSync(absolutePath);
+      const parsedPackage = parseFirmwarePackage(packageBuffer, firmware.originalFileName || firmware.storedFileName);
+      otaBuffer = getFirmwareOtaSegment(parsedPackage, packageBuffer).data;
+    } catch (error) {
+      sendJson(res, 500, { message: error.message || "firmware parse failed" });
+      return;
+    }
+
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
-      "Content-Length": firmware.size,
+      "Content-Length": otaBuffer.length,
       "Cache-Control": "no-store"
     });
-    fs.createReadStream(absolutePath).pipe(res);
+    res.end(otaBuffer);
     return;
   }
 

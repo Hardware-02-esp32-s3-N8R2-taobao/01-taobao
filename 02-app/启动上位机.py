@@ -130,7 +130,11 @@ def install_requirements() -> int:
 
 
 def current_python_has_deps() -> bool:
-    return find_spec("PySide6") is not None and find_spec("serial") is not None
+    return (
+        find_spec("PySide6") is not None
+        and find_spec("serial") is not None
+        and find_spec("esptool") is not None
+    )
 
 
 def launch_in_process() -> int:

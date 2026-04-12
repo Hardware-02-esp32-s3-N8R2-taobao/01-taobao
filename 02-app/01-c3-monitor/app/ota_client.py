@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
+from firmware_package import FirmwarePackageError, load_firmware_package
+
 
 SERVER_BASE_URL = "http://117.72.55.63"
 HTTP_TIMEOUT_SEC = 30
-FIRMWARE_META_MARKER = b"YDOTA_META:"
 
 
 def _http_json(url: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -46,48 +45,6 @@ def _http_json(url: str, payload: dict[str, Any] | None = None) -> dict[str, Any
         raise RuntimeError("服务器返回了非 JSON 数据") from exc
 
 
-def infer_firmware_version_from_file_name(file_name: str) -> str:
-    raw = Path(file_name).name
-    match = re.search(r"(?:_v|[-_])(\d+\.\d+\.\d+)\.bin$", raw, re.IGNORECASE) or re.search(r"(\d+\.\d+\.\d+)", raw)
-    return match.group(1) if match else ""
-
-
-def extract_firmware_embedded_metadata(file_path: str) -> dict[str, Any]:
-    path = Path(file_path)
-    head = path.read_bytes()[: 64 * 1024]
-    marker_index = head.find(FIRMWARE_META_MARKER)
-    if marker_index < 0:
-        return {"version": "", "notes": "", "size": path.stat().st_size, "sha256": _sha256_file(path)}
-
-    end_index = head.find(b"\x00", marker_index)
-    if end_index < 0:
-        end_index = min(len(head), marker_index + 512)
-    raw = head[marker_index + len(FIRMWARE_META_MARKER):end_index].decode("utf-8", errors="replace").strip()
-    version = ""
-    notes = ""
-    if raw:
-        parts = raw.split("|", 1)
-        version = parts[0].strip()
-        notes = parts[1].strip() if len(parts) > 1 else ""
-    return {
-        "version": version,
-        "notes": notes,
-        "size": path.stat().st_size,
-        "sha256": _sha256_file(path),
-    }
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as fp:
-        while True:
-            chunk = fp.read(1024 * 64)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def build_firmware_upload_payload(file_path: str, device_id: str, force: bool = False, notes: str = "") -> dict[str, Any]:
     path = Path(file_path)
     if not path.exists():
@@ -95,19 +52,24 @@ def build_firmware_upload_payload(file_path: str, device_id: str, force: bool = 
     if path.suffix.lower() != ".bin":
         raise RuntimeError("请选择 .bin 固件文件")
 
-    raw_bytes = path.read_bytes()
-    metadata = extract_firmware_embedded_metadata(str(path))
-    version = metadata.get("version") or infer_firmware_version_from_file_name(path.name)
+    try:
+        package = load_firmware_package(path)
+    except FirmwarePackageError as exc:
+        raise RuntimeError(f"固件包解析失败：{exc}") from exc
+
+    version = package.package_version
     if not version:
-        raise RuntimeError("无法从固件中识别版本号，请使用带版本信息的 bin 文件")
+        raise RuntimeError("无法从固件中识别版本号，请使用统一升级包或带版本信息的 bin 文件")
 
     return {
         "deviceId": str(device_id).strip(),
         "fileName": path.name,
         "version": version,
-        "notes": str(notes or metadata.get("notes") or "").strip(),
+        "notes": str(notes or package.release_notes or "").strip(),
         "force": bool(force),
-        "dataBase64": base64.b64encode(raw_bytes).decode("ascii"),
+        "packageFormat": package.package_format,
+        "supportsFullFlash": bool(package.supports_full_flash),
+        "dataBase64": base64.b64encode(package.raw_bytes).decode("ascii"),
     }
 
 
@@ -123,4 +85,3 @@ def fetch_device_ota_summary(device_id: str) -> dict[str, Any]:
 
 def fetch_devices_status() -> dict[str, Any]:
     return _http_json(f"{SERVER_BASE_URL}/api/devices/status")
-

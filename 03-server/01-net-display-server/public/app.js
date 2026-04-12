@@ -220,6 +220,7 @@ const SENSOR_ONLINE_WINDOW_MS = 90 * 1000;
 const NORMAL_REPORT_INTERVAL_SEC = 3;
 const REQUEST_TIMEOUT_MS = 15000;
 const OTA_STATUS_POLL_INTERVAL_MS = 3000;
+const FIRMWARE_PACKAGE_MAGIC_TEXT = "YDFWPKG1";
 
 // 传感器异常阈值 — 超出范围时在设备卡片和详情页展示告警标记
 const ALERT_THRESHOLDS = {
@@ -476,13 +477,85 @@ function parseFirmwareEmbeddedMetadataFromText(rawText) {
   };
 }
 
+function parseFirmwarePackageMetadataFromBytes(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 12) {
+    return null;
+  }
+  const magic = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, FIRMWARE_PACKAGE_MAGIC_TEXT.length));
+  if (magic !== FIRMWARE_PACKAGE_MAGIC_TEXT) {
+    return null;
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const manifestSize = view.getUint32(FIRMWARE_PACKAGE_MAGIC_TEXT.length, true);
+  const manifestStart = FIRMWARE_PACKAGE_MAGIC_TEXT.length + 4;
+  const manifestEnd = manifestStart + manifestSize;
+  if (manifestEnd > bytes.length) {
+    throw new Error("升级包 manifest 已损坏");
+  }
+
+  const manifestText = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(manifestStart, manifestEnd));
+  const manifest = JSON.parse(manifestText || "{}");
+  const segments = Array.isArray(manifest.segments) ? manifest.segments.map((segment) => ({
+    name: String(segment.name || segment.role || "segment").trim(),
+    role: String(segment.role || segment.name || "segment").trim(),
+    flashOffset: Number(segment.flashOffset || 0),
+    size: Number(segment.size || 0)
+  })) : [];
+  const segmentRoles = new Set(Array.isArray(manifest.segments) ? manifest.segments.map((segment) => String(segment.role || "").toLowerCase()) : []);
+  return {
+    version: String(manifest.packageVersion || "").trim(),
+    notes: String(manifest.releaseNotes || "").trim(),
+    packageFormat: String(manifest.format || "yd-esp32-firmware-package").trim(),
+    chip: String(manifest.chip || "esp32c3").trim(),
+    otaSegmentRole: String(manifest.otaSegmentRole || "app").trim(),
+    segments,
+    supportsFullFlash: segmentRoles.has("bootloader") && segmentRoles.has("partition-table") && segmentRoles.has("app")
+  };
+}
+
 async function readFirmwareEmbeddedMetadata(file) {
   if (!file) {
     return { version: "", notes: "" };
   }
-  const headBuffer = await file.slice(0, 64 * 1024).arrayBuffer();
-  const rawText = new TextDecoder("utf-8", { fatal: false }).decode(headBuffer);
-  return parseFirmwareEmbeddedMetadataFromText(rawText);
+  const headBytes = new Uint8Array(await file.slice(0, 64 * 1024).arrayBuffer());
+  const packageMeta = parseFirmwarePackageMetadataFromBytes(headBytes);
+  if (packageMeta) {
+    return packageMeta;
+  }
+  const rawText = new TextDecoder("utf-8", { fatal: false }).decode(headBytes);
+  return {
+    ...parseFirmwareEmbeddedMetadataFromText(rawText),
+    packageFormat: "raw-app-bin",
+    chip: "esp32c3",
+    otaSegmentRole: "app",
+    segments: [{ name: "app", role: "app", flashOffset: 0x10000, size: file.size || 0 }],
+    supportsFullFlash: false
+  };
+}
+
+function describeFirmwarePackageMode(meta) {
+  if (!meta) {
+    return "--";
+  }
+  const version = String(meta.version || "").trim() || "--";
+  if (String(meta.packageFormat || "") === "yd-esp32-firmware-package") {
+    return meta.supportsFullFlash
+      ? `统一升级包 ${version}，支持空板全烧录；网页 OTA 时服务端会自动提取 app 段。`
+      : `统一升级包 ${version}，但当前只包含 OTA 所需内容，不适合空板全烧录。`;
+  }
+  return `传统 app bin ${version}，仅支持 OTA，不支持空板全烧录。`;
+}
+
+function formatFirmwareSegments(meta) {
+  if (!Array.isArray(meta?.segments) || !meta.segments.length) {
+    return "--";
+  }
+  return meta.segments.map((segment) => {
+    const offset = Number(segment.flashOffset || 0);
+    const size = Number(segment.size || 0);
+    return `${segment.role || segment.name || "segment"} @ 0x${offset.toString(16).toUpperCase()} (${size}B)`;
+  }).join(" · ");
 }
 
 function inferFirmwareVersionFromFileName(fileName) {
@@ -1401,6 +1474,7 @@ async function loadAdminOtaData(deviceId, { force = false } = {}) {
     uploadNotes: appState.admin.deviceData[deviceId]?.uploadNotes || "",
     selectedFile: appState.admin.deviceData[deviceId]?.selectedFile || null,
     selectedFileName: appState.admin.deviceData[deviceId]?.selectedFileName || "",
+    selectedPackageInfo: appState.admin.deviceData[deviceId]?.selectedPackageInfo || null,
     uploadPercent: appState.admin.deviceData[deviceId]?.uploadPercent || 0,
     pageStatus: appState.admin.deviceData[deviceId]?.pageStatus || ""
   };
@@ -2967,8 +3041,20 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
   const adminData = appState.admin.deviceData[deviceId] || {};
   const activeJob = getOtaDisplayJob(deviceId);
   const jobs = adminData.jobs || [];
+  const activeJobFirmware = activeJob?.firmware || (activeJob ? jobs.find((job) => job.id === activeJob.id)?.firmware || null : null);
   const historyExpanded = Boolean(adminData.otaHistoryExpanded);
   const uploadPercent = clampPercent(adminData.uploadPercent || 0);
+  const selectedPackageInfo = adminData.selectedPackageInfo || null;
+  const selectedPackageText = selectedPackageInfo
+    ? `${describeFirmwarePackageMode(selectedPackageInfo)} 分段：${formatFirmwareSegments(selectedPackageInfo)}`
+    : (adminData.selectedFileName ? "正在识别升级包内容..." : "点击“选择固件”后会弹出文件管理器。");
+  const activeJobFirmwareText = activeJobFirmware
+    ? describeFirmwarePackageMode({
+      version: activeJobFirmware.version,
+      packageFormat: activeJobFirmware.packageFormat,
+      supportsFullFlash: activeJobFirmware.supportsFullFlash
+    })
+    : "暂无活动固件";
   const progressPercent = appState.admin.uploadSubmitting
     ? uploadPercent
     : getOtaProgressPercent(activeJob);
@@ -2980,8 +3066,8 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
   const progressHint = appState.admin.uploadSubmitting
     ? "浏览器正在把 bin 文件上传到 OTA 服务器。"
     : activeJob
-      ? `${activeJob.targetVersion || "--"} · ${activeJob.message || "等待设备上报新的升级状态"}`
-      : "选择 bin 后点“开始 OTA 升级”，服务端会自动上传固件并创建升级任务。";
+      ? `${activeJob.targetVersion || "--"} · ${activeJob.message || "等待设备上报新的升级状态"} · ${activeJobFirmwareText}`
+      : "选择统一升级包 bin 后点“开始 OTA 升级”，服务端会自动上传整包、创建任务，并只向设备下发 app 段。";
   const pageStatus = adminData.pageStatus || (snapshot.online
     ? "设备在线，可以直接开始远程 OTA。"
     : "设备当前可能在低功耗休眠，任务创建后会等待它下次唤醒。");
@@ -2998,6 +3084,7 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
         <div class="info-row"><span class="info-label">设备在线</span><strong>${snapshot.online ? "在线，可立即检查 OTA" : "离线，等待下次唤醒"}</strong></div>
         <div class="info-row"><span class="info-label">最近上报</span><strong>${escapeHtml(deviceStatus?.lastSeenAt ? formatTime(deviceStatus.lastSeenAt) : "--")}</strong></div>
         <div class="info-row"><span class="info-label">当前任务</span><strong>${escapeHtml(activeJob ? `${getOtaStatusLabel(activeJob.status)} -> ${activeJob.targetVersion}` : "暂无活动任务")}</strong></div>
+        <div class="info-row"><span class="info-label">当前任务固件</span><strong>${escapeHtml(activeJobFirmwareText)}</strong></div>
       </div>
 
       <div class="history-toolbar" style="margin-top:14px;">
@@ -3008,7 +3095,7 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
         <button class="range-btn" id="refreshAdminOtaBtn">刷新状态</button>
         <button class="range-btn active" id="uploadFirmwareBtn">${appState.admin.uploadSubmitting || appState.admin.createSubmitting ? "处理中..." : "开始 OTA 升级"}</button>
       </div>
-      <p class="footer-note" style="margin-top:10px;">${escapeHtml(adminData.selectedFileName ? `已选择文件：${adminData.selectedFileName}` : "点击“选择固件”后会弹出文件管理器。")}</p>
+      <p class="footer-note" style="margin-top:10px;">${escapeHtml(adminData.selectedFileName ? `已选择文件：${adminData.selectedFileName}。${selectedPackageText}` : selectedPackageText)}</p>
 
       <div class="detail-block-head" style="margin-top:18px;">
         <div class="detail-block-title">升级进度</div>
@@ -3542,6 +3629,7 @@ function bindIoTDeviceEvents(deviceId) {
       ...currentAdminData,
       selectedFile: file || null,
       selectedFileName: file?.name || "",
+      selectedPackageInfo: file ? (currentAdminData.selectedPackageInfo || null) : null,
       uploadVersion: nextVersion || currentAdminData.uploadVersion || "",
       pageStatus: file?.name ? `已选择固件：${file.name}` : currentAdminData.pageStatus || ""
     };
@@ -3554,15 +3642,22 @@ function bindIoTDeviceEvents(deviceId) {
         const latestAdminData = appState.admin.deviceData[deviceId] || {};
         appState.admin.deviceData[deviceId] = {
           ...latestAdminData,
+          selectedPackageInfo: meta,
           uploadVersion: meta.version || nextVersion || latestAdminData.uploadVersion || "",
           uploadNotes: meta.notes || latestAdminData.uploadNotes || "",
-          pageStatus: meta.notes
-            ? `已选择固件：${file.name}，已自动解析升级备注。`
-            : latestAdminData.pageStatus
+          pageStatus: `${describeFirmwarePackageMode(meta)}${meta.notes ? " 已自动解析升级备注。" : ""}`
         };
         renderDeviceDetail(deviceId);
       })
-      .catch(() => null);
+      .catch((error) => {
+        const latestAdminData = appState.admin.deviceData[deviceId] || {};
+        appState.admin.deviceData[deviceId] = {
+          ...latestAdminData,
+          selectedPackageInfo: null,
+          pageStatus: `固件信息识别失败：${error.message}`
+        };
+        renderDeviceDetail(deviceId);
+      });
   });
 
   document.getElementById("toggleAdminOtaHistoryBtn")?.addEventListener("click", () => {
@@ -3622,6 +3717,7 @@ function bindIoTDeviceEvents(deviceId) {
         ...(appState.admin.deviceData[deviceId] || {}),
         selectedFile: null,
         selectedFileName: "",
+        selectedPackageInfo: null,
         uploadPercent: 100,
         pageStatus: currentSnapshot.online
           ? `固件 ${response.firmware?.version || "--"} 已上传，OTA 任务已创建。`
