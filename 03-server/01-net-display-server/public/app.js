@@ -325,7 +325,14 @@ function escapeHtml(value) {
 function formatTime(value) {
   if (!value) return "--";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "--" : date.toLocaleString("zh-CN", { hour12: false });
+  if (Number.isNaN(date.getTime())) return "--";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const second = String(date.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
 }
 
 function formatDateLabel(value) {
@@ -345,13 +352,23 @@ function formatCountdownMs(ms) {
 }
 
 function formatPointTime(tsMs) {
-  return new Date(tsMs).toLocaleString("zh-CN", {
-    month: "numeric",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  });
+  const date = new Date(tsMs);
+  if (Number.isNaN(date.getTime())) return "--";
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${month}/${day}\u00A0${hour}:${minute}`;
+}
+
+function formatCompactTime(tsMs, includeDate = true) {
+  const date = new Date(tsMs);
+  if (Number.isNaN(date.getTime())) return "--";
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return includeDate ? `${month}/${day}\u00A0${hour}:${minute}` : `${hour}:${minute}`;
 }
 
 function formatMetricValue(value, unit) {
@@ -438,6 +455,34 @@ async function postJsonWithUploadProgress(url, payload, onProgress) {
     xhr.ontimeout = () => reject(new Error("请求超时，请检查服务端状态"));
     xhr.send(body);
   });
+}
+
+function parseFirmwareEmbeddedMetadataFromText(rawText) {
+  const marker = "YDOTA_META:";
+  const index = String(rawText || "").indexOf(marker);
+  if (index < 0) {
+    return { version: "", notes: "" };
+  }
+  const tail = String(rawText).slice(index + marker.length);
+  const zeroIndex = tail.indexOf("\0");
+  const content = (zeroIndex >= 0 ? tail.slice(0, zeroIndex) : tail).trim();
+  if (!content) {
+    return { version: "", notes: "" };
+  }
+  const [version, ...noteParts] = content.split("|");
+  return {
+    version: String(version || "").trim(),
+    notes: String(noteParts.join("|") || "").trim()
+  };
+}
+
+async function readFirmwareEmbeddedMetadata(file) {
+  if (!file) {
+    return { version: "", notes: "" };
+  }
+  const headBuffer = await file.slice(0, 64 * 1024).arrayBuffer();
+  const rawText = new TextDecoder("utf-8", { fatal: false }).decode(headBuffer);
+  return parseFirmwareEmbeddedMetadataFromText(rawText);
 }
 
 function inferFirmwareVersionFromFileName(fileName) {
@@ -812,6 +857,62 @@ function getDeviceUpdatedLabel(snapshot) {
     .slice(-1)[0];
   const updatedAt = onlineUpdatedAt || snapshot.updatedAt;
   return updatedAt ? `更新 ${formatTime(updatedAt)}` : "等待数据";
+}
+
+function getDeviceRuntimeState(deviceId) {
+  const deviceStatus = getDeviceStatusEntry(deviceId);
+  const lowPower = {
+    enabled: Boolean(deviceStatus?.lowPowerEnabled),
+    intervalSec: Number(deviceStatus?.reportIntervalSec || 300)
+  };
+  const snapshot = getDeviceSnapshot(deviceId);
+  const lastSeenMs = deviceStatus?.lastSeenAt ? new Date(deviceStatus.lastSeenAt).getTime() : NaN;
+  const hasValidLastSeen = Number.isFinite(lastSeenMs);
+
+  if (!lowPower.enabled) {
+    return {
+      mode: "normal",
+      title: "正常模式",
+      subtitle: snapshot?.online
+        ? `设备保持实时工作，当前约每 ${NORMAL_REPORT_INTERVAL_SEC} 秒上报一次。`
+        : "设备当前不在低功耗模式，恢复联网后会继续实时上报。",
+      chipPrimary: snapshot?.online ? "实时上传中" : "等待恢复在线",
+      chipSecondary: `最近上报：${deviceStatus?.lastSeenAt ? formatTime(deviceStatus.lastSeenAt) : "--"}`
+    };
+  }
+
+  const intervalSec = Number.isFinite(lowPower.intervalSec) && lowPower.intervalSec >= 10 ? lowPower.intervalSec : 300;
+  const expectedWakeMs = hasValidLastSeen ? lastSeenMs + intervalSec * 1000 : NaN;
+  const remainingMs = Number.isFinite(expectedWakeMs) ? expectedWakeMs - Date.now() : NaN;
+  const remainingSeconds = Number.isFinite(remainingMs) ? Math.max(0, Math.ceil(remainingMs / 1000)) : null;
+  const countdownText = remainingSeconds == null
+    ? "--"
+    : remainingSeconds <= 0
+      ? "即将上报"
+      : `${remainingSeconds} 秒`;
+
+  return {
+    mode: "low_power",
+    title: "低功耗模式",
+    subtitle: `设备按低功耗周期唤醒并上报，当前配置周期为 ${intervalSec} 秒。`,
+    chipPrimary: `下次上报：${countdownText}`,
+    chipSecondary: `最近唤醒：${deviceStatus?.lastSeenAt ? formatTime(deviceStatus.lastSeenAt) : "--"}`
+  };
+}
+
+function renderDeviceRuntimeCard(deviceId) {
+  const runtime = getDeviceRuntimeState(deviceId);
+  return `
+    <article class="device-runtime-card">
+      <div class="device-runtime-eyebrow">运行状态</div>
+      <div class="device-runtime-title" id="deviceRuntimeTitle">${escapeHtml(runtime.title)}</div>
+      <div class="device-runtime-subtitle" id="deviceRuntimeSubtitle">${escapeHtml(runtime.subtitle)}</div>
+      <div class="device-runtime-meta">
+        <span class="device-runtime-chip" id="deviceRuntimePrimary">${escapeHtml(runtime.chipPrimary)}</span>
+        <span class="device-runtime-chip" id="deviceRuntimeSecondary">${escapeHtml(runtime.chipSecondary)}</span>
+      </div>
+    </article>
+  `;
 }
 
 function getDeviceHistoryHint(snapshot, catalog) {
@@ -2267,8 +2368,8 @@ function drawSimpleChart(context, canvas, seriesList, options = {}) {
       const x = padding.left + ratio * plotWidth;
       const date = new Date(tickTs);
       const label = timeSpan > 12 * 3600 * 1000
-        ? date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
-        : date.toLocaleString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+        ? formatCompactTime(tickTs, true)
+        : formatCompactTime(tickTs, false);
       context.textAlign = i === 0 ? "left" : i === xTickCount ? "right" : "center";
       context.fillText(label, x, height - 8);
       // 刻度短线
@@ -2866,6 +2967,7 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
   const adminData = appState.admin.deviceData[deviceId] || {};
   const activeJob = getOtaDisplayJob(deviceId);
   const jobs = adminData.jobs || [];
+  const historyExpanded = Boolean(adminData.otaHistoryExpanded);
   const uploadPercent = clampPercent(adminData.uploadPercent || 0);
   const progressPercent = appState.admin.uploadSubmitting
     ? uploadPercent
@@ -2925,16 +3027,18 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
 
       <div class="detail-block-head" style="margin-top:18px;">
         <div class="detail-block-title">OTA 历史</div>
-        <div class="detail-helper">最近 10 条设备升级记录</div>
+        <button type="button" class="ghost-btn" id="toggleAdminOtaHistoryBtn">${historyExpanded ? "收起历史" : "展开历史"}</button>
       </div>
-      <div class="info-list" style="margin-top:12px;">
-        ${jobs.length ? jobs.map((job) => `
-          <div class="info-row">
-            <span class="info-label">${escapeHtml(formatTime(job.createdAt))}</span>
-            <strong>${escapeHtml(`${getOtaStatusLabel(job.status)} · ${job.targetVersion} · ${Math.round(getOtaProgressPercent(job))}%`)}</strong>
-          </div>
-        `).join("") : '<div class="info-row"><span class="info-label">OTA</span><strong>还没有升级记录</strong></div>'}
-      </div>
+      ${historyExpanded ? `
+        <div class="info-list" style="margin-top:12px;">
+          ${jobs.length ? jobs.map((job) => `
+            <div class="info-row">
+              <span class="info-label">${escapeHtml(formatTime(job.createdAt))}</span>
+              <strong>${escapeHtml(`${getOtaStatusLabel(job.status)} · ${job.targetVersion} · ${Math.round(getOtaProgressPercent(job))}%`)}</strong>
+            </div>
+          `).join("") : '<div class="info-row"><span class="info-label">OTA</span><strong>还没有升级记录</strong></div>'}
+        </div>
+      ` : `<p class="footer-note" style="margin-top:12px;">最近 10 条设备升级记录默认收起，需要时再展开查看。</p>`}
 
       <p class="footer-note" id="adminOtaStatus">${escapeHtml(pageStatus)}</p>
     </article>
@@ -3078,6 +3182,7 @@ function renderIoTDeviceDetail(deviceId, catalog, snapshot) {
         <p class="footer-note">固件版本：${escapeHtml(getDeviceFirmwareVersion(deviceId))}</p>
         ${offlineHint}
       </div>
+      ${renderDeviceRuntimeCard(deviceId)}
       <div class="detail-topbar-actions">
         <button class="ghost-btn" id="openDeviceExportDialogBtn">导出 CSV 数据</button>
         <div class="section-note">归属位置：${roomConfigs.find((room) => room.id === catalog.room)?.name || "未分组"}</div>
@@ -3441,6 +3546,32 @@ function bindIoTDeviceEvents(deviceId) {
       pageStatus: file?.name ? `已选择固件：${file.name}` : currentAdminData.pageStatus || ""
     };
     renderDeviceDetail(deviceId);
+    if (!file) {
+      return;
+    }
+    readFirmwareEmbeddedMetadata(file)
+      .then((meta) => {
+        const latestAdminData = appState.admin.deviceData[deviceId] || {};
+        appState.admin.deviceData[deviceId] = {
+          ...latestAdminData,
+          uploadVersion: meta.version || nextVersion || latestAdminData.uploadVersion || "",
+          uploadNotes: meta.notes || latestAdminData.uploadNotes || "",
+          pageStatus: meta.notes
+            ? `已选择固件：${file.name}，已自动解析升级备注。`
+            : latestAdminData.pageStatus
+        };
+        renderDeviceDetail(deviceId);
+      })
+      .catch(() => null);
+  });
+
+  document.getElementById("toggleAdminOtaHistoryBtn")?.addEventListener("click", () => {
+    const currentAdminData = appState.admin.deviceData[deviceId] || {};
+    appState.admin.deviceData[deviceId] = {
+      ...currentAdminData,
+      otaHistoryExpanded: !currentAdminData.otaHistoryExpanded
+    };
+    renderDeviceDetail(deviceId);
   });
 
   document.getElementById("uploadFirmwareBtn")?.addEventListener("click", async () => {
@@ -3732,6 +3863,26 @@ function updateAdminWakeCountdown() {
   }
 }
 
+function updateActiveDeviceRuntimeStatus() {
+  if (!appState.activeDeviceId || appState.activeDevicePageKey === "settings:admin") {
+    return;
+  }
+
+  const titleEl = document.getElementById("deviceRuntimeTitle");
+  const subtitleEl = document.getElementById("deviceRuntimeSubtitle");
+  const primaryEl = document.getElementById("deviceRuntimePrimary");
+  const secondaryEl = document.getElementById("deviceRuntimeSecondary");
+  if (!titleEl || !subtitleEl || !primaryEl || !secondaryEl) {
+    return;
+  }
+
+  const runtime = getDeviceRuntimeState(appState.activeDeviceId);
+  titleEl.textContent = runtime.title;
+  subtitleEl.textContent = runtime.subtitle;
+  primaryEl.textContent = runtime.chipPrimary;
+  secondaryEl.textContent = runtime.chipSecondary;
+}
+
 els.backToOverviewBtn.addEventListener("click", () => closeDetail());
 els.detailPanel.addEventListener("click", async (event) => {
   const target = event.target.closest("button");
@@ -3760,3 +3911,4 @@ refreshAll().then(() => syncRoute());
 setInterval(refreshAll, 60 * 1000);
 setInterval(pollActiveOtaStatus, OTA_STATUS_POLL_INTERVAL_MS);
 setInterval(updateAdminWakeCountdown, 1000);
+setInterval(updateActiveDeviceRuntimeStatus, 1000);

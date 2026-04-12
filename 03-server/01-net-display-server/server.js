@@ -570,20 +570,56 @@ function decodeFirmwarePayload(payload) {
   return buffer;
 }
 
+function extractFirmwareEmbeddedMetadata(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) {
+    return { version: "", notes: "" };
+  }
+
+  const head = buffer.subarray(0, Math.min(buffer.length, 64 * 1024));
+  const marker = Buffer.from("YDOTA_META:", "utf8");
+  const markerIndex = head.indexOf(marker);
+  if (markerIndex < 0) {
+    return { version: "", notes: "" };
+  }
+
+  let endIndex = head.indexOf(0, markerIndex);
+  if (endIndex < 0) {
+    endIndex = Math.min(head.length, markerIndex + 512);
+  }
+  const raw = head.subarray(markerIndex + marker.length, endIndex).toString("utf8").trim();
+  if (!raw) {
+    return { version: "", notes: "" };
+  }
+
+  const [versionRaw, ...noteParts] = raw.split("|");
+  return {
+    version: sanitizeFirmwareText(versionRaw || "", 32),
+    notes: sanitizeFirmwareText(noteParts.join("|") || "", 240)
+  };
+}
+
 function saveFirmwarePackage(payload) {
   const requestedVersion = sanitizeFirmwareText(payload.version || "", 32);
-  const notes = sanitizeFirmwareText(payload.notes || "", 240);
   const originalFileName = sanitizeFirmwareText(payload.fileName || "firmware.bin", 120) || "firmware.bin";
+  const buffer = decodeFirmwarePayload(payload);
+  const embeddedMeta = extractFirmwareEmbeddedMetadata(buffer);
+  const embeddedVersion = sanitizeFirmwareText(embeddedMeta.version || "", 32);
   const inferredVersion = inferFirmwareVersionFromFileName(originalFileName);
   if (requestedVersion && inferredVersion && requestedVersion !== inferredVersion) {
     throw new Error(`firmware version mismatch: input=${requestedVersion}, file=${inferredVersion}`);
   }
-  const version = inferredVersion || requestedVersion;
+  if (requestedVersion && embeddedVersion && requestedVersion !== embeddedVersion) {
+    throw new Error(`firmware version mismatch: input=${requestedVersion}, embedded=${embeddedVersion}`);
+  }
+  if (inferredVersion && embeddedVersion && inferredVersion !== embeddedVersion) {
+    throw new Error(`firmware version mismatch: file=${inferredVersion}, embedded=${embeddedVersion}`);
+  }
+  const version = embeddedVersion || inferredVersion || requestedVersion;
   if (!version) {
     throw new Error("version is required");
   }
 
-  const buffer = decodeFirmwarePayload(payload);
+  const notes = sanitizeFirmwareText(payload.notes || embeddedMeta.notes || "", 240);
   const ext = path.extname(originalFileName || "").toLowerCase() || ".bin";
   const firmwareId = `fw_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
   const storedFileName = `${firmwareId}${ext === ".bin" ? ".bin" : ext}`;
@@ -956,6 +992,14 @@ function updateOtaJobStatus(payload) {
 
   otaJobs[index] = next;
   saveOtaJobs(otaJobs);
+
+  if ((payload.config && typeof payload.config === "object") || (payload.lowPower && typeof payload.lowPower === "object")) {
+    saveDeviceRuntimeConfig(deviceId, {
+      ...(payload.config || {}),
+      lowPower: payload.lowPower || {}
+    }, "device-report", fwVersion);
+  }
+
   return next;
 }
 
@@ -2188,6 +2232,13 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
   }
 
   const source = canonicalizeDeviceId(payload.device || topicDevice || clientId || "mqtt-client");
+  const fwVersion = sanitizeFirmwareText(payload.fwVersion || "", 32);
+  if ((payload.config && typeof payload.config === "object") || (payload.lowPower && typeof payload.lowPower === "object")) {
+    saveDeviceRuntimeConfig(source, {
+      ...(payload.config || {}),
+      lowPower: payload.lowPower || {}
+    }, "device-report", fwVersion);
+  }
   const payloadSensors = payload.sensors && typeof payload.sensors === "object" ? payload.sensors : {};
   const sensorEntries = Object.entries(payloadSensors)
     .map(([sensorType, sensorPayload]) => ({
@@ -2198,6 +2249,15 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
     .filter(({ sensorKey, sensorPayload }) => sensorKey && sensorPayload && typeof sensorPayload === "object");
 
   if (sensorEntries.length === 0) {
+    rememberDevice(source, {
+      alias: getDeviceAlias(source, payload.alias),
+      clientId: clientId || source,
+      lastTopic: topic,
+      source: "sensor-mqtt:config",
+      fwVersion,
+      lowPowerEnabled: payload.lowPower?.enabled,
+      reportIntervalSec: payload.lowPower?.intervalSec
+    });
     return;
   }
 
@@ -2209,7 +2269,9 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
     lastTopic: topic,
     source: "sensor-mqtt",
     sensorKeys: sensorEntries.map(({ sensorKey }) => sensorKey),
-    fwVersion: sanitizeFirmwareText(payload.fwVersion || "", 32)
+    fwVersion,
+    lowPowerEnabled: payload.lowPower?.enabled,
+    reportIntervalSec: payload.lowPower?.intervalSec
   });
 
   sensorEntries.forEach(({ sensorKey, sensorType }) => {
@@ -2226,7 +2288,9 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
       lastTopic: topic,
       sensorKey,
       source: `sensor-mqtt:${sensorType}`,
-      fwVersion: sanitizeFirmwareText(payload.fwVersion || "", 32)
+      fwVersion,
+      lowPowerEnabled: payload.lowPower?.enabled,
+      reportIntervalSec: payload.lowPower?.intervalSec
     });
   });
 
@@ -2572,7 +2636,7 @@ const server = http.createServer((req, res) => {
           deviceId: payload.deviceId,
           firmwareId: firmware.id,
           force: payload.force,
-          message: payload.message || "created from direct ota page"
+          message: payload.notes || firmware.notes || payload.message || "created from direct ota page"
         });
         sendJson(res, 200, {
           message: "firmware uploaded and ota job created",

@@ -22,6 +22,7 @@
 #define TAG "network_service"
 #define WIFI_CONNECTED_BIT BIT0
 #define MQTT_CONNECTED_BIT BIT1
+#define MQTT_PUBLISHED_BIT BIT2
 #define WIFI_MAX_ENTRIES   8
 #define WIFI_SCAN_MAX_APS  20
 
@@ -45,6 +46,7 @@ static bool                  s_selected_bssid_valid = false;
 static uint8_t               s_selected_bssid[6] = {0};
 static uint8_t               s_selected_channel = 0;
 static wifi_auth_mode_t      s_selected_authmode = WIFI_AUTH_OPEN;
+static int                   s_last_publish_msg_id = -1;
 
 static const char *wifi_disconnect_reason_text(uint8_t reason)
 {
@@ -234,7 +236,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 {
     (void)handler_args;
     (void)base;
-    (void)event_data;
     char event_json[256];
 
     switch (event_id) {
@@ -251,7 +252,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         console_service_emit_event("mqtt", event_json);
         break;
     case MQTT_EVENT_DISCONNECTED:
-        xEventGroupClearBits(s_event_group, MQTT_CONNECTED_BIT);
+        xEventGroupClearBits(s_event_group, MQTT_CONNECTED_BIT | MQTT_PUBLISHED_BIT);
         device_profile_update_mqtt(false);
         snprintf(
             event_json,
@@ -262,6 +263,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         );
         console_service_emit_event("mqtt", event_json);
         break;
+    case MQTT_EVENT_PUBLISHED: {
+        const esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+        if (event != NULL && event->msg_id == s_last_publish_msg_id) {
+            xEventGroupSetBits(s_event_group, MQTT_PUBLISHED_BIT);
+        }
+        break;
+    }
     default:
         break;
     }
@@ -362,6 +370,7 @@ esp_err_t network_service_start(void)
 {
     s_event_group = xEventGroupCreate();
     ESP_RETURN_ON_FALSE(s_event_group != NULL, ESP_ERR_NO_MEM, TAG, "event group create failed");
+    xEventGroupClearBits(s_event_group, MQTT_PUBLISHED_BIT);
 
     /* nvs_flash_init already called in device_profile_init; skip if already done */
     ESP_ERROR_CHECK(esp_netif_init());
@@ -536,14 +545,35 @@ esp_err_t network_service_publish_json(const char *topic, const char *json_paylo
     ESP_RETURN_ON_FALSE(network_service_is_mqtt_ready(), ESP_ERR_INVALID_STATE, TAG, "mqtt not ready");
     int msg_id = esp_mqtt_client_publish(s_mqtt_client, topic, json_payload, 0, 1, 0);
     ESP_RETURN_ON_FALSE(msg_id >= 0, ESP_FAIL, TAG, "publish failed");
+    s_last_publish_msg_id = msg_id;
+    if (s_event_group != NULL) {
+        xEventGroupClearBits(s_event_group, MQTT_PUBLISHED_BIT);
+    }
     return ESP_OK;
+}
+
+bool network_service_wait_for_publish(int timeout_ms)
+{
+    if (s_event_group == NULL || s_last_publish_msg_id < 0) {
+        return false;
+    }
+
+    EventBits_t bits = xEventGroupWaitBits(
+        s_event_group,
+        MQTT_PUBLISHED_BIT,
+        pdFALSE,
+        pdTRUE,
+        pdMS_TO_TICKS(timeout_ms > 0 ? timeout_ms : 0)
+    );
+    return (bits & MQTT_PUBLISHED_BIT) != 0;
 }
 
 void network_service_prepare_for_sleep(void)
 {
-    xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
+    xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT | MQTT_PUBLISHED_BIT);
     device_profile_update_wifi(false, NULL, NULL, 0);
     device_profile_update_mqtt(false);
+    s_last_publish_msg_id = -1;
 
     if (s_mqtt_client != NULL) {
         mqtt_stop();

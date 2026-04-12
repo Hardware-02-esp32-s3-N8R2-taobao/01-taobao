@@ -814,7 +814,8 @@ void device_profile_build_low_power_json(char *buffer, size_t buffer_size)
 {
     profile_lock();
     cJSON *root = cJSON_CreateObject();
-    build_low_power_object(root);
+    cJSON_AddBoolToObject(root, "enabled", s_state.low_power_enabled);
+    cJSON_AddNumberToObject(root, "intervalSec", (double)s_state.low_power_interval_sec);
     char *printed = cJSON_PrintUnformatted(root);
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
     cJSON_free(printed);

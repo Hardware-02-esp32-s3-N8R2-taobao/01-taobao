@@ -36,8 +36,10 @@
 #define OLED_MAX_PAGE_COUNT 16
 #define LOW_POWER_NETWORK_WAIT_MS 20000
 #define LOW_POWER_SLEEP_SETTLE_MS 500
+#define LOW_POWER_STATUS_FLUSH_MS 900
 #define OLED_PAGE_BUTTON_DEBOUNCE_MS 180
 #define OLED_PAGE_BUTTON_LONG_PRESS_MS 1500
+#define OLED_IDLE_AUTO_SLEEP_MS 60000
 #define OLED_HEADER_Y 0
 #define OLED_BIG_LINE_Y1 14
 #define OLED_BIG_LINE_Y2 34
@@ -109,6 +111,7 @@ static bool s_oled_button_initialized = false;
 static volatile uint32_t s_oled_page_step_requests = 0;
 static volatile TickType_t s_oled_button_last_tick = 0;
 static volatile TickType_t s_oled_button_press_tick = 0;
+static volatile TickType_t s_oled_last_activity_tick = 0;
 static volatile bool s_oled_low_power_request = false;
 
 typedef enum {
@@ -151,6 +154,33 @@ static bool oled_is_compact_layout(void)
     return device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN;
 }
 
+static bool oled_should_show_boot_screen(void)
+{
+    return oled_is_compact_layout() && esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER;
+}
+
+static void oled_note_activity(TickType_t now)
+{
+    s_oled_last_activity_tick = now;
+}
+
+static bool oled_idle_auto_sleep_due(bool low_power_enabled)
+{
+    TickType_t last_activity = s_oled_last_activity_tick;
+    TickType_t now = xTaskGetTickCount();
+
+    if (!oled_is_compact_layout() || low_power_enabled || ota_service_should_skip_sleep()) {
+        return false;
+    }
+
+    if (last_activity == 0) {
+        s_oled_last_activity_tick = now;
+        return false;
+    }
+
+    return (now - last_activity) >= pdMS_TO_TICKS(OLED_IDLE_AUTO_SLEEP_MS);
+}
+
 static void IRAM_ATTR oled_page_button_isr_handler(void *arg)
 {
     (void)arg;
@@ -160,6 +190,7 @@ static void IRAM_ATTR oled_page_button_isr_handler(void *arg)
     }
 
     s_oled_button_last_tick = now;
+    oled_note_activity(now);
     int level = gpio_get_level(APP_SCREEN_PAGE_BUTTON_GPIO);
     if (level == APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL) {
         s_oled_button_press_tick = now;
@@ -240,6 +271,20 @@ static void oled_draw_compact_content(const char *text)
 
     oled_upper_copy(line, sizeof(line), text != NULL ? text : "--");
     oled_ssd1306_draw_text_scaled(0, OLED_COMPACT_CONTENT_Y, line, 1);
+}
+
+static void oled_render_boot_screen(void)
+{
+    if (!oled_should_show_boot_screen() || !oled_ssd1306_is_ready()) {
+        return;
+    }
+
+    oled_ssd1306_clear();
+    oled_draw_small_line(0, 0, "BOOT");
+    oled_draw_small_line(0, 10, APP_FIRMWARE_VERSION);
+    (void)oled_ssd1306_set_display_enabled(true);
+    (void)oled_ssd1306_present();
+    vTaskDelay(pdMS_TO_TICKS(1200));
 }
 
 static void oled_draw_header(const char *title, size_t page_index, size_t page_count)
@@ -367,6 +412,7 @@ static void oled_page_button_try_init(void)
         return;
     }
 
+    oled_note_activity(xTaskGetTickCount());
     s_oled_button_initialized = true;
 }
 
@@ -982,10 +1028,54 @@ static bool sensor_enabled_in_csv(const char *enabled_sensors_csv, const char *s
     return false;
 }
 
+__attribute__((used)) static const char s_firmware_release_meta[] =
+    "YDOTA_META:" APP_FIRMWARE_VERSION "|" APP_FIRMWARE_RELEASE_NOTES;
+
+static void publish_runtime_snapshot(const char *topic, const char *sensor_json)
+{
+    char payload[2304];
+    char config_json[512];
+    char low_power_json[160];
+
+    if (topic == NULL || topic[0] == '\0' || !network_service_is_mqtt_ready()) {
+        return;
+    }
+
+    device_profile_build_config_json(config_json, sizeof(config_json));
+    device_profile_build_low_power_json(low_power_json, sizeof(low_power_json));
+    snprintf(
+        payload,
+        sizeof(payload),
+        "{\"device\":\"%s\",\"alias\":\"%s\",\"ts\":%" PRId64 ",\"fwVersion\":\"%s\",\"rssi\":%d,\"config\":%s,\"lowPower\":%s,\"sensors\":%s}",
+        device_profile_device_id(),
+        device_profile_device_alias(),
+        esp_timer_get_time() / 1000,
+        device_profile_firmware_version(),
+        network_service_get_rssi(),
+        config_json,
+        low_power_json,
+        (sensor_json != NULL && sensor_json[0] != '\0') ? sensor_json : "{}"
+    );
+
+    if (network_service_publish_json(topic, payload) == ESP_OK) {
+        device_profile_update_publish(true, network_service_get_rssi(), payload);
+    }
+}
+
+static void publish_low_power_transition(const char *topic)
+{
+    publish_runtime_snapshot(topic, "{}");
+    if (network_service_is_mqtt_ready()) {
+        if (!network_service_wait_for_publish(LOW_POWER_STATUS_FLUSH_MS)) {
+            vTaskDelay(pdMS_TO_TICKS(LOW_POWER_STATUS_FLUSH_MS));
+        }
+    }
+}
+
 void telemetry_app_run(void)
 {
-    char payload[1536];
-    char event_json[1792];
+    char payload[2304];
+    char event_json[2560];
     const char *topic = NULL;
 
     dht11_sensor_init(APP_DHT11_GPIO);
@@ -995,6 +1085,9 @@ void telemetry_app_run(void)
     oled_try_init();
     s_telemetry_task_handle = xTaskGetCurrentTaskHandle();
     oled_page_button_try_init();
+    oled_note_activity(xTaskGetTickCount());
+    oled_render_boot_screen();
+    ESP_LOGI(TAG, "firmware meta: %s", s_firmware_release_meta);
 
     while (1) {
         bool low_power_enabled = device_profile_low_power_enabled();
@@ -1091,15 +1184,22 @@ void telemetry_app_run(void)
         device_profile_update_sensor_snapshot(sensor_json, ready_count, total_count);
 
         if (network_ready) {
+            char config_json[512];
+            char low_power_json[160];
+
+            device_profile_build_config_json(config_json, sizeof(config_json));
+            device_profile_build_low_power_json(low_power_json, sizeof(low_power_json));
             snprintf(
                 payload,
                 sizeof(payload),
-                "{\"device\":\"%s\",\"alias\":\"%s\",\"ts\":%" PRId64 ",\"fwVersion\":\"%s\",\"rssi\":%d,\"sensors\":%s}",
+                "{\"device\":\"%s\",\"alias\":\"%s\",\"ts\":%" PRId64 ",\"fwVersion\":\"%s\",\"rssi\":%d,\"config\":%s,\"lowPower\":%s,\"sensors\":%s}",
                 device_profile_device_id(),
                 device_profile_device_alias(),
                 esp_timer_get_time() / 1000,
                 device_profile_firmware_version(),
                 network_service_get_rssi(),
+                config_json,
+                low_power_json,
                 sensor_json != NULL ? sensor_json : "{}"
             );
 
@@ -1150,9 +1250,18 @@ void telemetry_app_run(void)
         cJSON_Delete(sensors_obj);
         if (low_power_requested && !ota_service_should_skip_sleep()) {
             device_profile_set_low_power_state(true, device_profile_low_power_interval_sec());
+            publish_low_power_transition(topic);
             console_service_emit_event(
                 "low_power",
                 "{\"enabled\":true,\"action\":\"button_long_press\",\"reason\":\"manual_request\"}"
+            );
+            enter_low_power_sleep();
+        } else if (oled_idle_auto_sleep_due(low_power_enabled)) {
+            device_profile_set_low_power_state(true, device_profile_low_power_interval_sec());
+            publish_low_power_transition(topic);
+            console_service_emit_event(
+                "low_power",
+                "{\"enabled\":true,\"action\":\"idle_timeout\",\"reason\":\"no_button_for_60s\"}"
             );
             enter_low_power_sleep();
         } else if (low_power_enabled && ota_service_should_skip_sleep()) {
