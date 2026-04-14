@@ -235,7 +235,19 @@ const SENSOR_ONLINE_WINDOW_MS = 90 * 1000;
 const NORMAL_REPORT_INTERVAL_SEC = 3;
 const REQUEST_TIMEOUT_MS = 15000;
 const OTA_STATUS_POLL_INTERVAL_MS = 3000;
+const LIVE_REFRESH_INTERVAL_MS = 5000;
+const LIVE_REFRESH_INTERVAL_HIDDEN_MS = 15000;
+const SUPPLEMENTAL_REFRESH_INTERVAL_MS = 60 * 1000;
+const WEATHER_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const FIRMWARE_PACKAGE_MAGIC_TEXT = "YDFWPKG1";
+const CURRENT_UI_VERSION = String(
+  window.__WEB_UI_VERSION__
+  || new URL(
+    document.querySelector('script[src*="/app.js"]')?.getAttribute("src") || "/app.js",
+    window.location.origin
+  ).searchParams.get("v")
+  || ""
+).trim();
 
 // 传感器异常阈值 — 超出范围时在设备卡片和详情页展示告警标记
 const ALERT_THRESHOLDS = {
@@ -329,6 +341,15 @@ const els = {
   onlineDeviceCount: document.getElementById("onlineDeviceCount"),
   lastRefreshText: document.getElementById("lastRefreshText"),
   backToOverviewBtn: document.getElementById("backToOverviewBtn")
+};
+
+const refreshState = {
+  liveTimerId: null,
+  supplementalTimerId: null,
+  weatherTimerId: null,
+  liveInFlight: null,
+  supplementalInFlight: null,
+  weatherInFlight: null
 };
 
 function escapeHtml(value) {
@@ -442,6 +463,21 @@ async function postJson(url, payload) {
     throw new Error(data.message || url);
   }
   return data;
+}
+
+function maybeRefreshForUpdatedUi(serverStatus) {
+  const serverUiVersion = String(serverStatus?.webUiVersion || "").trim();
+  if (!serverUiVersion || !CURRENT_UI_VERSION || serverUiVersion === CURRENT_UI_VERSION) {
+    return false;
+  }
+  if (window.__ydUiReloadScheduled) {
+    return true;
+  }
+  window.__ydUiReloadScheduled = true;
+  window.setTimeout(() => {
+    window.location.reload();
+  }, 120);
+  return true;
 }
 
 async function postJsonWithUploadProgress(url, payload, onProgress) {
@@ -3895,39 +3931,121 @@ function syncRoute() {
   if (appState.activeDeviceId) closeDetail();
 }
 
-async function refreshAll() {
-  try {
-    const [latestSensor, serverStatus, serverHistory, devicesStatus, roomPhotoResponse] = await Promise.all([
-      fetchJson("/api/sensor/latest"),
-      fetchJson("/api/server/status"),
-      fetchJson("/api/server/history"),
-      fetchJson("/api/devices/status"),
-      fetchJson("/api/room-photos")
-    ]);
-    appState.latestSensor = latestSensor;
-    appState.serverStatus = serverStatus;
-    appState.serverHistory = serverHistory;
-    appState.devicesStatus = devicesStatus;
-    appState.roomPhotos = roomPhotoResponse?.photos || {};
-    appState.refreshAt = new Date().toISOString();
-    renderOverview();
-    if (appState.activeDeviceId) {
-      if (appState.activeDevicePageKey === "settings:admin") {
-        await loadAdminOtaData(appState.activeDeviceId, { force: true }).catch(() => null);
-      }
-      renderDeviceDetail(appState.activeDeviceId);
-    }
-  } catch (error) {
-    els.lastRefreshText.textContent = "数据读取失败，请检查网关服务。";
+function rerenderAfterRefresh() {
+  renderOverview();
+  if (appState.activeDeviceId) {
+    renderDeviceDetail(appState.activeDeviceId);
+  }
+}
+
+function getLiveRefreshIntervalMs() {
+  return document.hidden ? LIVE_REFRESH_INTERVAL_HIDDEN_MS : LIVE_REFRESH_INTERVAL_MS;
+}
+
+function scheduleLiveRefresh(delayMs = getLiveRefreshIntervalMs()) {
+  window.clearTimeout(refreshState.liveTimerId);
+  refreshState.liveTimerId = window.setTimeout(async () => {
+    await refreshLiveData();
+    scheduleLiveRefresh();
+  }, delayMs);
+}
+
+function scheduleSupplementalRefresh(delayMs = SUPPLEMENTAL_REFRESH_INTERVAL_MS) {
+  window.clearTimeout(refreshState.supplementalTimerId);
+  refreshState.supplementalTimerId = window.setTimeout(async () => {
+    await refreshSupplementalData();
+    scheduleSupplementalRefresh();
+  }, delayMs);
+}
+
+function scheduleWeatherRefresh(delayMs = WEATHER_REFRESH_INTERVAL_MS) {
+  window.clearTimeout(refreshState.weatherTimerId);
+  refreshState.weatherTimerId = window.setTimeout(async () => {
+    await refreshWeatherData();
+    scheduleWeatherRefresh();
+  }, delayMs);
+}
+
+async function refreshLiveData() {
+  if (refreshState.liveInFlight) {
+    return refreshState.liveInFlight;
   }
 
-  // 天气单独请求，不阻塞主内容渲染
-  fetchJson("/api/weather/forecast")
+  refreshState.liveInFlight = (async () => {
+    try {
+      const [latestSensor, devicesStatus, serverStatus] = await Promise.all([
+        fetchJson("/api/sensor/latest"),
+        fetchJson("/api/devices/status"),
+        fetchJson("/api/server/status")
+      ]);
+      appState.latestSensor = latestSensor;
+      appState.devicesStatus = devicesStatus;
+      appState.serverStatus = serverStatus;
+      if (maybeRefreshForUpdatedUi(serverStatus)) {
+        return;
+      }
+      appState.refreshAt = new Date().toISOString();
+      rerenderAfterRefresh();
+    } catch (error) {
+      els.lastRefreshText.textContent = "数据读取失败，请检查网关服务。";
+    } finally {
+      refreshState.liveInFlight = null;
+    }
+  })();
+
+  return refreshState.liveInFlight;
+}
+
+async function refreshSupplementalData() {
+  if (refreshState.supplementalInFlight) {
+    return refreshState.supplementalInFlight;
+  }
+
+  refreshState.supplementalInFlight = (async () => {
+    try {
+      const [serverHistory, roomPhotoResponse] = await Promise.all([
+        fetchJson("/api/server/history"),
+        fetchJson("/api/room-photos")
+      ]);
+      appState.serverHistory = serverHistory;
+      appState.roomPhotos = roomPhotoResponse?.photos || {};
+      rerenderAfterRefresh();
+    } catch (error) {
+      console.warn("[supplemental]", error.message);
+    } finally {
+      refreshState.supplementalInFlight = null;
+    }
+  })();
+
+  return refreshState.supplementalInFlight;
+}
+
+async function refreshWeatherData() {
+  if (refreshState.weatherInFlight) {
+    return refreshState.weatherInFlight;
+  }
+
+  refreshState.weatherInFlight = fetchJson("/api/weather/forecast")
     .then((weather) => {
       appState.weather = weather;
-      renderOverview();
+      rerenderAfterRefresh();
     })
-    .catch((err) => console.warn("[weather]", err.message));
+    .catch((error) => {
+      console.warn("[weather]", error.message);
+    })
+    .finally(() => {
+      refreshState.weatherInFlight = null;
+    });
+
+  return refreshState.weatherInFlight;
+}
+
+async function refreshAll() {
+  await Promise.all([
+    refreshLiveData(),
+    refreshSupplementalData(),
+    refreshWeatherData()
+  ]);
 }
 
 async function pollActiveOtaStatus() {
@@ -4016,10 +4134,24 @@ window.addEventListener("hashchange", () => syncRoute());
 window.addEventListener("resize", () => {
   if (appState.activeDeviceId) renderDeviceDetail(appState.activeDeviceId);
 });
+window.addEventListener("focus", () => {
+  refreshLiveData();
+});
+window.addEventListener("online", () => {
+  refreshAll();
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    refreshLiveData();
+  }
+  scheduleLiveRefresh();
+});
 
 renderOverview();
 refreshAll().then(() => syncRoute());
-setInterval(refreshAll, 60 * 1000);
+scheduleLiveRefresh();
+scheduleSupplementalRefresh();
+scheduleWeatherRefresh();
 setInterval(pollActiveOtaStatus, OTA_STATUS_POLL_INTERVAL_MS);
 setInterval(updateAdminWakeCountdown, 1000);
 setInterval(updateActiveDeviceRuntimeStatus, 1000);

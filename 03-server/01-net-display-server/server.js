@@ -172,6 +172,8 @@ const dataDir = path.join(__dirname, "data");
 const repoRootDataDir = path.resolve(__dirname, "..", "..", "data");
 const dbPath = path.join(dataDir, "sensor-history.db");
 const uploadsDir = path.join(publicDir, "uploads");
+const webUiIndexPath = path.join(publicDir, "index.html");
+const webUiAppPath = path.join(publicDir, "app.js");
 const roomUploadsDir = path.join(uploadsDir, "rooms");
 const roomPhotoMetaPath = path.join(dataDir, "room-photos.json");
 const sensorAliasMetaPath = path.join(dataDir, "device-sensor-aliases.json");
@@ -350,13 +352,38 @@ function createDefaultSensorState(sensorKey) {
   return { ...buildDefaultLatestSensors()[sensorKey] };
 }
 
-function canonicalizeDeviceId(rawValue) {
+function maybeCanonicalizeDeviceId(rawValue) {
   const raw = String(rawValue || "").trim();
   if (!raw) {
-    return "mqtt-client";
+    return "";
   }
   const normalized = raw.toLowerCase().replace(/\s+/g, "");
   return DEVICE_ID_ALIASES[raw] || DEVICE_ID_ALIASES[normalized] || raw;
+}
+
+function canonicalizeDeviceId(rawValue) {
+  return maybeCanonicalizeDeviceId(rawValue) || "mqtt-client";
+}
+
+function resolveIncomingDeviceId(payloadDeviceId, topicDeviceId, clientId, topic = "") {
+  const topicResolved = maybeCanonicalizeDeviceId(topicDeviceId);
+  const payloadResolved = maybeCanonicalizeDeviceId(payloadDeviceId);
+  const clientResolved = maybeCanonicalizeDeviceId(clientId);
+
+  if (topicResolved) {
+    if (payloadResolved && payloadResolved !== topicResolved) {
+      console.warn(
+        `[mqtt] device id mismatch on ${topic || "--"}: topic=${topicResolved}, payload=${payloadResolved}, prefer topic`
+      );
+    }
+    return topicResolved;
+  }
+
+  if (payloadResolved) {
+    return payloadResolved;
+  }
+
+  return clientResolved || "mqtt-client";
 }
 
 function getDeviceAlias(deviceId, payloadAlias) {
@@ -376,6 +403,31 @@ function tryGzip(content, acceptEncoding) {
 const gzipFileCache = new Map();
 const ROOM_IDS = ["all", "explorer", "yard", "study", "office", "bedroom", "server", "outdoor"];
 const ROOM_PHOTO_SIZE_LIMIT = 8 * 1024 * 1024;
+
+function getWebUiVersion() {
+  try {
+    const latestMtimeMs = [webUiIndexPath, webUiAppPath]
+      .map((filePath) => fs.statSync(filePath).mtimeMs)
+      .reduce((maxValue, currentValue) => Math.max(maxValue, currentValue), 0);
+    return `ui-${Math.floor(latestMtimeMs)}`;
+  } catch (_error) {
+    return "ui-dev";
+  }
+}
+
+function getStaticAssetCacheKey(filePath, ext) {
+  try {
+    if (ext === ".html" && path.basename(filePath).toLowerCase() === "index.html") {
+      return `${filePath}?v=${getWebUiVersion()}`;
+    }
+    if ([".js", ".css", ".html"].includes(ext)) {
+      return `${filePath}?v=${Math.floor(fs.statSync(filePath).mtimeMs)}`;
+    }
+  } catch (_error) {
+    // Fall back to the plain path if stat lookup fails.
+  }
+  return filePath;
+}
 
 function readJsonFile(filePath, fallback) {
   try {
@@ -1403,6 +1455,18 @@ function sendFile(res, filePath) {
       ".webp": "image/webp"
     };
 
+    let responseBody = content;
+    if (ext === ".html" && path.basename(filePath).toLowerCase() === "index.html") {
+      const webUiVersion = getWebUiVersion();
+      const injectedHtml = content
+        .toString("utf8")
+        .replace(
+          '<script src="/app.js"></script>',
+          `<script>window.__WEB_UI_VERSION__ = ${JSON.stringify(webUiVersion)};</script>\n    <script src="/app.js?v=${encodeURIComponent(webUiVersion)}"></script>`
+        );
+      responseBody = Buffer.from(injectedHtml, "utf8");
+    }
+
     const headers = {
       "Content-Type": contentTypeMap[ext] || "application/octet-stream",
       "Cache-Control": [".html", ".js", ".css"].includes(ext) ? "no-store" : "public, max-age=3600",
@@ -1410,10 +1474,11 @@ function sendFile(res, filePath) {
     };
 
     if (compressible) {
-      let cached = gzipFileCache.get(filePath);
+      const cacheKey = getStaticAssetCacheKey(filePath, ext);
+      let cached = gzipFileCache.get(cacheKey);
       if (!cached) {
-        cached = zlib.gzipSync(content);
-        gzipFileCache.set(filePath, cached);
+        cached = zlib.gzipSync(responseBody);
+        gzipFileCache.set(cacheKey, cached);
       }
       const acceptEncoding = res._req?.headers?.["accept-encoding"] || "";
       if (acceptEncoding.includes("gzip")) {
@@ -1423,7 +1488,7 @@ function sendFile(res, filePath) {
       }
     }
     res.writeHead(200, headers);
-    res.end(content);
+    res.end(responseBody);
   });
 }
 
@@ -1588,10 +1653,68 @@ function getDeviceOnlineWindowMs(device) {
   return DEVICE_ONLINE_WINDOW_MS;
 }
 
+function buildCatalogDeviceStatusDefaults() {
+  return DEVICE_OPTIONS.map((option) => {
+    const presenceConfig = DEVICE_PRESENCE_CONFIG[option.id] || null;
+    return {
+      device: option.id,
+      alias: option.alias || option.name || option.id,
+      clientId: option.id,
+      firstSeenAt: null,
+      lastSeenAt: null,
+      lastTopic: "--",
+      sensorKey: null,
+      source: "catalog-default",
+      sensors: [],
+      fwVersion: null,
+      lowPowerEnabled: presenceConfig?.lowPowerEnabled ?? false,
+      reportIntervalSec: presenceConfig?.reportIntervalSec ?? null
+    };
+  });
+}
+
 function getDevicesStatus() {
   const now = Date.now();
-  return Array.from(deviceRegistry.values())
-    .sort((a, b) => (b.lastSeenAt || "").localeCompare(a.lastSeenAt || ""))
+  const mergedDevices = new Map(
+    buildCatalogDeviceStatusDefaults().map((device) => [device.device, device])
+  );
+
+  deviceRegistry.forEach((rememberedDevice, deviceId) => {
+    const fallbackDevice = mergedDevices.get(deviceId) || {
+      device: deviceId,
+      alias: getDeviceAlias(deviceId),
+      clientId: deviceId,
+      firstSeenAt: null,
+      lastSeenAt: null,
+      lastTopic: "--",
+      sensorKey: null,
+      source: "mqtt",
+      sensors: [],
+      fwVersion: null,
+      lowPowerEnabled: false,
+      reportIntervalSec: null
+    };
+
+    mergedDevices.set(deviceId, {
+      ...fallbackDevice,
+      ...rememberedDevice,
+      device: rememberedDevice.device || fallbackDevice.device || deviceId,
+      alias: rememberedDevice.alias || fallbackDevice.alias || deviceId,
+      clientId: rememberedDevice.clientId || fallbackDevice.clientId || deviceId,
+      sensors: Array.isArray(rememberedDevice.sensors)
+        ? rememberedDevice.sensors.filter(Boolean)
+        : (fallbackDevice.sensors || [])
+    });
+  });
+
+  return Array.from(mergedDevices.values())
+    .sort((a, b) => {
+      const seenCompare = (b.lastSeenAt || "").localeCompare(a.lastSeenAt || "");
+      if (seenCompare !== 0) {
+        return seenCompare;
+      }
+      return String(a.alias || a.device || "").localeCompare(String(b.alias || b.device || ""), "zh-CN");
+    })
     .map((device) => {
       const onlineWindowMs = getDeviceOnlineWindowMs(device);
       return {
@@ -1736,14 +1859,35 @@ function parseMqttDeviceTopic(topic) {
   return canonicalizeDeviceId(suffix);
 }
 
+function resolveMetricSourceDeviceId(meta = {}) {
+  return canonicalizeDeviceId(
+    meta.device
+    || parseMqttDeviceTopic(meta.topic)
+    || meta.source
+    || meta.clientId
+    || "mqtt-client"
+  );
+}
+
+function normalizeStoredMetricSource(source, topic) {
+  const trimmedSource = String(source || "").trim();
+  if (!trimmedSource || trimmedSource === "mqtt-client") {
+    const topicDevice = parseMqttDeviceTopic(topic);
+    if (topicDevice) {
+      return topicDevice;
+    }
+  }
+  return canonicalizeDeviceId(trimmedSource || "mqtt-client");
+}
+
 function recordSensorPayload(sensorKey, payload, meta) {
   const config = SENSOR_CONFIG[sensorKey];
   if (!config) {
     throw new Error(`unknown sensor: ${sensorKey}`);
   }
 
-  const updatedAt = new Date().toISOString();
-  const deviceName = canonicalizeDeviceId(payload.device || meta.device || "mqtt-client");
+  const updatedAt = meta.updatedAt || new Date().toISOString();
+  const deviceName = resolveMetricSourceDeviceId(meta);
   const sensorPayload = resolveSensorPayload(sensorKey, payload);
   const next = {
     ...latestSensors[sensorKey],
@@ -1793,7 +1937,8 @@ function recordSensorPayload(sensorKey, payload, meta) {
 
 function loadLatestSensors() {
   const sensors = buildDefaultLatestSensors();
-  const rows = latestMetricRowsStmt.all();
+  const rows = latestMetricRowsStmt.all()
+    .sort((a, b) => String(a.recorded_at || "").localeCompare(String(b.recorded_at || "")));
 
   rows.forEach((row) => {
     const sensorKey = canonicalizeSensorKey(row.sensor_key);
@@ -1802,7 +1947,7 @@ function loadLatestSensors() {
       return;
     }
     sensor[row.metric_key] = row.value;
-    sensor.source = row.source;
+    sensor.source = normalizeStoredMetricSource(row.source, row.topic);
     sensor.topic = row.topic;
     sensor.updatedAt = row.recorded_at;
   });
@@ -1814,10 +1959,11 @@ function loadLatestSensors() {
 
 function loadLatestSensorsByDevice() {
   const devices = {};
-  const rows = latestMetricRowsByDeviceStmt.all();
+  const rows = latestMetricRowsByDeviceStmt.all()
+    .sort((a, b) => String(a.recorded_at || "").localeCompare(String(b.recorded_at || "")));
 
   rows.forEach((row) => {
-    const deviceName = row.source;
+    const deviceName = normalizeStoredMetricSource(row.source, row.topic);
     const sensorKey = canonicalizeSensorKey(row.sensor_key);
     if (!deviceName) {
       return;
@@ -1912,6 +2058,7 @@ function getServerStatus() {
     hostname: os.hostname(),
     deviceModel: getDeviceModel(),
     platform: `${os.platform()} ${os.arch()}`,
+    webUiVersion: getWebUiVersion(),
     ipAddresses: getLocalIpAddresses(),
     cpuModel: cpus[0]?.model || "unknown",
     cpuCores: cpus.length,
@@ -2358,7 +2505,7 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
     return;
   }
 
-  const source = canonicalizeDeviceId(payload.device || topicDevice || clientId || "mqtt-client");
+  const source = resolveIncomingDeviceId(payload.device, topicDevice, clientId, topic);
   const fwVersion = sanitizeFirmwareText(payload.fwVersion || "", 32);
   if ((payload.config && typeof payload.config === "object") || (payload.lowPower && typeof payload.lowPower === "object")) {
     saveDeviceRuntimeConfig(source, {
