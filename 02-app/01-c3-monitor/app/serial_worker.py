@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import queue
 import threading
+import time
 
 import serial
 from PySide6 import QtCore
@@ -19,6 +20,11 @@ class SerialReader(QtCore.QObject):
     line_received = QtCore.Signal(str)
     connection_changed = QtCore.Signal(bool, str)
     error_occurred = QtCore.Signal(str)
+    _MAX_WRITE_TIMEOUT_STREAK = 3
+    _WRITE_BLOCK_COOLDOWN_SEC = 3.0
+    _MIN_WRITE_GAP_SEC = 0.08
+    _RX_IDLE_BEFORE_WRITE_SEC = 0.35
+    _MAX_WRITE_WAIT_FOR_IDLE_SEC = 1.5
 
     def __init__(self, port_name: str, baudrate: int = 115200, parent: QtCore.QObject | None = None) -> None:
         super().__init__(parent)
@@ -30,6 +36,10 @@ class SerialReader(QtCore.QObject):
         self._write_queue: queue.Queue[bytes] = queue.Queue()
         self._rx_buffer = bytearray()
         self._write_blocked = False
+        self._write_timeout_streak = 0
+        self._write_blocked_until = 0.0
+        self._last_write_at = 0.0
+        self._last_read_at = 0.0
 
     @property
     def port_name(self) -> str:
@@ -41,6 +51,8 @@ class SerialReader(QtCore.QObject):
 
     @property
     def write_blocked(self) -> bool:
+        if self._write_blocked and time.monotonic() >= self._write_blocked_until:
+            self._reset_write_state()
         return self._write_blocked
 
     def _clear_write_queue(self) -> None:
@@ -50,12 +62,53 @@ class SerialReader(QtCore.QObject):
             except queue.Empty:
                 break
 
+    def _reset_write_state(self) -> None:
+        self._write_blocked = False
+        self._write_timeout_streak = 0
+        self._write_blocked_until = 0.0
+
+    def _enter_write_cooldown(self) -> None:
+        self._write_blocked = True
+        self._write_blocked_until = time.monotonic() + self._WRITE_BLOCK_COOLDOWN_SEC
+
+    def _reset_write_timeout_streak(self) -> None:
+        self._write_timeout_streak = 0
+
+    def _maybe_wait_before_write(self) -> None:
+        elapsed = time.monotonic() - self._last_write_at
+        remaining = self._MIN_WRITE_GAP_SEC - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _next_write_payload(self) -> bytes | None:
+        try:
+            payload = self._write_queue.get_nowait()
+        except queue.Empty:
+            return None
+        if not payload:
+            return None
+        return payload
+
+    def _wait_for_read_quiet_period(self) -> None:
+        if self._last_read_at <= 0:
+            return
+        deadline = time.monotonic() + self._MAX_WRITE_WAIT_FOR_IDLE_SEC
+        while not self._stop_event.is_set():
+            quiet_for = time.monotonic() - self._last_read_at
+            if quiet_for >= self._RX_IDLE_BEFORE_WRITE_SEC:
+                return
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.02)
+
     @QtCore.Slot()
     def start(self) -> None:
         if self._reader_thread is not None and self._reader_thread.is_alive():
             return
         self._stop_event.clear()
-        self._write_blocked = False
+        self._reset_write_state()
+        self._last_write_at = 0.0
+        self._last_read_at = 0.0
         self._reader_thread = threading.Thread(
             target=self._read_loop,
             name=f"SerialReader-{self._port_name}",
@@ -79,7 +132,7 @@ class SerialReader(QtCore.QObject):
 
     def _read_loop(self) -> None:
         try:
-            self._serial = serial.Serial(port=None, baudrate=self._baudrate, timeout=0.05, write_timeout=0.5)
+            self._serial = serial.Serial(port=None, baudrate=self._baudrate, timeout=0.05, write_timeout=2.5)
             self._serial.dtr = False
             self._serial.rts = False
             self._serial.port = self._port_name
@@ -96,26 +149,37 @@ class SerialReader(QtCore.QObject):
                 ser = self._serial
                 if ser is None:
                     break
-                while True:
+                payload = self._next_write_payload()
+                if payload is not None:
+                    if self.write_blocked:
+                        payload = None
+                    else:
+                        self._maybe_wait_before_write()
+                        self._wait_for_read_quiet_period()
                     try:
-                        payload = self._write_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if not payload:
-                        continue
-                    if self._write_blocked:
-                        continue
-                    try:
-                        ser.write(payload)
+                        if payload is not None:
+                            written = ser.write(payload)
+                            if written != len(payload):
+                                raise serial.SerialTimeoutException(f"仅发送了 {written}/{len(payload)} 字节")
+                            self._last_write_at = time.monotonic()
+                            self._reset_write_state()
                     except serial.SerialTimeoutException as exc:
-                        self._write_blocked = True
+                        self._write_timeout_streak += 1
                         self._clear_write_queue()
-                        self.error_occurred.emit(f"串口发送超时，已切换为只读监听模式：{exc}")
-                        break
+                        if self._write_timeout_streak >= self._MAX_WRITE_TIMEOUT_STREAK:
+                            self._enter_write_cooldown()
+                            cooldown_sec = int(self._WRITE_BLOCK_COOLDOWN_SEC)
+                            self.error_occurred.emit(
+                                f"串口连续发送超时，已暂停发送 {cooldown_sec} 秒并将自动恢复：{exc}"
+                            )
+                        else:
+                            self.error_occurred.emit(
+                                f"串口发送超时（{self._write_timeout_streak}/{self._MAX_WRITE_TIMEOUT_STREAK}），这次命令可能未发出，请重试：{exc}"
+                            )
+                        continue
                     except Exception as exc:
                         self.error_occurred.emit(str(exc))
                         self.stop()
-                        break
                 try:
                     waiting = ser.in_waiting
                 except Exception:
@@ -123,6 +187,9 @@ class SerialReader(QtCore.QObject):
                 raw = ser.read(waiting or 1)
                 if not raw:
                     continue
+                self._last_read_at = time.monotonic()
+                if self._write_timeout_streak > 0 and not self._write_blocked:
+                    self._reset_write_timeout_streak()
                 self._rx_buffer.extend(raw)
                 while True:
                     newline_index = self._rx_buffer.find(b"\n")
@@ -145,24 +212,28 @@ class SerialReader(QtCore.QObject):
             self.connection_changed.emit(False, "串口已关闭")
 
     @QtCore.Slot(str)
-    def write_line(self, text: str) -> None:
-        if self._serial is None or self._write_blocked:
-            return
+    def write_line(self, text: str) -> bool:
+        if self._serial is None or self.write_blocked:
+            return False
         try:
             payload = (text.rstrip("\r\n") + "\n").encode("utf-8")
             self._write_queue.put_nowait(payload)
+            return True
         except Exception as exc:
             self.error_occurred.emit(str(exc))
             self.stop()
+            return False
 
-    def write_bytes(self, payload: bytes) -> None:
-        if self._serial is None or self._write_blocked or not payload:
-            return
+    def write_bytes(self, payload: bytes) -> bool:
+        if self._serial is None or self.write_blocked or not payload:
+            return False
         try:
             self._write_queue.put_nowait(payload)
+            return True
         except Exception as exc:
             self.error_occurred.emit(str(exc))
             self.stop()
+            return False
 
 
 def list_serial_ports() -> list[SerialPortInfo]:

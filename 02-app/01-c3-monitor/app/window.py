@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +116,7 @@ def device_alias_from_name(device_name: str) -> str:
 
 
 class C3MonitorWindow(QtWidgets.QMainWindow):
-    command_requested = QtCore.Signal(str)
+    _DEVICE_BOOT_GRACE_SEC = 4.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -128,6 +129,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._sensor_detail_cards: dict[str, dict[str, Any]] = {}
         self._last_wifi_list: list[dict] = []
         self._last_auto_refresh_at = "--"
+        self._last_command_skip_reason = ""
+        self._device_command_ready_at = 0.0
         self._initial_load_done = False
         self._pending_config_save = False
         self._pending_config_name = ""
@@ -149,6 +152,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self._serial_ota_legacy_chunk_size = 240
         self._device_serial_ota_ready = False
         self._device_supports_raw_ota: bool | None = None
+        self._serial_command_timeout_seen = False
         self._flash_thread: QtCore.QThread | None = None
         self._flash_worker: FullFlashWorker | None = None
         self._reconnect_after_flash = False
@@ -436,6 +440,24 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         low_power_row.addWidget(self.low_power_status_label, 1)
         config_layout.addLayout(low_power_row)
 
+        maintenance_hint = QtWidgets.QLabel("维修站模式用于串口驻留调试：开启后设备保持常醒，不会因空闲超时或低功耗周期进入 Deep Sleep。")
+        maintenance_hint.setObjectName("pageSubtitle")
+        maintenance_hint.setWordWrap(True)
+        config_layout.addWidget(maintenance_hint)
+
+        maintenance_row = QtWidgets.QHBoxLayout()
+        maintenance_label = QtWidgets.QLabel("维修站")
+        maintenance_label.setFixedWidth(80)
+        self.maintenance_enable_btn = QtWidgets.QPushButton("进入维修站")
+        self.maintenance_disable_btn = QtWidgets.QPushButton("退出维修站")
+        self.maintenance_status_label = QtWidgets.QLabel("维修站：未开启")
+        self.maintenance_status_label.setObjectName("pageSubtitle")
+        maintenance_row.addWidget(maintenance_label)
+        maintenance_row.addWidget(self.maintenance_enable_btn)
+        maintenance_row.addWidget(self.maintenance_disable_btn)
+        maintenance_row.addWidget(self.maintenance_status_label, 1)
+        config_layout.addLayout(maintenance_row)
+
         config_layout.addStretch(1)
 
         config_tab_layout.addWidget(config_frame, 1)
@@ -547,6 +569,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         self.low_power_read_btn.clicked.connect(self._request_low_power)
         self.low_power_enable_btn.clicked.connect(self.enable_low_power)
         self.low_power_disable_btn.clicked.connect(self.disable_low_power)
+        self.maintenance_enable_btn.clicked.connect(self.enable_maintenance_mode)
+        self.maintenance_disable_btn.clicked.connect(self.disable_maintenance_mode)
         self.ota_pick_btn.clicked.connect(self._pick_ota_file)
         self.ota_upgrade_btn.clicked.connect(self._start_auto_upgrade)
 
@@ -695,6 +719,93 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
     def _device_supports_serial_ota(self) -> bool:
         return self._reader is not None and self._device_serial_ota_ready
 
+    def _serial_command_channel_known_unwritable(self) -> bool:
+        if self._reader is None:
+            return False
+        return self._serial_command_timeout_seen or self._reader.write_blocked
+
+    def _find_companion_full_flash_package(self) -> tuple[str, FirmwarePackage] | None:
+        package = self._selected_firmware_package
+        selected_file = str(self._ota_selected_file or "").strip()
+        if package is None or package.supports_full_flash or not selected_file:
+            return None
+
+        selected_path = Path(selected_file).resolve()
+        version = str(package.package_version or "").strip()
+        repo_root = Path(__file__).resolve().parents[3]
+        search_dirs: list[Path] = []
+        seen_dirs: set[Path] = set()
+
+        for candidate_dir in (
+            selected_path.parent,
+            repo_root / "01-firmware",
+            repo_root / "01-firmware" / "00-main-c3-firmware" / "build",
+            selected_path.parent / "00-main-c3-firmware" / "build",
+        ):
+            resolved_dir = candidate_dir.resolve()
+            if not resolved_dir.is_dir() or resolved_dir in seen_dirs:
+                continue
+            seen_dirs.add(resolved_dir)
+            search_dirs.append(resolved_dir)
+
+        candidate_paths: list[Path] = []
+        seen_paths: set[Path] = set()
+
+        def append_candidate(path: Path) -> None:
+            resolved_path = path.resolve()
+            if not resolved_path.is_file() or resolved_path == selected_path or resolved_path in seen_paths:
+                return
+            seen_paths.add(resolved_path)
+            candidate_paths.append(resolved_path)
+
+        if "_package_v" not in selected_path.name and "_v" in selected_path.name:
+            append_candidate(selected_path.with_name(selected_path.name.replace("_v", "_package_v", 1)))
+
+        pattern_list: list[str] = []
+        if version:
+            pattern_list.extend([f"*package_v{version}.bin", f"*v{version}.bin"])
+        else:
+            pattern_list.extend(["*package_v*.bin", "*.bin"])
+
+        for search_dir in search_dirs:
+            for pattern in pattern_list:
+                for path in sorted(search_dir.glob(pattern)):
+                    append_candidate(path)
+
+        for candidate_path in candidate_paths:
+            try:
+                candidate_package = load_firmware_package(candidate_path)
+            except FirmwarePackageError:
+                continue
+            if not candidate_package.supports_full_flash:
+                continue
+            if version and candidate_package.package_version and candidate_package.package_version != version:
+                continue
+            return str(candidate_path), candidate_package
+        return None
+
+    def _promote_to_full_flash_package_if_needed(self, reason: str = "") -> bool:
+        package = self._selected_firmware_package
+        if package is None:
+            return False
+        if package.supports_full_flash:
+            return True
+
+        resolved = self._find_companion_full_flash_package()
+        if resolved is None:
+            return False
+
+        file_path, resolved_package = resolved
+        self._ota_selected_file = file_path
+        self._selected_firmware_package = resolved_package
+        self._serial_ota_version = resolved_package.package_version or self._serial_ota_version
+        self.ota_file_edit.setText(file_path)
+        note = f"，原因：{reason}" if reason else ""
+        self._append_upgrade_log(f"[package] auto-switch to {Path(file_path).name}{note}")
+        self.statusBar().showMessage(f"已自动切换到统一升级包：{Path(file_path).name}")
+        self._update_upgrade_page()
+        return True
+
     @staticmethod
     def _parse_version_tuple(version_text: str) -> tuple[int, ...] | None:
         text = str(version_text or "").strip()
@@ -737,6 +848,18 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             hardware = state.get("hardware") or {}
             fw_version = str(hardware.get("fw_version") or "--")
             port_name = self._current_serial_port_name() or "--"
+            if self._serial_command_channel_known_unwritable():
+                fallback = self._find_companion_full_flash_package()
+                if fallback is not None:
+                    fallback_path, _fallback_package = fallback
+                    return (
+                        "full-flash",
+                        f"已确认串口 {port_name} 的命令通道不可写（观察到写超时）；当前所选文件仅支持 OTA，点击“升级”后会自动切换到 {Path(fallback_path).name} 并执行全烧录。"
+                    )
+                return (
+                    "unsupported",
+                    f"已确认串口 {port_name} 的命令通道不可写（观察到写超时）；当前所选文件仅支持 OTA，无法继续。请改选统一升级包 .bin 后重试。"
+                )
             if package.supports_full_flash:
                 return (
                     "full-flash",
@@ -836,12 +959,13 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         baudrate = int(self.baud_combo.currentText())
         self._initial_load_done = False
         self._reader = SerialReader(port_name, baudrate)
+        self._device_command_ready_at = time.monotonic() + self._DEVICE_BOOT_GRACE_SEC
         self._device_serial_ota_ready = False
         self._device_supports_raw_ota = None
+        self._serial_command_timeout_seen = False
         self._reader.line_received.connect(self._handle_serial_line)
         self._reader.connection_changed.connect(self._handle_connection_change)
         self._reader.error_occurred.connect(self._handle_error)
-        self.command_requested.connect(self._reader.write_line)
         self._reader.start()
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(True)
@@ -854,16 +978,14 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if self._serial_ota_active:
             self._fail_serial_ota("串口已断开，串口 OTA 中止")
         if self._reader is not None:
-            try:
-                self.command_requested.disconnect(self._reader.write_line)
-            except Exception:
-                pass
             self._reader.stop()
         if self._reader is not None:
             self._reader.deleteLater()
-            self._reader = None
+        self._reader = None
         self._device_serial_ota_ready = False
         self._device_supports_raw_ota = None
+        self._serial_command_timeout_seen = False
+        self._device_command_ready_at = 0.0
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
         self._update_upgrade_page()
@@ -879,24 +1001,44 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if connected:
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
-            QtCore.QTimer.singleShot(2500, self._initial_device_load)
             self._update_auto_refresh_timers()
         else:
             self.connect_btn.setEnabled(True)
             self.disconnect_btn.setEnabled(False)
             self._status_poll_timer.stop()
             self.auto_refresh_label.setText("自动刷新：--")
+            self._device_command_ready_at = 0.0
             self._initial_load_done = False
+            if self._pending_config_save:
+                device_name = self._pending_config_name or "当前设备"
+                self._pending_config_save = False
+                self._pending_config_name = ""
+                self._config_form_dirty = True
+                self.config_result_label.setText(f"最近操作：保存 {device_name} 未完成，串口已关闭")
+            if self._serial_ota_active:
+                self._fail_serial_ota("串口已关闭，OTA 已中断")
             if "连接失败" in message or "拒绝访问" in message or "could not open port" in message:
                 self.log_edit.appendPlainText(f"!!! {message}")
                 self.config_result_label.setText(f"最近操作：{message}")
 
     @QtCore.Slot(str)
     def _handle_error(self, message: str) -> None:
+        if "Write timeout" in message or "串口发送超时" in message or "串口连续发送超时" in message:
+            self._serial_command_timeout_seen = True
         self.statusBar().showMessage(f"串口错误：{message}")
         self.log_edit.appendPlainText(f"!!! 串口错误：{message}")
-        self.config_result_label.setText(f"最近操作：串口错误：{message}")
+        if self._pending_config_save:
+            device_name = self._pending_config_name or "当前设备"
+            self._pending_config_save = False
+            self._pending_config_name = ""
+            self._config_form_dirty = True
+            self.config_result_label.setText(f"最近操作：保存 {device_name} 失败，{message}")
+        else:
+            self.config_result_label.setText(f"最近操作：串口错误：{message}")
+        if self._serial_ota_active:
+            self._fail_serial_ota(f"串口 OTA 中断：{message}")
         self._append_upgrade_log(f"[serial-error] {message}")
+        self._update_upgrade_page()
 
     @QtCore.Slot(str)
     def _handle_serial_line(self, line: str) -> None:
@@ -904,23 +1046,23 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if cleaned:
             self.log_edit.appendPlainText(cleaned)
         result = self._parser.parse_line(line)
+        if cleaned.startswith(("APP_STATUS:", "APP_CONFIG:", "APP_OPTIONS:", "APP_WIFI_LIST:", "APP_LOW_POWER:")):
+            self._initial_load_done = True
         if cleaned.startswith("APP_OK:"):
+            self._serial_command_timeout_seen = False
             if "\"commands\"" in cleaned:
                 self._device_serial_ota_ready = "OTA_WRITE <hex>" in cleaned
                 self._device_supports_raw_ota = "OTA_WRITE_RAW <size> + raw-bytes" in cleaned
             self.statusBar().showMessage("设备已确认操作成功")
             if self._pending_config_save:
-                config = result.state["config"]
-                message = f"设备配置已保存：{config['device_name']} ({config['device_id']})"
-                self.config_result_label.setText(f"最近操作：{message}")
-                self._pending_config_save = False
-                self._pending_config_name = ""
+                self.config_result_label.setText("最近操作：设备已确认保存，正在同步最新配置")
         elif cleaned.startswith("APP_ERROR:"):
             self.statusBar().showMessage("设备返回错误，请查看日志")
             if self._pending_config_save:
                 self.config_result_label.setText("最近操作：保存失败，请查看串口日志")
                 self._pending_config_save = False
                 self._pending_config_name = ""
+                self._config_form_dirty = True
             if self._serial_ota_active:
                 self._fail_serial_ota("设备返回 OTA 错误，请查看日志")
         elif cleaned.startswith("APP_OTA:"):
@@ -928,41 +1070,56 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         elif cleaned.startswith("APP_CONFIG:"):
             config = result.state["config"]
             self.statusBar().showMessage(f"当前设备已更新为：{config['device_name']} ({config['device_id']})")
+            if self._pending_config_save:
+                message = f"设备配置已保存：{config['device_name']} ({config['device_id']})"
+                self.config_result_label.setText(f"最近操作：{message}")
+                self._pending_config_save = False
+                self._pending_config_name = ""
+                self._config_form_dirty = False
         if result.changed:
             self._render_state(result.state)
 
-    def query_device_state(self) -> None:
+    def query_device_state(self) -> bool:
         if self._reader is None or self._serial_ota_active:
-            return
-        self._send_command("GET_STATUS")
+            return False
+        return self._send_command("GET_STATUS")
 
     def _initial_device_load(self) -> None:
         if self._reader is None:
             return
+        if not self._device_command_ready():
+            delay_ms = self._device_command_delay_ms()
+            QtCore.QTimer.singleShot(delay_ms, self._initial_device_load)
+            return
         self._initial_load_done = True
         self._config_form_dirty = False
         self._wifi_form_dirty = False
-        QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_CONFIG"))
-        QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_OPTIONS"))
-        QtCore.QTimer.singleShot(360, lambda: self._send_command("GET_WIFI_LIST"))
-        QtCore.QTimer.singleShot(540, lambda: self._send_command("GET_LOW_POWER"))
+        if not self._schedule_command(0, "GET_CONFIG"):
+            return
+        self._schedule_command(180, "GET_OPTIONS")
+        self._schedule_command(360, "GET_WIFI_LIST")
+        self._schedule_command(540, "GET_LOW_POWER")
         QtCore.QTimer.singleShot(720, self.query_device_state)
-        QtCore.QTimer.singleShot(900, lambda: self._send_command("HELP"))
+        self._schedule_command(900, "HELP")
 
     def read_device_config(self) -> None:
+        if not self._refresh_device_config_views():
+            self.config_result_label.setText(f"最近操作：读取设备配置失败，{self._last_command_skip_text()}")
+            return
         self._config_form_dirty = False
         self._wifi_form_dirty = False
         self.config_result_label.setText("最近操作：已请求读取设备配置")
-        self._refresh_device_config_views()
         QtCore.QTimer.singleShot(600, self.query_device_state)
 
-    def _refresh_device_config_views(self) -> None:
+    def _refresh_device_config_views(self) -> bool:
         if self._reader is None:
-            return
-        QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_CONFIG"))
-        QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_OPTIONS"))
-        QtCore.QTimer.singleShot(360, lambda: self._send_command("GET_WIFI_LIST"))
-        QtCore.QTimer.singleShot(540, lambda: self._send_command("GET_LOW_POWER"))
+            return False
+        if not self._schedule_command(0, "GET_CONFIG"):
+            return False
+        self._schedule_command(180, "GET_OPTIONS")
+        self._schedule_command(360, "GET_WIFI_LIST")
+        self._schedule_command(540, "GET_LOW_POWER")
+        return True
 
     def _toggle_auto_refresh(self, checked: bool) -> None:
         self._update_auto_refresh_timers()
@@ -987,21 +1144,25 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             return
         if self.tab_widget.currentIndex() not in (0, 1, 3):
             return
-        self._mark_auto_refresh()
-        self.query_device_state()
+        if self.query_device_state():
+            self._mark_auto_refresh()
 
     def _handle_tab_changed(self, index: int) -> None:
         if index == 2 and self._reader is not None:
             self._config_form_dirty = False
             self._wifi_form_dirty = False
-            self.read_device_config()
+            if not self._device_command_ready():
+                self.config_result_label.setText("最近操作：设备启动中，等待状态同步完成")
+            elif not self._initial_load_done:
+                self.config_result_label.setText("最近操作：等待设备自动同步配置")
             return
         if index == 3:
             self._update_upgrade_page()
             if self._reader is not None and not self._serial_ota_active:
-                QtCore.QTimer.singleShot(0, lambda: self._send_command("GET_STATUS"))
-                QtCore.QTimer.singleShot(180, lambda: self._send_command("GET_CONFIG"))
-                QtCore.QTimer.singleShot(360, lambda: self._send_command("HELP"))
+                if not self._schedule_command(0, "GET_STATUS"):
+                    return
+                self._schedule_command(180, "GET_CONFIG")
+                self._schedule_command(360, "HELP")
 
     def save_device_config(self) -> None:
         sensors = [name for name, checkbox in self._sensor_checks.items() if checkbox.isChecked()]
@@ -1011,15 +1172,23 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             "deviceAlias": device_alias_from_name(device_name),
             "sensors": sensors,
         }
+        if not self._send_command(f"SET_CONFIG {json.dumps(payload, ensure_ascii=False)}"):
+            self._config_form_dirty = True
+            self.config_result_label.setText(
+                f"最近操作：保存 {device_name} 失败，{self._last_command_skip_text()}"
+            )
+            return
         self._pending_config_save = True
         self._pending_config_name = device_name
         self._config_form_dirty = False
         self.config_result_label.setText(f"最近操作：正在保存 {device_name}")
-        self._send_command(f"SET_CONFIG {json.dumps(payload, ensure_ascii=False)}")
         self.statusBar().showMessage(f"正在发送设备配置：{device_name}")
 
     def _request_wifi_list(self) -> None:
-        self._send_command("GET_WIFI_LIST")
+        if self._send_command("GET_WIFI_LIST"):
+            self.statusBar().showMessage("正在读取 WiFi 配置...")
+        else:
+            self.config_result_label.setText(f"最近操作：读取 WiFi 配置失败，{self._last_command_skip_text()}")
 
     def send_wifi_list(self) -> None:
         entries = []
@@ -1033,18 +1202,25 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if not entries:
             self.statusBar().showMessage("WiFi列表为空，请至少添加一条记录")
             return
-        self._send_command(f"SET_WIFI_LIST {json.dumps(entries, ensure_ascii=False)}")
+        if not self._send_command(f"SET_WIFI_LIST {json.dumps(entries, ensure_ascii=False)}"):
+            self._wifi_form_dirty = True
+            self.config_result_label.setText(f"最近操作：WiFi 配置发送失败，{self._last_command_skip_text()}")
+            return
         self._wifi_form_dirty = False
         self.config_result_label.setText(f"最近操作：已发送 {len(entries)} 条 WiFi 配置")
         self.statusBar().showMessage(f"已发送 {len(entries)} 条 WiFi 配置")
 
     def _scan_wifi(self) -> None:
-        self._send_command("SCAN_WIFI")
-        self.statusBar().showMessage("正在让设备扫描附近 WiFi...")
+        if self._send_command("SCAN_WIFI"):
+            self.statusBar().showMessage("正在让设备扫描附近 WiFi...")
+        else:
+            self.config_result_label.setText(f"最近操作：扫描 WiFi 失败，{self._last_command_skip_text()}")
 
     def _request_low_power(self) -> None:
-        self._send_command("GET_LOW_POWER")
-        self.statusBar().showMessage("正在读取低功耗配置...")
+        if self._send_command("GET_LOW_POWER"):
+            self.statusBar().showMessage("正在读取低功耗配置...")
+        else:
+            self.config_result_label.setText(f"最近操作：读取低功耗配置失败，{self._last_command_skip_text()}")
 
     def _pick_ota_file(self) -> None:
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -1090,6 +1266,11 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self._start_serial_ota_upgrade()
             return
         if strategy == "full-flash":
+            if not self._promote_to_full_flash_package_if_needed("检测到串口命令通道不可写，改走全烧录"):
+                strategy, message = self._describe_auto_upgrade_strategy()
+                self.ota_status_label.setText(f"升级状态：{message}")
+                self.statusBar().showMessage(message)
+                return
             self._start_full_flash_upgrade()
             return
         self.ota_status_label.setText(f"升级状态：{message}")
@@ -1150,7 +1331,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             "sha256": self._serial_ota_sha256,
             "version": self._serial_ota_version,
         }
-        self._send_command(f"OTA_BEGIN {json.dumps(meta, ensure_ascii=False)}")
+        if not self._send_command(f"OTA_BEGIN {json.dumps(meta, ensure_ascii=False)}"):
+            self._fail_serial_ota(f"串口 OTA 启动失败，{self._last_command_skip_text()}")
 
     def _start_full_flash_upgrade(self) -> None:
         if self._flash_thread is not None:
@@ -1226,23 +1408,69 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
     def enable_low_power(self) -> None:
         interval_sec = int(self.low_power_interval_spin.value())
+        _enabled, _current_interval, maintenance_mode = self._current_low_power_state()
         payload = {
             "enabled": True,
             "intervalSec": interval_sec,
+            "maintenanceMode": False,
         }
-        self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}")
-        self.config_result_label.setText(f"最近操作：已请求进入低功耗，周期 {interval_sec} 秒")
-        self.statusBar().showMessage(f"已下发低功耗模式，设备将按 {interval_sec} 秒周期唤醒上报")
+        if not self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}"):
+            self.config_result_label.setText(f"最近操作：进入低功耗失败，{self._last_command_skip_text()}")
+            return
+        if maintenance_mode:
+            self.config_result_label.setText(f"最近操作：已请求进入低功耗，并退出维修站模式，周期 {interval_sec} 秒")
+            self.statusBar().showMessage(f"已退出维修站模式并启用低功耗，设备将按 {interval_sec} 秒周期唤醒上报")
+        else:
+            self.config_result_label.setText(f"最近操作：已请求进入低功耗，周期 {interval_sec} 秒")
+            self.statusBar().showMessage(f"已下发低功耗模式，设备将按 {interval_sec} 秒周期唤醒上报")
 
     def disable_low_power(self) -> None:
         interval_sec = int(self.low_power_interval_spin.value())
+        _enabled, _current_interval, maintenance_mode = self._current_low_power_state()
         payload = {
             "enabled": False,
             "intervalSec": interval_sec,
+            "maintenanceMode": maintenance_mode,
         }
-        self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}")
-        self.config_result_label.setText("最近操作：已请求退出低功耗")
-        self.statusBar().showMessage("已下发退出低功耗模式")
+        if not self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}"):
+            self.config_result_label.setText(f"最近操作：退出低功耗失败，{self._last_command_skip_text()}")
+            return
+        if maintenance_mode:
+            self.config_result_label.setText("最近操作：已请求退出低功耗，维修站模式保持开启")
+            self.statusBar().showMessage("已关闭低功耗，设备将继续保持维修站常醒模式")
+        else:
+            self.config_result_label.setText("最近操作：已请求退出低功耗")
+            self.statusBar().showMessage("已下发退出低功耗模式")
+
+    def enable_maintenance_mode(self) -> None:
+        low_power_enabled, interval_sec, _maintenance_mode = self._current_low_power_state()
+        payload = {
+            "enabled": low_power_enabled,
+            "intervalSec": interval_sec,
+            "maintenanceMode": True,
+        }
+        if not self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}"):
+            self.config_result_label.setText(f"最近操作：进入维修站模式失败，{self._last_command_skip_text()}")
+            return
+        self.config_result_label.setText("最近操作：已请求进入维修站模式，设备将保持常醒")
+        self.statusBar().showMessage("已开启维修站模式，设备不会进入 Deep Sleep，方便持续串口调试")
+
+    def disable_maintenance_mode(self) -> None:
+        low_power_enabled, interval_sec, _maintenance_mode = self._current_low_power_state()
+        payload = {
+            "enabled": low_power_enabled,
+            "intervalSec": interval_sec,
+            "maintenanceMode": False,
+        }
+        if not self._send_command(f"SET_LOW_POWER {json.dumps(payload, ensure_ascii=False)}"):
+            self.config_result_label.setText(f"最近操作：退出维修站模式失败，{self._last_command_skip_text()}")
+            return
+        if low_power_enabled:
+            self.config_result_label.setText("最近操作：已请求退出维修站模式，设备将恢复低功耗休眠逻辑")
+            self.statusBar().showMessage("已退出维修站模式，设备会按当前低功耗配置恢复休眠")
+        else:
+            self.config_result_label.setText("最近操作：已请求退出维修站模式")
+            self.statusBar().showMessage("已退出维修站模式，设备恢复正常常醒运行")
 
     def _add_wifi_row(self) -> None:
         row = self.wifi_table.rowCount()
@@ -1269,15 +1497,58 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             self.wifi_table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.get("password", "")))
         self._updating_wifi_form = False
 
-    def _send_command(self, text: str) -> None:
+    def _command_send_block_reason(self) -> str | None:
         if self._reader is None:
-            self.statusBar().showMessage("串口尚未连接")
-            return
+            return "串口尚未连接"
+        if not self._device_command_ready():
+            remaining_sec = max(1, int((self._device_command_ready_at - time.monotonic()) + 0.99))
+            return f"设备启动中，请等待约 {remaining_sec} 秒后再试"
         if self._reader.write_blocked:
-            self.statusBar().showMessage("当前串口仅支持接收日志，发送命令已跳过")
-            return
+            return "串口发送暂时繁忙，正在自动恢复，请稍后重试"
+        return None
+
+    def _device_command_ready(self) -> bool:
+        return self._reader is not None and time.monotonic() >= self._device_command_ready_at
+
+    def _device_command_delay_ms(self) -> int:
+        remaining = self._device_command_ready_at - time.monotonic()
+        return max(250, int(max(0.0, remaining) * 1000))
+
+    def _last_command_skip_text(self, fallback: str = "命令未发出") -> str:
+        return self._last_command_skip_reason or fallback
+
+    def _short_command_text(self, text: str, limit: int = 180) -> str:
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
+
+    def _report_command_skip(self, text: str, reason: str) -> None:
+        self._last_command_skip_reason = reason
+        message = f"{reason}，命令未发送"
+        self.statusBar().showMessage(message)
+        self.log_edit.appendPlainText(f"!!! {message}：{self._short_command_text(text)}")
+
+    def _schedule_command(self, delay_ms: int, text: str) -> bool:
+        reason = self._command_send_block_reason()
+        if reason is not None:
+            self._report_command_skip(text, reason)
+            return False
+        if delay_ms <= 0:
+            return self._send_command(text)
+        QtCore.QTimer.singleShot(delay_ms, lambda: self._send_command(text))
+        return True
+
+    def _send_command(self, text: str) -> bool:
+        reason = self._command_send_block_reason()
+        if reason is not None:
+            self._report_command_skip(text, reason)
+            return False
+        if self._reader is None or not self._reader.write_line(text):
+            self._report_command_skip(text, self._command_send_block_reason() or "串口尚未就绪，请稍后重试")
+            return False
+        self._last_command_skip_reason = ""
         self.log_edit.appendPlainText(f">>> {text}")
-        self.command_requested.emit(text)
+        return True
 
     def _handle_ota_status(self, ota_state: dict[str, Any]) -> None:
         state = str(ota_state.get("state") or "--")
@@ -1304,7 +1575,8 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
         if not self._serial_ota_finish_sent and received >= len(self._serial_ota_bytes):
             self._serial_ota_finish_sent = True
             self._serial_ota_waiting_ack = True
-            self._send_command("OTA_FINISH")
+            if not self._send_command("OTA_FINISH"):
+                self._fail_serial_ota(f"串口 OTA 收尾失败，{self._last_command_skip_text('OTA_FINISH 未发送')}")
 
     def _send_next_serial_ota_chunk(self) -> None:
         if not self._serial_ota_active or self._serial_ota_waiting_ack or self._reader is None:
@@ -1313,13 +1585,24 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
             return
         chunk_size = self._serial_ota_chunk_size if self._serial_ota_protocol == "raw" else self._serial_ota_legacy_chunk_size
         chunk = self._serial_ota_bytes[self._serial_ota_offset:self._serial_ota_offset + chunk_size]
-        self._serial_ota_offset += len(chunk)
+        next_offset = self._serial_ota_offset + len(chunk)
         self._serial_ota_waiting_ack = True
         if self._serial_ota_protocol == "raw":
-            self._send_command(f"OTA_WRITE_RAW {len(chunk)}")
-            self._reader.write_bytes(chunk)
+            if not self._send_command(f"OTA_WRITE_RAW {len(chunk)}"):
+                self._serial_ota_waiting_ack = False
+                self._fail_serial_ota("串口 OTA 数据头发送失败，请检查串口后重试")
+                return
+            if not self._reader.write_bytes(chunk):
+                self._serial_ota_waiting_ack = False
+                self._fail_serial_ota("串口 OTA 数据块发送失败，请检查串口后重试")
+                return
+            self._serial_ota_offset = next_offset
             return
-        self._send_command(f"OTA_WRITE {chunk.hex()}")
+        if not self._send_command(f"OTA_WRITE {chunk.hex()}"):
+            self._serial_ota_waiting_ack = False
+            self._fail_serial_ota("串口 OTA 数据块发送失败，请检查串口后重试")
+            return
+        self._serial_ota_offset = next_offset
 
     def _finish_serial_ota(self, message: str) -> None:
         self._serial_ota_active = False
@@ -1335,7 +1618,7 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
     def _fail_serial_ota(self, message: str) -> None:
         if self._reader is not None:
-            self.command_requested.emit("OTA_ABORT")
+            self._reader.write_line("OTA_ABORT")
         self._serial_ota_active = False
         self._serial_ota_waiting_ack = False
         self._serial_ota_finish_sent = False
@@ -1448,14 +1731,32 @@ class C3MonitorWindow(QtWidgets.QMainWindow):
 
         low_power = state.get("low_power", {})
         interval_sec = int(low_power.get("interval_sec", 300) or 300)
+        maintenance_mode = bool(low_power.get("maintenance_mode"))
         self.low_power_interval_spin.blockSignals(True)
         self.low_power_interval_spin.setValue(max(10, min(interval_sec, 86400)))
         self.low_power_interval_spin.blockSignals(False)
-        if low_power.get("enabled"):
+        if maintenance_mode and low_power.get("enabled"):
+            self.low_power_status_label.setText(f"状态：低功耗已配置，每 {interval_sec} 秒唤醒一次（当前被维修站模式覆盖）")
+        elif low_power.get("enabled"):
             self.low_power_status_label.setText(f"状态：已开启，每 {interval_sec} 秒唤醒一次")
         else:
-            self.low_power_status_label.setText(f"状态：未开启，当前配置周期 {interval_sec} 秒")
+            suffix = "（维修站模式保持常醒）" if maintenance_mode else ""
+            self.low_power_status_label.setText(f"状态：未开启，当前配置周期 {interval_sec} 秒{suffix}")
+        if maintenance_mode:
+            self.maintenance_status_label.setText("维修站：已开启，设备保持常醒，不会因空闲或低功耗进入休眠")
+        elif low_power.get("enabled"):
+            self.maintenance_status_label.setText("维修站：未开启，设备会按当前低功耗配置进入休眠")
+        else:
+            self.maintenance_status_label.setText("维修站：未开启，设备按正常常醒逻辑运行")
         self._update_upgrade_page()
+
+    def _current_low_power_state(self) -> tuple[bool, int, bool]:
+        low_power = self._parser.state.get("low_power", {})
+        enabled = bool(low_power.get("enabled"))
+        maintenance_mode = bool(low_power.get("maintenance_mode"))
+        interval_sec = int(low_power.get("interval_sec", self.low_power_interval_spin.value()) or self.low_power_interval_spin.value())
+        interval_sec = max(10, min(interval_sec, 86400))
+        return enabled, interval_sec, maintenance_mode
 
     def _sync_combo(self, combo: QtWidgets.QComboBox, items: list[str], current_text: str) -> None:
         self._updating_config_form = True

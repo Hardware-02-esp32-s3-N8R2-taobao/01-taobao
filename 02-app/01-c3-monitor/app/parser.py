@@ -111,6 +111,7 @@ def default_state() -> dict[str, Any]:
         "low_power": {
             "enabled": False,
             "interval_sec": 300,
+            "maintenance_mode": False,
         },
         "ota": {
             "active": False,
@@ -404,6 +405,8 @@ class StatusParser:
         interval = payload.get("intervalSec", low_power["interval_sec"])
         if isinstance(interval, (int, float)) and int(interval) > 0:
             low_power["interval_sec"] = int(interval)
+        maintenance_mode = payload.get("maintenanceMode", low_power["maintenance_mode"])
+        low_power["maintenance_mode"] = bool(maintenance_mode)
 
     def _apply_ota_payload(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
