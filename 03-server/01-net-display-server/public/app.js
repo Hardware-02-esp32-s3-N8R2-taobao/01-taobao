@@ -618,7 +618,7 @@ function inferFirmwareVersionFromFileName(fileName) {
 
 function tryOpenFirmwarePicker(deviceId) {
   const fileInput = document.getElementById("firmwareFileInput");
-  if (!fileInput || appState.activeDeviceId !== deviceId || appState.activeDevicePageKey !== "settings:admin") {
+  if (!fileInput || appState.activeDeviceId !== deviceId || appState.activeDevicePageKey !== "settings:ota") {
     return false;
   }
   try {
@@ -727,18 +727,107 @@ function getDeviceFirmwareVersion(deviceId) {
 
 function getDeviceCurrentLowPower(deviceId) {
   const adminData = appState.admin.deviceData[deviceId] || {};
-  return adminData.currentConfig?.lowPower || { enabled: false, intervalSec: 300 };
+  return adminData.currentConfig?.lowPower || { enabled: false, intervalSec: 300, maintenanceMode: false };
+}
+
+const ADMIN_MODE_OPTIONS = [
+  { value: "low_power", label: "低功耗模式" },
+  { value: "maintenance", label: "维修站模式" }
+];
+
+function normalizeAdminModeChoice(mode, fallback = "low_power") {
+  const candidate = String(mode || "").trim().toLowerCase();
+  if (candidate === "low_power" || candidate === "maintenance") {
+    return candidate;
+  }
+  const fallbackCandidate = String(fallback || "").trim().toLowerCase();
+  if (fallbackCandidate === "low_power" || fallbackCandidate === "maintenance") {
+    return fallbackCandidate;
+  }
+  return "low_power";
+}
+
+function getAdminModeOptions(options = {}) {
+  const configuredOptions = Array.isArray(options.lowPower?.modeOptions) ? options.lowPower.modeOptions : [];
+  return ADMIN_MODE_OPTIONS.map((defaultOption) => {
+    const matched = configuredOptions.find((option) => String(option?.value || "").trim().toLowerCase() === defaultOption.value);
+    return matched
+      ? { value: defaultOption.value, label: matched.label || defaultOption.label }
+      : defaultOption;
+  });
+}
+
+function getPowerModeFromLowPower(lowPower = {}) {
+  const maintenanceMode = Boolean(lowPower?.maintenanceMode ?? lowPower?.maintenance_mode ?? false);
+  const enabled = Boolean(lowPower?.enabled ?? false);
+  if (maintenanceMode) {
+    return "maintenance";
+  }
+  if (enabled) {
+    return "low_power";
+  }
+  return "normal";
+}
+
+function buildLowPowerPayloadFromMode(mode, intervalSec, fallbackLowPower = {}) {
+  const normalizedInterval = Number.isFinite(Number(intervalSec))
+    ? Math.max(10, Math.min(86400, Math.round(Number(intervalSec))))
+    : Math.max(10, Math.min(86400, Math.round(Number(fallbackLowPower?.intervalSec || 300))));
+  if (mode === "low_power") {
+    return {
+      enabled: true,
+      intervalSec: normalizedInterval,
+      maintenanceMode: false
+    };
+  }
+  if (mode === "maintenance") {
+    return {
+      enabled: Boolean(fallbackLowPower?.enabled),
+      intervalSec: normalizedInterval,
+      maintenanceMode: false
+    };
+  }
+  return {
+    enabled: false,
+    intervalSec: normalizedInterval,
+    maintenanceMode: false
+  };
+}
+
+function getPowerModeLabel(mode) {
+  if (mode === "maintenance") {
+    return "维修站模式";
+  }
+  if (mode === "low_power") {
+    return "低功耗模式";
+  }
+  return "正常模式";
+}
+
+function formatConfiguredSensorList(sensorKeys) {
+  if (!Array.isArray(sensorKeys) || sensorKeys.length === 0) {
+    return "未配置";
+  }
+  return sensorKeys
+    .map((sensorKey) => sensorCatalog[sensorKey]?.title || sensorKey)
+    .join("、");
+}
+
+function isSettingsPageKey(pageKey) {
+  return String(pageKey || "").startsWith("settings:");
 }
 
 function getAdminWakeCountdownState(deviceId) {
   const snapshot = getDeviceSnapshot(deviceId);
   const deviceStatus = getDeviceStatusEntry(deviceId);
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const modePolicy = adminData.modePolicy || null;
   const currentLowPower = getDeviceCurrentLowPower(deviceId);
-  if (!snapshot || snapshot.online || !currentLowPower?.enabled) {
+  if (!snapshot || snapshot.online || !currentLowPower?.enabled || modePolicy?.mode === "maintenance" || modePolicy?.mode === "normal") {
     return null;
   }
 
-  const intervalSec = Number(currentLowPower.intervalSec || deviceStatus?.reportIntervalSec || 0);
+  const intervalSec = Number(modePolicy?.intervalSec || currentLowPower.intervalSec || deviceStatus?.modeIntervalSec || deviceStatus?.reportIntervalSec || 0);
   const lastSeenMs = deviceStatus?.lastSeenAt ? new Date(deviceStatus.lastSeenAt).getTime() : NaN;
   if (!Number.isFinite(intervalSec) || intervalSec < 10 || !Number.isFinite(lastSeenMs)) {
     return null;
@@ -985,15 +1074,18 @@ function getDeviceUpdatedLabel(snapshot) {
 
 function getDeviceRuntimeState(deviceId) {
   const deviceStatus = getDeviceStatusEntry(deviceId);
+  const serverMode = String(deviceStatus?.serverMode || "").trim();
   const lowPower = {
     enabled: Boolean(deviceStatus?.lowPowerEnabled),
-    intervalSec: Number(deviceStatus?.reportIntervalSec || 300)
+    intervalSec: Number(deviceStatus?.modeIntervalSec || deviceStatus?.reportIntervalSec || 300),
+    maintenanceMode: Boolean(deviceStatus?.maintenanceModeEnabled)
   };
+  const mode = serverMode || getPowerModeFromLowPower(lowPower);
   const snapshot = getDeviceSnapshot(deviceId);
   const lastSeenMs = deviceStatus?.lastSeenAt ? new Date(deviceStatus.lastSeenAt).getTime() : NaN;
   const hasValidLastSeen = Number.isFinite(lastSeenMs);
 
-  if (!lowPower.enabled) {
+  if (mode === "normal") {
     return {
       mode: "normal",
       title: "正常模式",
@@ -1001,6 +1093,16 @@ function getDeviceRuntimeState(deviceId) {
         ? `设备保持实时工作，当前约每 ${NORMAL_REPORT_INTERVAL_SEC} 秒上报一次。`
         : "设备当前不在低功耗模式，恢复联网后会继续实时上报。",
       chipPrimary: snapshot?.online ? "实时上传中" : "等待恢复在线",
+      chipSecondary: `最近上报：${deviceStatus?.lastSeenAt ? formatTime(deviceStatus.lastSeenAt) : "--"}`
+    };
+  }
+
+  if (mode === "maintenance") {
+    return {
+      mode: "maintenance",
+      title: "维修站模式",
+      subtitle: `服务器当前不会批准设备进入休眠，适合调试、联机和 OTA。`,
+      chipPrimary: snapshot?.online ? "常醒在线" : "等待恢复在线",
       chipSecondary: `最近上报：${deviceStatus?.lastSeenAt ? formatTime(deviceStatus.lastSeenAt) : "--"}`
     };
   }
@@ -1505,29 +1607,44 @@ async function loadAdminOtaData(deviceId, { force = false } = {}) {
     return appState.admin.deviceData[deviceId];
   }
   const adminResponse = await fetchJson(`/api/device-admin?deviceId=${encodeURIComponent(deviceId)}`);
+  const existingAdminData = appState.admin.deviceData[deviceId] || {};
   const currentConfig = adminResponse.currentConfig || {};
   const currentLowPower = currentConfig.lowPower || {};
+  const modePolicy = adminResponse.modePolicy || {
+    mode: getPowerModeFromLowPower(currentLowPower),
+    intervalSec: Number(currentLowPower.intervalSec || 300)
+  };
+  const currentMode = modePolicy.mode || getPowerModeFromLowPower(currentLowPower);
+  const activeConfigJob = adminResponse.activeConfigJob || null;
+  const pendingConfig = activeConfigJob?.config || {};
+  const pendingLowPower = activeConfigJob?.lowPower || {};
+  const pendingMode = activeConfigJob
+    ? (activeConfigJob.mode || getPowerModeFromLowPower(pendingLowPower))
+    : currentMode;
   appState.admin.deviceData[deviceId] = {
-    ...(appState.admin.deviceData[deviceId] || {}),
+    ...existingAdminData,
     options: adminResponse.options || { deviceNames: [], sensorTypes: [] },
     currentConfig,
-    activeConfigJob: adminResponse.activeConfigJob || null,
+    modePolicy,
+    activeConfigJob,
     configJobs: adminResponse.configJobs || [],
-    configDeviceName: appState.admin.deviceData[deviceId]?.configDeviceName || currentConfig.deviceName || "",
-    configSensors: appState.admin.deviceData[deviceId]?.configSensors || currentConfig.sensors || [],
-    configLowPowerEnabled: appState.admin.deviceData[deviceId]?.configLowPowerEnabled ?? Boolean(currentLowPower.enabled),
-    configLowPowerIntervalSec: appState.admin.deviceData[deviceId]?.configLowPowerIntervalSec || Number(currentLowPower.intervalSec || 300),
-    configSubmitting: appState.admin.deviceData[deviceId]?.configSubmitting || false,
-    configStatus: appState.admin.deviceData[deviceId]?.configStatus || "",
+    configDeviceName: existingAdminData.configDeviceName ?? pendingConfig.deviceName ?? currentConfig.deviceName ?? "",
+    configSensors: Array.isArray(existingAdminData.configSensors)
+      ? existingAdminData.configSensors
+      : (pendingConfig.sensors || currentConfig.sensors || []),
+    configMode: existingAdminData.configMode ?? pendingMode,
+    configLowPowerIntervalSec: existingAdminData.configLowPowerIntervalSec ?? Number(pendingLowPower.intervalSec || modePolicy.intervalSec || currentLowPower.intervalSec || 300),
+    configSubmitting: existingAdminData.configSubmitting || false,
+    configStatus: existingAdminData.configStatus || "",
     activeJob: adminResponse.activeJob || null,
     jobs: adminResponse.jobs || [],
-    uploadVersion: appState.admin.deviceData[deviceId]?.uploadVersion || "",
-    uploadNotes: appState.admin.deviceData[deviceId]?.uploadNotes || "",
-    selectedFile: appState.admin.deviceData[deviceId]?.selectedFile || null,
-    selectedFileName: appState.admin.deviceData[deviceId]?.selectedFileName || "",
-    selectedPackageInfo: appState.admin.deviceData[deviceId]?.selectedPackageInfo || null,
-    uploadPercent: appState.admin.deviceData[deviceId]?.uploadPercent || 0,
-    pageStatus: appState.admin.deviceData[deviceId]?.pageStatus || ""
+    uploadVersion: existingAdminData.uploadVersion || "",
+    uploadNotes: existingAdminData.uploadNotes || "",
+    selectedFile: existingAdminData.selectedFile || null,
+    selectedFileName: existingAdminData.selectedFileName || "",
+    selectedPackageInfo: existingAdminData.selectedPackageInfo || null,
+    uploadPercent: existingAdminData.uploadPercent || 0,
+    pageStatus: existingAdminData.pageStatus || ""
   };
   const latestReportedVersion = appState.admin.deviceData[deviceId]?.activeJob?.lastReportedVersion
     || appState.admin.deviceData[deviceId]?.jobs?.find?.((job) => job.lastReportedVersion)?.lastReportedVersion
@@ -1568,9 +1685,18 @@ async function refreshAdminConfig(deviceId) {
   }
 }
 
-async function saveAdminConfig(deviceId) {
+async function saveAdminConfig(deviceId, section = "all") {
   const adminData = appState.admin.deviceData[deviceId] || {};
   const draft = getAdminConfigDraft(deviceId);
+  const modeForSubmit = section === "mode"
+    ? normalizeAdminModeChoice(draft.mode, adminData.modePolicy?.mode)
+    : draft.mode;
+  const lowPower = buildLowPowerPayloadFromMode(modeForSubmit, draft.lowPowerIntervalSec, adminData.currentConfig?.lowPower || {});
+  const submitMessage = section === "mode"
+    ? "created from mode config page"
+    : section === "sensors"
+      ? "created from sensor config page"
+      : "created from device config page";
   try {
     appState.admin.deviceData[deviceId] = {
       ...adminData,
@@ -1582,18 +1708,16 @@ async function saveAdminConfig(deviceId) {
       deviceId,
       deviceName: draft.deviceName,
       sensors: draft.sensors,
-      lowPower: {
-        enabled: draft.lowPowerEnabled,
-        intervalSec: draft.lowPowerIntervalSec
-      },
-      message: "created from admin page"
+      mode: modeForSubmit,
+      lowPower,
+      message: submitMessage
     });
     await loadAdminOtaData(deviceId, { force: true });
     appState.admin.deviceData[deviceId] = {
       ...(appState.admin.deviceData[deviceId] || {}),
       configSubmitting: false,
       configStatus: response.job
-        ? `配置任务已创建，等待设备拉取：${response.job.config?.deviceName || "--"}`
+        ? `配置任务已创建，等待设备下一次上报拿到服务器 ack 并确认应用：${response.job.config?.deviceName || "--"}`
         : "配置任务已创建。"
     };
     renderDeviceDetail(deviceId);
@@ -2624,7 +2748,10 @@ function getDevicePages(catalog, snapshot) {
     ? [{ key: "control:pump", label: "🧯 水泵控制", kind: "control", controlKey: "pump" }]
     : [];
   const settingsPages = [
-    { key: "settings:admin", label: "🛠️ 管理员", kind: "settings", settingsKey: "admin" }
+    { key: "settings:mapping", label: "🧭 设备映射", kind: "settings", settingsKey: "mapping" },
+    { key: "settings:mode", label: "🧩 模式配置", kind: "settings", settingsKey: "mode" },
+    { key: "settings:sensors", label: "🛰️ 传感器配置", kind: "settings", settingsKey: "sensors" },
+    { key: "settings:ota", label: "⬆️ 设备升级", kind: "settings", settingsKey: "ota" }
   ];
   return [...sensorPages, ...controlPages, ...settingsPages];
 }
@@ -2922,11 +3049,11 @@ function renderDevicePages(snapshot, catalog, selectedPageKey) {
       </div>
       ${renderDevicePageGroup("在线设备", "正在实时上报的传感器", onlinePages, currentPage)}
       ${renderDevicePageGroup("掉线设备", "离线传感器和历史/控制入口", offlinePages, currentPage)}
-      ${renderDevicePageGroup("设置", "设备内的管理员页面，包含名称映射、OTA 和配置下发", settingsPages, currentPage)}
+      ${renderDevicePageGroup("设置", "这里直接分成设备映射、模式配置、传感器配置和设备升级 4 个标签", settingsPages, currentPage)}
       ${currentPage?.kind === "control"
         ? renderPumpControlSection(catalog.id)
         : currentPage?.kind === "settings"
-          ? renderDeviceAdminSection(catalog.id, snapshot)
+          ? renderDeviceSettingsSection(catalog.id, snapshot, currentPage?.settingsKey)
           : renderSensorPageContent(currentSensor)}
     </section>
   `;
@@ -2997,63 +3124,164 @@ function getAdminConfigDraft(deviceId) {
   const adminData = appState.admin.deviceData[deviceId] || {};
   const currentConfig = adminData.currentConfig || {};
   const currentLowPower = currentConfig.lowPower || {};
+  const modePolicy = adminData.modePolicy || {};
+  const activeConfigJob = adminData.activeConfigJob || null;
+  const pendingConfig = activeConfigJob?.config || {};
+  const pendingLowPower = activeConfigJob?.lowPower || {};
   return {
-    deviceName: adminData.configDeviceName || currentConfig.deviceName || "探索者1号",
-    sensors: Array.isArray(adminData.configSensors) ? adminData.configSensors : (currentConfig.sensors || []),
-    lowPowerEnabled: adminData.configLowPowerEnabled ?? Boolean(currentLowPower.enabled),
-    lowPowerIntervalSec: Number(adminData.configLowPowerIntervalSec || currentLowPower.intervalSec || 300)
+    deviceName: adminData.configDeviceName ?? pendingConfig.deviceName ?? currentConfig.deviceName ?? "探索者1号",
+    sensors: Array.isArray(adminData.configSensors) ? adminData.configSensors : (pendingConfig.sensors || currentConfig.sensors || []),
+    mode: adminData.configMode ?? (activeConfigJob ? (activeConfigJob.mode || getPowerModeFromLowPower(pendingLowPower)) : (modePolicy.mode || getPowerModeFromLowPower(currentLowPower))),
+    lowPowerIntervalSec: Number(adminData.configLowPowerIntervalSec ?? pendingLowPower.intervalSec ?? modePolicy.intervalSec ?? currentLowPower.intervalSec ?? 300),
   };
 }
 
-function renderDeviceConfigSettingsSection(deviceId, snapshot) {
+function renderDeviceConfigHistorySection(adminData) {
+  const configJobs = adminData.configJobs || [];
+  const configHistoryExpanded = Boolean(adminData.configHistoryExpanded);
+
+  return `
+    <div class="detail-block-head" style="margin-top:18px;">
+      <div class="detail-block-title">配置下发记录</div>
+      <button type="button" class="ghost-btn" id="toggleAdminConfigHistoryBtn">${configHistoryExpanded ? "收起历史" : "展开历史"}</button>
+    </div>
+    ${configHistoryExpanded ? `
+      <div class="info-list" style="margin-top:12px;">
+        ${configJobs.length ? configJobs.map((job) => {
+          const jobMode = job.mode || getPowerModeFromLowPower(job.lowPower || {});
+          const cycleText = jobMode === "low_power" ? ` · 周期 ${job.lowPower?.intervalSec || 300} 秒` : "";
+          const summaryStatus = job.status === "pending" && job.lastReportedStatus === "failed"
+            ? "pending(最近一次失败)"
+            : job.status;
+          return `
+            <div style="padding:12px 0;border-bottom:1px solid rgba(34,50,77,0.08);">
+              <div class="info-row">
+                <span class="info-label">${escapeHtml(formatTime(job.createdAt))}</span>
+                <strong>${escapeHtml(`${summaryStatus} · ${getPowerModeLabel(jobMode)} · ${job.config?.deviceName || "--"} · ${formatConfiguredSensorList(job.config?.sensors || [])}`)}</strong>
+              </div>
+              <div class="detail-helper" style="margin-top:6px;">${escapeHtml(`消息：${job.message || "--"}${cycleText}`)}</div>
+              ${Array.isArray(job.history) && job.history.length ? `
+                <div class="detail-helper" style="margin-top:8px;display:grid;gap:4px;">
+                  ${job.history.map((entry) => `<span>${escapeHtml(`${formatTime(entry.at)} · ${entry.status}${entry.message ? ` · ${entry.message}` : ""}`)}</span>`).join("")}
+                </div>
+              ` : ""}
+            </div>
+          `;
+        }).join("") : '<div class="info-row"><span class="info-label">配置</span><strong>还没有配置下发记录</strong></div>'}
+      </div>
+    ` : `<p class="footer-note" style="margin-top:12px;">最近 20 条配置任务默认收起，需要时再展开查看。</p>`}
+  `;
+}
+
+function renderDeviceModeSettingsSection(deviceId, snapshot) {
+  const adminData = appState.admin.deviceData[deviceId] || {};
+  const draft = getAdminConfigDraft(deviceId);
+  const options = adminData.options || {};
+  const modeOptions = getAdminModeOptions(options);
+  const currentConfig = adminData.currentConfig || {};
+  const currentLowPower = currentConfig.lowPower || {};
+  const modePolicy = adminData.modePolicy || {
+    mode: getPowerModeFromLowPower(currentLowPower),
+    intervalSec: Number(currentLowPower.intervalSec || 300)
+  };
+  const currentMode = modePolicy.mode || getPowerModeFromLowPower(currentLowPower);
+  const draftMode = normalizeAdminModeChoice(draft.mode, currentMode);
+  const activeConfigJob = adminData.activeConfigJob || null;
+  const wakeCountdown = getAdminWakeCountdownState(deviceId);
+  const currentModeText = currentMode === "maintenance"
+    ? "维修站模式已启用，服务器当前不会下发休眠批准"
+    : currentMode === "low_power"
+      ? `低功耗模式已启用，已向 C3 下发 ${modePolicy.intervalSec || currentLowPower.intervalSec || 300} 秒本地唤醒周期；服务器只会在每次上报后自动响应是否批准休眠`
+      : `正常模式，实时上报约 ${NORMAL_REPORT_INTERVAL_SEC} 秒/次`;
+  const activeJobMode = activeConfigJob?.mode || getPowerModeFromLowPower(activeConfigJob?.lowPower || {});
+  const pendingModeText = activeConfigJob ? getPowerModeLabel(activeJobMode) : "暂无待执行模式";
+  const statusText = adminData.configStatus || (
+    activeConfigJob
+      ? (activeConfigJob.lastReportedStatus === "failed"
+        ? `模式任务仍挂起，设备最近一次应用失败：${activeConfigJob.lastReportedMessage || "等待设备下一次上报后重试。"}`
+        : "模式任务已创建，等待设备下一次上报拿到服务器 ack 并确认应用。")
+      : wakeCountdown
+        ? (wakeCountdown.dueSoon
+          ? "设备低功耗休眠中，预计即将再次上线。"
+          : `设备低功耗休眠中，预计 ${formatCountdownMs(wakeCountdown.remainingMs)} 后再次上线。`)
+        : snapshot.online
+          ? currentMode === "maintenance"
+            ? "设备在线，服务器当前不会批准它进入休眠，适合 OTA、串口或调试联机。"
+            : currentMode === "low_power"
+              ? "设备在线，只有当本次上报与服务器目标一致时，服务器 ack 才会批准进入休眠。"
+              : `设备在线，当前处于正常模式，固件约 ${NORMAL_REPORT_INTERVAL_SEC} 秒上报一次。`
+          : "设备离线或休眠时，模式任务会排队等待它下次上线。"
+  );
+
+  return `
+    <article class="info-card" style="grid-column: span 12; margin-top: 12px;">
+      <div class="detail-block-head">
+        <div class="detail-block-title">模式配置</div>
+        <div class="detail-helper">当前模式代表服务器当前采用的休眠策略；待执行模式表示设备下一次拿到服务器 ack 后准备切换的目标模式</div>
+      </div>
+      <div class="info-list">
+        <div class="info-row"><span class="info-label">当前模式</span><strong>${escapeHtml(currentModeText)}</strong></div>
+        ${currentMode === "low_power" ? `<div class="info-row"><span class="info-label">当前周期</span><strong>${escapeHtml(`${modePolicy.intervalSec || currentLowPower.intervalSec || 300} 秒`)}</strong></div>` : ""}
+        ${wakeCountdown ? `<div class="info-row"><span class="info-label">预计下次上线</span><strong id="adminWakeCountdownValue">${wakeCountdown.dueSoon ? "预计即将上线" : formatCountdownMs(wakeCountdown.remainingMs)}</strong></div>` : ""}
+        <div class="info-row"><span class="info-label">待执行模式</span><strong>${escapeHtml(pendingModeText)}</strong></div>
+        ${activeConfigJob && activeJobMode === "low_power" ? `<div class="info-row"><span class="info-label">待执行周期</span><strong>${escapeHtml(`${activeConfigJob.lowPower?.intervalSec || 300} 秒`)}</strong></div>` : ""}
+      </div>
+
+      <div class="history-toolbar" style="margin-top:14px; align-items:center; position:relative; z-index:3;">
+        <select class="date-input" id="adminConfigMode">
+          ${modeOptions.map((option) => `<option value="${escapeAttribute(option.value)}" ${draftMode === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}
+        </select>
+        <input class="date-input" id="adminLowPowerInterval" type="number" min="10" max="86400" step="1" value="${Number.isFinite(draft.lowPowerIntervalSec) ? draft.lowPowerIntervalSec : 300}" placeholder="唤醒周期（秒，仅低功耗生效）" />
+        <button type="button" class="range-btn active" id="saveAdminModeConfigBtn">${adminData.configSubmitting ? "下发中..." : "下发模式"}</button>
+      </div>
+      <p class="footer-note" style="margin-top:10px;">模式只保留“低功耗模式”和“维修站模式”两个选项。低功耗模式下，唤醒周期是服务器下发给 C3 的本地定时参数，真正按周期自动唤醒的是设备自己；服务器只在设备每次上报后返回本轮是否批准休眠。维修站模式只阻止服务器下发休眠批准，不再把维修站写进设备本地低功耗字段。</p>
+
+      ${renderDeviceConfigHistorySection(adminData)}
+
+      <p class="footer-note" id="adminModeStatus">${escapeHtml(statusText)}</p>
+    </article>
+  `;
+}
+
+function renderDeviceSensorConfigSettingsSection(deviceId, snapshot) {
   const adminData = appState.admin.deviceData[deviceId] || {};
   const draft = getAdminConfigDraft(deviceId);
   const options = adminData.options || {};
   const sensorTypes = options.sensorTypes || [];
   const deviceNames = options.deviceNames || [];
   const currentConfig = adminData.currentConfig || {};
-  const currentLowPower = currentConfig.lowPower || {};
   const activeConfigJob = adminData.activeConfigJob || null;
-  const configJobs = adminData.configJobs || [];
-  const wakeCountdown = getAdminWakeCountdownState(deviceId);
-  const currentModeText = currentLowPower.enabled
-    ? `已开启，每 ${currentLowPower.intervalSec || 300} 秒唤醒`
-    : `未开启，实时模式约 ${NORMAL_REPORT_INTERVAL_SEC} 秒/次上报`;
+  const pendingDeviceName = activeConfigJob?.config?.deviceName || "暂无待执行名称";
+  const pendingSensors = Array.isArray(activeConfigJob?.config?.sensors) ? activeConfigJob.config.sensors : [];
   const statusText = adminData.configStatus || (
-    wakeCountdown
-      ? (wakeCountdown.dueSoon
-        ? "设备低功耗休眠中，预计即将再次上线。"
-        : `设备低功耗休眠中，预计 ${formatCountdownMs(wakeCountdown.remainingMs)} 后再次上线。`)
+    activeConfigJob
+      ? (activeConfigJob.lastReportedStatus === "failed"
+        ? `传感器任务仍挂起，设备最近一次应用失败：${activeConfigJob.lastReportedMessage || "等待设备下一次上报后重试。"}`
+        : "传感器任务已创建，等待设备下一次上报拿到服务器 ack 并确认应用。")
       : snapshot.online
-      ? `设备在线，低功耗关闭时固件约 ${NORMAL_REPORT_INTERVAL_SEC} 秒上报一次；保存后会很快拉取新配置。`
-      : "设备离线或休眠时，配置会排队等待它下次上线。"
+        ? "设备在线，保存后新的传感器配置会在服务器 ack 中立即下发。"
+        : "设备离线或休眠时，传感器配置会排队等待它下次上线。"
   );
 
   return `
     <article class="info-card" style="grid-column: span 12; margin-top: 12px;">
       <div class="detail-block-head">
-        <div class="detail-block-title">远程配置下发</div>
-        <div class="detail-helper">设备名称、传感器挂载和低功耗参数会通过服务器远程下发到设备；关闭低功耗时固件按约 3 秒/次持续上报</div>
+        <div class="detail-block-title">传感器配置</div>
+        <div class="detail-helper">当前名称和传感器只认设备实际回报；待执行项表示服务器已经挂起、等待设备确认应用的目标配置</div>
       </div>
       <div class="info-list">
         <div class="info-row"><span class="info-label">当前名称</span><strong>${escapeHtml(currentConfig.deviceName || "--")}</strong></div>
-        <div class="info-row"><span class="info-label">当前传感器</span><strong>${escapeHtml((currentConfig.sensors || []).join("、") || "未配置")}</strong></div>
-        <div class="info-row"><span class="info-label">低功耗</span><strong>${escapeHtml(currentModeText)}</strong></div>
-        ${wakeCountdown ? `<div class="info-row"><span class="info-label">预计下次上线</span><strong id="adminWakeCountdownValue">${wakeCountdown.dueSoon ? "预计即将上线" : formatCountdownMs(wakeCountdown.remainingMs)}</strong></div>` : ""}
-        <div class="info-row"><span class="info-label">待执行任务</span><strong>${escapeHtml(activeConfigJob ? `${activeConfigJob.config?.deviceName || "--"} · ${activeConfigJob.config?.sensors?.join("、") || "无传感器"}` : "暂无待执行配置")}</strong></div>
+        <div class="info-row"><span class="info-label">当前传感器</span><strong>${escapeHtml(formatConfiguredSensorList(currentConfig.sensors || []))}</strong></div>
+        <div class="info-row"><span class="info-label">待执行名称</span><strong>${escapeHtml(activeConfigJob ? pendingDeviceName : "暂无待执行名称")}</strong></div>
+        <div class="info-row"><span class="info-label">待执行传感器</span><strong>${escapeHtml(activeConfigJob ? formatConfiguredSensorList(pendingSensors) : "暂无待执行传感器")}</strong></div>
       </div>
 
       <div class="history-toolbar" style="margin-top:14px; align-items:center; position:relative; z-index:3;">
         <select class="date-input" id="adminConfigDeviceName">
           ${deviceNames.map((name) => `<option value="${escapeAttribute(name)}" ${draft.deviceName === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
         </select>
-        <label class="detail-helper" style="display:inline-flex;align-items:center;gap:8px;">
-          <input id="adminLowPowerEnabled" type="checkbox" ${draft.lowPowerEnabled ? "checked" : ""} />
-          开启低功耗
-        </label>
-        <input class="date-input" id="adminLowPowerInterval" type="number" min="10" max="86400" step="1" value="${Number.isFinite(draft.lowPowerIntervalSec) ? draft.lowPowerIntervalSec : 300}" placeholder="唤醒周期（秒，仅低功耗生效）" />
-        <button type="button" class="range-btn" id="refreshAdminConfigBtn">刷新配置</button>
-        <button type="button" class="range-btn active" id="saveAdminConfigBtn">${adminData.configSubmitting ? "下发中..." : "保存并下发"}</button>
+        <button type="button" class="range-btn" id="refreshAdminSensorConfigBtn">刷新传感器</button>
+        <button type="button" class="range-btn active" id="saveAdminSensorConfigBtn">${adminData.configSubmitting ? "下发中..." : "保存传感器"}</button>
       </div>
 
       <div class="info-list" style="margin-top: 16px;">
@@ -3067,21 +3295,11 @@ function renderDeviceConfigSettingsSection(deviceId, snapshot) {
           </label>
         `).join("")}
       </div>
+      <p class="footer-note" style="margin-top:10px;">这里保存的是设备实际上报的传感器挂载清单；名称映射请切到“设备映射”标签单独处理。</p>
 
-      <div class="detail-block-head" style="margin-top:18px;">
-        <div class="detail-block-title">配置下发记录</div>
-        <div class="detail-helper">最近 10 条配置任务</div>
-      </div>
-      <div class="info-list" style="margin-top:12px;">
-        ${configJobs.length ? configJobs.map((job) => `
-          <div class="info-row">
-            <span class="info-label">${escapeHtml(formatTime(job.createdAt))}</span>
-            <strong>${escapeHtml(`${job.status} · ${job.config?.deviceName || "--"} · ${job.config?.sensors?.join("、") || "无传感器"}`)}</strong>
-          </div>
-        `).join("") : '<div class="info-row"><span class="info-label">配置</span><strong>还没有配置下发记录</strong></div>'}
-      </div>
+      ${renderDeviceConfigHistorySection(adminData)}
 
-      <p class="footer-note" id="adminConfigStatus">${escapeHtml(statusText)}</p>
+      <p class="footer-note" id="adminSensorConfigStatus">${escapeHtml(statusText)}</p>
     </article>
   `;
 }
@@ -3183,12 +3401,17 @@ function renderDeviceAdminOtaSection(deviceId, snapshot) {
   `;
 }
 
-function renderDeviceAdminSection(deviceId, snapshot) {
-  return [
-    renderSensorAliasSettingsSection(deviceId, snapshot.sensors),
-    renderDeviceConfigSettingsSection(deviceId, snapshot),
-    renderDeviceAdminOtaSection(deviceId, snapshot)
-  ].join("");
+function renderDeviceSettingsSection(deviceId, snapshot, settingsKey) {
+  if (settingsKey === "mapping") {
+    return renderSensorAliasSettingsSection(deviceId, snapshot.sensors);
+  }
+  if (settingsKey === "mode") {
+    return renderDeviceModeSettingsSection(deviceId, snapshot);
+  }
+  if (settingsKey === "sensors") {
+    return renderDeviceSensorConfigSettingsSection(deviceId, snapshot);
+  }
+  return renderDeviceAdminOtaSection(deviceId, snapshot);
 }
 
 function getDeviceSceneConfig(catalog) {
@@ -3459,7 +3682,7 @@ function bindIoTDeviceEvents(deviceId) {
       renderDeviceDetail(deviceId);
       if (appState.activeDevicePageKey.startsWith("sensor:")) {
         await refreshSensorHistory(deviceId, appState.activeSensorKey);
-      } else if (appState.activeDevicePageKey === "settings:admin") {
+      } else if (isSettingsPageKey(appState.activeDevicePageKey)) {
         await loadAdminOtaData(deviceId, { force: true });
         renderDeviceDetail(deviceId);
       }
@@ -3626,10 +3849,10 @@ function bindIoTDeviceEvents(deviceId) {
     });
   });
 
-  document.getElementById("adminLowPowerEnabled")?.addEventListener("change", (event) => {
+  document.getElementById("adminConfigMode")?.addEventListener("change", (event) => {
     appState.admin.deviceData[deviceId] = {
       ...(appState.admin.deviceData[deviceId] || {}),
-      configLowPowerEnabled: event.target.checked
+      configMode: normalizeAdminModeChoice(event.target.value)
     };
   });
 
@@ -3638,6 +3861,18 @@ function bindIoTDeviceEvents(deviceId) {
       ...(appState.admin.deviceData[deviceId] || {}),
       configLowPowerIntervalSec: Number(event.target.value || 300)
     };
+  });
+
+  document.getElementById("saveAdminModeConfigBtn")?.addEventListener("click", async () => {
+    await saveAdminConfig(deviceId, "mode");
+  });
+
+  document.getElementById("refreshAdminSensorConfigBtn")?.addEventListener("click", async () => {
+    await refreshAdminConfig(deviceId);
+  });
+
+  document.getElementById("saveAdminSensorConfigBtn")?.addEventListener("click", async () => {
+    await saveAdminConfig(deviceId, "sensors");
   });
 
   document.getElementById("refreshAdminOtaBtn")?.addEventListener("click", async () => {
@@ -3716,6 +3951,15 @@ function bindIoTDeviceEvents(deviceId) {
     appState.admin.deviceData[deviceId] = {
       ...currentAdminData,
       otaHistoryExpanded: !currentAdminData.otaHistoryExpanded
+    };
+    renderDeviceDetail(deviceId);
+  });
+
+  document.getElementById("toggleAdminConfigHistoryBtn")?.addEventListener("click", () => {
+    const currentAdminData = appState.admin.deviceData[deviceId] || {};
+    appState.admin.deviceData[deviceId] = {
+      ...currentAdminData,
+      configHistoryExpanded: !currentAdminData.configHistoryExpanded
     };
     renderDeviceDetail(deviceId);
   });
@@ -3843,7 +4087,7 @@ function renderDeviceDetail(deviceId) {
     els.detailPanel.innerHTML = renderIoTDeviceDetail(deviceId, catalog, snapshot);
     bindIoTDeviceEvents(deviceId);
     renderExportDialog();
-    if (appState.activeDevicePageKey === "settings:admin" && !appState.admin.deviceData[deviceId]) {
+    if (isSettingsPageKey(appState.activeDevicePageKey) && !appState.admin.deviceData[deviceId]) {
       loadAdminOtaData(deviceId, { force: true })
         .then(() => {
           if (appState.activeDeviceId === deviceId) {
@@ -4049,7 +4293,7 @@ async function refreshAll() {
 }
 
 async function pollActiveOtaStatus() {
-  if (!appState.activeDeviceId || appState.activeDevicePageKey !== "settings:admin") {
+  if (!appState.activeDeviceId || !isSettingsPageKey(appState.activeDevicePageKey)) {
     return;
   }
   if (appState.admin.uploadSubmitting) {
@@ -4066,12 +4310,12 @@ async function pollActiveOtaStatus() {
 }
 
 function updateAdminWakeCountdown() {
-  if (!appState.activeDeviceId || appState.activeDevicePageKey !== "settings:admin") {
+  if (!appState.activeDeviceId || appState.activeDevicePageKey !== "settings:mode") {
     return;
   }
 
   const valueEl = document.getElementById("adminWakeCountdownValue");
-  const statusEl = document.getElementById("adminConfigStatus");
+  const statusEl = document.getElementById("adminModeStatus");
   if (!valueEl && !statusEl) {
     return;
   }
@@ -4093,7 +4337,7 @@ function updateAdminWakeCountdown() {
 }
 
 function updateActiveDeviceRuntimeStatus() {
-  if (!appState.activeDeviceId || appState.activeDevicePageKey === "settings:admin") {
+  if (!appState.activeDeviceId || isSettingsPageKey(appState.activeDevicePageKey)) {
     return;
   }
 
@@ -4113,23 +4357,6 @@ function updateActiveDeviceRuntimeStatus() {
 }
 
 els.backToOverviewBtn.addEventListener("click", () => closeDetail());
-els.detailPanel.addEventListener("click", async (event) => {
-  const target = event.target.closest("button");
-  if (!target || !appState.activeDeviceId || appState.activeDevicePageKey !== "settings:admin") {
-    return;
-  }
-
-  if (target.id === "refreshAdminConfigBtn") {
-    event.preventDefault();
-    await refreshAdminConfig(appState.activeDeviceId);
-    return;
-  }
-
-  if (target.id === "saveAdminConfigBtn") {
-    event.preventDefault();
-    await saveAdminConfig(appState.activeDeviceId);
-  }
-});
 window.addEventListener("hashchange", () => syncRoute());
 window.addEventListener("resize", () => {
   if (appState.activeDeviceId) renderDeviceDetail(appState.activeDeviceId);

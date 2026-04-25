@@ -23,19 +23,23 @@ const SERVER_HISTORY_LIMIT = 1440;             // 保留 24 小时（24 × 60）
 const DEVICE_PRESENCE_CONFIG = {
   "explorer-01": {
     lowPowerEnabled: false,
-    reportIntervalSec: 300
+    reportIntervalSec: 300,
+    maintenanceModeEnabled: false
   },
   "explorer-gateway": {
     lowPowerEnabled: false,
-    reportIntervalSec: 300
+    reportIntervalSec: 300,
+    maintenanceModeEnabled: false
   },
   "yard-01": {
     lowPowerEnabled: false,
-    reportIntervalSec: 300
+    reportIntervalSec: 300,
+    maintenanceModeEnabled: false
   },
   "study-01": {
     lowPowerEnabled: false,
-    reportIntervalSec: 300
+    reportIntervalSec: 300,
+    maintenanceModeEnabled: false
   }
 };
 
@@ -182,6 +186,7 @@ const firmwareMetaPath = path.join(dataDir, "firmware-packages.json");
 const otaJobsMetaPath = path.join(dataDir, "ota-jobs.json");
 const deviceConfigMetaPath = path.join(dataDir, "device-runtime-configs.json");
 const deviceConfigJobsMetaPath = path.join(dataDir, "device-config-jobs.json");
+const deviceModePolicyMetaPath = path.join(dataDir, "device-mode-policies.json");
 const FIRMWARE_PACKAGE_MAGIC = Buffer.from("YDFWPKG1", "utf8");
 const DEFAULT_APP_FLASH_OFFSET = 0x10000;
 
@@ -477,6 +482,15 @@ function saveDeviceConfigJobs(jobs) {
   writeJsonFile(deviceConfigJobsMetaPath, jobs);
 }
 
+function loadDeviceModePolicies() {
+  const raw = readJsonFile(deviceModePolicyMetaPath, {});
+  return raw && typeof raw === "object" ? raw : {};
+}
+
+function saveDeviceModePolicies(policies) {
+  writeJsonFile(deviceModePolicyMetaPath, policies);
+}
+
 function loadRoomPhotoMap() {
   const raw = readJsonFile(roomPhotoMetaPath, {});
   if (!raw || typeof raw !== "object") {
@@ -506,7 +520,34 @@ let firmwarePackages = loadFirmwarePackages();
 let otaJobs = loadOtaJobs();
 let deviceRuntimeConfigs = loadDeviceRuntimeConfigs();
 let deviceConfigJobs = loadDeviceConfigJobs();
+let deviceModePolicies = loadDeviceModePolicies();
 const adminSessions = new Map();
+
+function migrateLegacyModePolicies() {
+  let changed = false;
+  Object.entries(deviceRuntimeConfigs).forEach(([deviceId, config]) => {
+    if (deviceModePolicies[deviceId] || !config || typeof config !== "object") {
+      return;
+    }
+    const lowPower = normalizeLowPowerPayload(config.lowPower || {}, getDefaultDeviceRuntimeConfig(deviceId).lowPower);
+    const mode = getPowerModeFromLowPower(lowPower);
+    if (mode === "normal" && !lowPower.enabled) {
+      return;
+    }
+    deviceModePolicies[deviceId] = normalizeDeviceModePolicy(deviceId, {
+      mode,
+      intervalSec: lowPower.intervalSec,
+      updatedAt: config.updatedAt || null,
+      source: "legacy-runtime-migration"
+    }, getDefaultDeviceModePolicy(deviceId));
+    changed = true;
+  });
+  if (changed) {
+    saveDeviceModePolicies(deviceModePolicies);
+  }
+}
+
+migrateLegacyModePolicies();
 
 function createAdminSession() {
   const token = crypto.randomBytes(24).toString("hex");
@@ -929,15 +970,81 @@ function normalizeSensorList(sensorValues) {
   return sensors;
 }
 
+function normalizePowerMode(mode, fallback = "normal") {
+  const candidate = String(mode || fallback || "normal").trim().toLowerCase();
+  if (candidate === "maintenance") {
+    return "maintenance";
+  }
+  if (candidate === "low_power" || candidate === "low-power" || candidate === "lowpower") {
+    return "low_power";
+  }
+  return "normal";
+}
+
+function getPowerModeFromLowPower(lowPower = {}) {
+  const maintenanceMode = Boolean(lowPower?.maintenanceMode ?? lowPower?.maintenance_mode ?? false);
+  const enabled = Boolean(lowPower?.enabled ?? false);
+  if (maintenanceMode) {
+    return "maintenance";
+  }
+  if (enabled) {
+    return "low_power";
+  }
+  return "normal";
+}
+
 function normalizeLowPowerPayload(payload, fallback = {}) {
-  const enabled = Boolean(payload?.enabled ?? fallback.enabled ?? false);
+  let enabled = Boolean(payload?.enabled ?? fallback.enabled ?? false);
   const intervalCandidate = Number(payload?.intervalSec ?? payload?.interval_sec ?? fallback.intervalSec ?? fallback.interval_sec ?? 300);
   const intervalSec = Number.isFinite(intervalCandidate)
     ? Math.max(10, Math.min(86400, Math.round(intervalCandidate)))
     : 300;
+  let maintenanceMode = Boolean(
+    payload?.maintenanceMode
+    ?? payload?.maintenance_mode
+    ?? fallback.maintenanceMode
+    ?? fallback.maintenance_mode
+    ?? false
+  );
+  if (maintenanceMode) {
+    enabled = true;
+  }
+  if (!enabled) {
+    maintenanceMode = false;
+  }
   return {
     enabled,
-    intervalSec
+    intervalSec,
+    maintenanceMode
+  };
+}
+
+function buildLowPowerPayloadFromMode(mode, intervalSec, fallback = {}) {
+  const normalizedMode = normalizePowerMode(mode, getPowerModeFromLowPower(fallback));
+  const normalizedInterval = normalizeLowPowerPayload({ intervalSec }, fallback).intervalSec;
+  if (normalizedMode === "low_power") {
+    return {
+      enabled: true,
+      intervalSec: normalizedInterval,
+      maintenanceMode: false
+    };
+  }
+  if (normalizedMode === "maintenance") {
+    const preserved = normalizeLowPowerPayload({
+      enabled: fallback?.enabled,
+      intervalSec: normalizedInterval,
+      maintenanceMode: false
+    }, fallback);
+    return {
+      enabled: preserved.enabled,
+      intervalSec: preserved.intervalSec,
+      maintenanceMode: false
+    };
+  }
+  return {
+    enabled: false,
+    intervalSec: normalizedInterval,
+    maintenanceMode: false
   };
 }
 
@@ -952,41 +1059,120 @@ function getDefaultDeviceRuntimeConfig(deviceId) {
     sensors: normalizeSensorList(remembered?.sensors || []),
     lowPower: normalizeLowPowerPayload({
       enabled: presenceConfig.lowPowerEnabled,
-      intervalSec: presenceConfig.reportIntervalSec || 300
+      intervalSec: presenceConfig.reportIntervalSec || 300,
+      maintenanceMode: presenceConfig.maintenanceModeEnabled
     }),
     updatedAt: remembered?.lastSeenAt || null,
     source: "inferred"
   };
 }
 
+function getDefaultDeviceModePolicy(deviceId) {
+  const presenceConfig = DEVICE_PRESENCE_CONFIG[deviceId] || {};
+  return {
+    deviceId,
+    mode: normalizePowerMode(
+      presenceConfig.maintenanceModeEnabled
+        ? "maintenance"
+        : (presenceConfig.lowPowerEnabled ? "low_power" : "normal")
+    ),
+    intervalSec: Number.isFinite(Number(presenceConfig.reportIntervalSec))
+      ? Math.max(10, Math.min(86400, Math.round(Number(presenceConfig.reportIntervalSec))))
+      : 300,
+    updatedAt: null,
+    source: "inferred"
+  };
+}
+
+function normalizeDeviceModePolicy(deviceId, payload = {}, fallback = null) {
+  const fallbackPolicy = fallback || getDefaultDeviceModePolicy(deviceId);
+  const intervalSec = Number.isFinite(Number(payload?.intervalSec))
+    ? Math.max(10, Math.min(86400, Math.round(Number(payload.intervalSec))))
+    : Number.isFinite(Number(fallbackPolicy.intervalSec))
+      ? Math.max(10, Math.min(86400, Math.round(Number(fallbackPolicy.intervalSec))))
+      : 300;
+  return {
+    deviceId,
+    mode: normalizePowerMode(payload?.mode, fallbackPolicy.mode),
+    intervalSec,
+    updatedAt: payload?.updatedAt || fallbackPolicy.updatedAt || null,
+    source: payload?.source || fallbackPolicy.source || "server-policy"
+  };
+}
+
+function normalizeRuntimeConfigForDevice(deviceId, payload = {}, fallback = null) {
+  const fallbackConfig = fallback || getDefaultDeviceRuntimeConfig(deviceId);
+  const option = normalizeDeviceName(deviceId, payload?.deviceName ?? fallbackConfig.deviceName);
+  return {
+    deviceId,
+    deviceName: option.name,
+    deviceAlias: option.alias,
+    sensors: normalizeSensorList(payload?.sensors || fallbackConfig.sensors || []),
+    lowPower: normalizeLowPowerPayload(payload?.lowPower || {}, fallbackConfig.lowPower || getDefaultDeviceRuntimeConfig(deviceId).lowPower),
+    updatedAt: payload?.updatedAt || fallbackConfig.updatedAt || null,
+    source: payload?.source || fallbackConfig.source || "device-report"
+  };
+}
+
 function getDeviceRuntimeConfig(deviceId) {
   const saved = deviceRuntimeConfigs[deviceId];
   if (saved && typeof saved === "object") {
-    const option = normalizeDeviceName(deviceId, saved.deviceName);
-    return {
-      deviceId,
-      deviceName: option.name,
-      deviceAlias: option.alias,
-      sensors: normalizeSensorList(saved.sensors || []),
-      lowPower: normalizeLowPowerPayload(saved.lowPower, getDefaultDeviceRuntimeConfig(deviceId).lowPower),
-      updatedAt: saved.updatedAt || null,
-      source: saved.source || "device-report"
-    };
+    return normalizeRuntimeConfigForDevice(deviceId, saved, getDefaultDeviceRuntimeConfig(deviceId));
   }
   return getDefaultDeviceRuntimeConfig(deviceId);
 }
 
-function saveDeviceRuntimeConfig(deviceId, payload, source = "device-report", fwVersion = null) {
-  const option = normalizeDeviceName(deviceId, payload?.deviceName);
-  const config = {
-    deviceId,
-    deviceName: option.name,
-    deviceAlias: option.alias,
-    sensors: normalizeSensorList(payload?.sensors || []),
-    lowPower: normalizeLowPowerPayload(payload?.lowPower || {}),
+function getLatestAppliedDeviceRuntimeConfig(deviceId) {
+  const latestApplied = getDeviceConfigJobsForDevice(deviceId).find((job) => job?.appliedConfig && typeof job.appliedConfig === "object");
+  if (!latestApplied?.appliedConfig) {
+    return null;
+  }
+  return normalizeRuntimeConfigForDevice(deviceId, latestApplied.appliedConfig, getDefaultDeviceRuntimeConfig(deviceId));
+}
+
+function getCurrentDeviceRuntimeConfig(deviceId) {
+  const saved = getDeviceRuntimeConfig(deviceId);
+  if (saved.source !== "web-desired") {
+    return saved;
+  }
+  return getLatestAppliedDeviceRuntimeConfig(deviceId) || getDefaultDeviceRuntimeConfig(deviceId);
+}
+
+function getModePolicyFallbackFromRuntime(deviceId) {
+  const runtimeConfig = getCurrentDeviceRuntimeConfig(deviceId);
+  return normalizeDeviceModePolicy(deviceId, {
+    mode: getPowerModeFromLowPower(runtimeConfig.lowPower || {}),
+    intervalSec: runtimeConfig.lowPower?.intervalSec || 300,
+    updatedAt: runtimeConfig.updatedAt || null,
+    source: "runtime-fallback"
+  }, getDefaultDeviceModePolicy(deviceId));
+}
+
+function getDeviceModePolicy(deviceId) {
+  const saved = deviceModePolicies[deviceId];
+  if (saved && typeof saved === "object") {
+    return normalizeDeviceModePolicy(deviceId, saved, getModePolicyFallbackFromRuntime(deviceId));
+  }
+  return getModePolicyFallbackFromRuntime(deviceId);
+}
+
+function saveDeviceModePolicy(deviceId, payload, source = "server-policy") {
+  const policy = normalizeDeviceModePolicy(deviceId, {
+    ...(payload || {}),
     updatedAt: new Date().toISOString(),
     source
-  };
+  }, getDeviceModePolicy(deviceId));
+  deviceModePolicies[deviceId] = policy;
+  saveDeviceModePolicies(deviceModePolicies);
+  return policy;
+}
+
+function saveDeviceRuntimeConfig(deviceId, payload, source = "device-report", fwVersion = null) {
+  const config = normalizeRuntimeConfigForDevice(deviceId, {
+    ...(payload || {}),
+    updatedAt: new Date().toISOString(),
+    source
+  }, getDefaultDeviceRuntimeConfig(deviceId));
   deviceRuntimeConfigs[deviceId] = config;
   saveDeviceRuntimeConfigs(deviceRuntimeConfigs);
   if (source !== "web-desired") {
@@ -996,7 +1182,8 @@ function saveDeviceRuntimeConfig(deviceId, payload, source = "device-report", fw
       sensorKeys: config.sensors,
       fwVersion: sanitizeFirmwareText(fwVersion || "", 32),
       lowPowerEnabled: config.lowPower.enabled,
-      reportIntervalSec: config.lowPower.intervalSec
+      reportIntervalSec: config.lowPower.intervalSec,
+      maintenanceModeEnabled: config.lowPower.maintenanceMode
     });
   }
   return config;
@@ -1024,13 +1211,21 @@ function createDeviceConfigJob(payload) {
 
   const deviceOption = normalizeDeviceName(deviceId, payload.deviceName);
   const sensors = normalizeSensorList(payload.sensors || []);
-  const lowPower = normalizeLowPowerPayload(payload.lowPower || {}, getDeviceRuntimeConfig(deviceId).lowPower);
+  const currentLowPower = getCurrentDeviceRuntimeConfig(deviceId).lowPower;
+  const currentModePolicy = getDeviceModePolicy(deviceId);
+  const requestedLowPower = normalizeLowPowerPayload(payload.lowPower || {}, {
+    ...currentLowPower,
+    intervalSec: currentModePolicy.intervalSec || currentLowPower.intervalSec || 300
+  });
+  const mode = normalizePowerMode(payload.mode, getPowerModeFromLowPower(requestedLowPower));
+  const lowPower = buildLowPowerPayloadFromMode(mode, requestedLowPower.intervalSec, currentLowPower);
 
   markPreviousConfigJobsReplaced(deviceId);
 
   const job = {
     id: `cfg_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`,
     deviceId,
+    mode,
     status: "pending",
     config: {
       deviceId,
@@ -1039,17 +1234,11 @@ function createDeviceConfigJob(payload) {
       sensors
     },
     lowPower,
-    message: sanitizeFirmwareText(payload.message || "web admin config push", 240),
+    message: sanitizeFirmwareText(payload.message || "web device config push", 240),
     createdAt: new Date().toISOString(),
     finishedAt: null,
     history: []
   };
-
-  saveDeviceRuntimeConfig(deviceId, {
-    deviceName: deviceOption.name,
-    sensors,
-    lowPower
-  }, "web-desired");
 
   deviceConfigJobs = [job, ...deviceConfigJobs];
   saveDeviceConfigJobs(deviceConfigJobs);
@@ -1064,6 +1253,167 @@ function getDeviceConfigJobsForDevice(deviceId) {
 
 function getActiveDeviceConfigJobForDevice(deviceId) {
   return getDeviceConfigJobsForDevice(deviceId).find((job) => job.status === "pending") || null;
+}
+
+function normalizePublishedModeRequest(deviceId, payload = {}, runtimeConfig = null) {
+  const modeRequest = payload?.modeRequest;
+  if (!modeRequest || typeof modeRequest !== "object") {
+    return null;
+  }
+
+  const targetMode = normalizePowerMode(modeRequest.targetMode ?? modeRequest.mode, "");
+  if (!["low_power", "maintenance"].includes(targetMode)) {
+    return null;
+  }
+
+  const fallbackLowPower = runtimeConfig?.lowPower || getCurrentDeviceRuntimeConfig(deviceId).lowPower;
+  const normalizedLowPower = normalizeLowPowerPayload({
+    enabled: targetMode === "low_power" ? true : fallbackLowPower?.enabled,
+    intervalSec: modeRequest.intervalSec ?? fallbackLowPower?.intervalSec ?? getDeviceModePolicy(deviceId).intervalSec ?? 300,
+    maintenanceMode: false
+  }, fallbackLowPower);
+
+  return {
+    source: sanitizeFirmwareText(modeRequest.source || "device-button-long-press", 80),
+    mode: targetMode,
+    intervalSec: normalizedLowPower.intervalSec
+  };
+}
+
+function applyDeviceModeRequestFromPublish(deviceId, payload = {}, runtimeConfig = null) {
+  const request = normalizePublishedModeRequest(deviceId, payload, runtimeConfig);
+  if (!request) {
+    return null;
+  }
+
+  const currentPolicy = getDeviceModePolicy(deviceId);
+  const activeJob = getActiveDeviceConfigJobForDevice(deviceId);
+  const activeJobMode = activeJob
+    ? normalizePowerMode(activeJob.mode, getPowerModeFromLowPower(activeJob.lowPower || {}))
+    : "";
+  const activeJobIntervalSec = Number(activeJob?.lowPower?.intervalSec || currentPolicy.intervalSec || 300);
+
+  if (activeJob && activeJobMode === request.mode && activeJobIntervalSec === Number(request.intervalSec || 300)) {
+    return activeJob;
+  }
+
+  if (
+    !activeJob
+    && currentPolicy.mode === request.mode
+    && Number(currentPolicy.intervalSec || 300) === Number(request.intervalSec || 300)
+  ) {
+    return null;
+  }
+
+  return createDeviceConfigJob({
+    deviceId,
+    deviceName: runtimeConfig?.deviceName,
+    sensors: runtimeConfig?.sensors,
+    mode: request.mode,
+    lowPower: {
+      enabled: request.mode === "low_power" ? true : Boolean(runtimeConfig?.lowPower?.enabled),
+      intervalSec: request.intervalSec,
+      maintenanceMode: false
+    },
+    message: `device button long press requested ${request.mode} (${request.source})`
+  });
+}
+
+function normalizePublishedLowPowerResumeClaim(deviceId, payload = {}, runtimeConfig = null) {
+  const claim = payload?.lowPowerResume;
+  if (!claim || typeof claim !== "object" || claim.force !== true) {
+    return null;
+  }
+
+  const fallbackLowPower = runtimeConfig?.lowPower || getCurrentDeviceRuntimeConfig(deviceId).lowPower;
+  const normalizedLowPower = normalizeLowPowerPayload({
+    enabled: true,
+    intervalSec: claim.intervalSec ?? fallbackLowPower?.intervalSec ?? getDeviceModePolicy(deviceId).intervalSec ?? 300,
+    maintenanceMode: false
+  }, fallbackLowPower);
+
+  return {
+    source: sanitizeFirmwareText(claim.source || "device-low-power-resume", 80),
+    intervalSec: normalizedLowPower.intervalSec
+  };
+}
+
+function applyForcedLowPowerResumeFromPublish(deviceId, payload = {}, runtimeConfig = null) {
+  const claim = normalizePublishedLowPowerResumeClaim(deviceId, payload, runtimeConfig);
+  if (!claim) {
+    return null;
+  }
+
+  const currentPolicy = getDeviceModePolicy(deviceId);
+  if (
+    currentPolicy.mode !== "low_power"
+    || Number(currentPolicy.intervalSec || 300) !== Number(claim.intervalSec || 300)
+  ) {
+    saveDeviceModePolicy(deviceId, {
+      mode: "low_power",
+      intervalSec: claim.intervalSec
+    }, `device-forced-low-power:${claim.source}`);
+  }
+
+  const activeJob = getActiveDeviceConfigJobForDevice(deviceId);
+  if (activeJob) {
+    markPreviousConfigJobsReplaced(deviceId);
+    saveDeviceConfigJobs(deviceConfigJobs);
+  }
+
+  return claim;
+}
+
+function normalizeConfigJobTargetRuntime(deviceId, job) {
+  if (!job) {
+    return null;
+  }
+  return normalizeRuntimeConfigForDevice(deviceId, {
+    ...(job.config || {}),
+    lowPower: job.lowPower || {}
+  }, getCurrentDeviceRuntimeConfig(deviceId));
+}
+
+function doesRuntimeMatchConfigJob(job, runtimeConfig) {
+  if (!job || !runtimeConfig) {
+    return false;
+  }
+
+  const expected = normalizeConfigJobTargetRuntime(job.deviceId, job);
+  if (!expected) {
+    return false;
+  }
+
+  return (
+    String(runtimeConfig.deviceName || "") === String(expected.deviceName || "")
+    && JSON.stringify(normalizeSensorList(runtimeConfig.sensors || [])) === JSON.stringify(normalizeSensorList(expected.sensors || []))
+    && Boolean(runtimeConfig.lowPower?.enabled) === Boolean(expected.lowPower?.enabled)
+    && Number(runtimeConfig.lowPower?.intervalSec || 300) === Number(expected.lowPower?.intervalSec || 300)
+  );
+}
+
+function reconcilePendingConfigJobFromRuntime(deviceId, runtimeConfig, fwVersion = "") {
+  const activeJob = getActiveDeviceConfigJobForDevice(deviceId);
+  if (!activeJob || !doesRuntimeMatchConfigJob(activeJob, runtimeConfig)) {
+    return activeJob;
+  }
+
+  updateDeviceConfigJobStatus({
+    deviceId,
+    jobId: activeJob.id,
+    status: "success",
+    message: "auto confirmed from mqtt publish state match",
+    fwVersion,
+    config: {
+      deviceId: runtimeConfig.deviceId,
+      deviceName: runtimeConfig.deviceName,
+      deviceAlias: runtimeConfig.deviceAlias,
+      sensors: runtimeConfig.sensors
+    },
+    lowPower: runtimeConfig.lowPower
+  });
+
+  return getActiveDeviceConfigJobForDevice(deviceId);
 }
 
 function updateDeviceConfigJobStatus(payload) {
@@ -1081,11 +1431,17 @@ function updateDeviceConfigJobStatus(payload) {
   }
 
   const existing = deviceConfigJobs[index];
-  const finished = ["success", "failed", "replaced"].includes(status);
+  const isSuccess = status === "success";
+  const keepPending = status === "failed";
+  const nextStatus = keepPending ? existing.status || "pending" : status;
+  const finished = ["success", "replaced"].includes(nextStatus);
   const nextJob = {
     ...existing,
-    status,
-    message: message || existing.message,
+    status: nextStatus,
+    message: isSuccess ? (message || existing.message) : existing.message,
+    lastReportedStatus: status,
+    lastReportedMessage: message || "",
+    lastReportedAt: new Date().toISOString(),
     finishedAt: finished ? new Date().toISOString() : null,
     history: [
       ...(existing.history || []),
@@ -1103,7 +1459,16 @@ function updateDeviceConfigJobStatus(payload) {
       ...(payload.config || existing.config || {}),
       lowPower: payload.lowPower || existing.lowPower || {}
     }, "device-report", payload.fwVersion);
-    nextJob.appliedConfig = runtimeConfig;
+    if (isSuccess) {
+      nextJob.appliedConfig = runtimeConfig;
+    }
+  }
+
+  if (isSuccess) {
+    saveDeviceModePolicy(existing.deviceId, {
+      mode: existing.mode || getPowerModeFromLowPower(existing.lowPower || {}),
+      intervalSec: existing.lowPower?.intervalSec || getDeviceModePolicy(existing.deviceId).intervalSec || 300
+    }, "device-confirmed");
   }
 
   deviceConfigJobs[index] = nextJob;
@@ -1118,14 +1483,126 @@ function getDeviceAdminSummary(deviceId) {
       sensorTypes: SENSOR_TYPE_OPTIONS,
       lowPower: {
         minIntervalSec: 10,
-        maxIntervalSec: 86400
+        maxIntervalSec: 86400,
+        supportsMaintenanceMode: true,
+        modeOptions: [
+          { value: "low_power", label: "低功耗模式" },
+          { value: "maintenance", label: "维修站模式" }
+        ]
       }
     },
-    currentConfig: getDeviceRuntimeConfig(deviceId),
+    currentConfig: getCurrentDeviceRuntimeConfig(deviceId),
+    modePolicy: getDeviceModePolicy(deviceId),
     activeConfigJob: getActiveDeviceConfigJobForDevice(deviceId),
-    configJobs: getDeviceConfigJobsForDevice(deviceId).slice(0, 10),
+    configJobs: getDeviceConfigJobsForDevice(deviceId).slice(0, 20),
     ...getDeviceAdminOtaSummary(deviceId)
   };
+}
+
+function buildConfigJobTransport(job) {
+  if (!job) {
+    return null;
+  }
+  return {
+    id: job.id,
+    mode: job.mode || getPowerModeFromLowPower(job.lowPower || {}),
+    config: job.config,
+    lowPower: job.lowPower,
+    message: job.message,
+    createdAt: job.createdAt
+  };
+}
+
+function getDeviceAckTopic(deviceId) {
+  return `${MQTT_DEVICE_TOPIC_PREFIX}${canonicalizeDeviceId(deviceId)}/ack`;
+}
+
+function deriveSleepApproval(deviceId, payload, activeConfigJob = null) {
+  const modePolicy = getDeviceModePolicy(deviceId);
+  const reportedLowPower = normalizeLowPowerPayload(payload?.lowPower || {}, getCurrentDeviceRuntimeConfig(deviceId).lowPower);
+
+  if (activeConfigJob) {
+    return {
+      approved: false,
+      reason: "config_job_pending",
+      mode: modePolicy.mode,
+      expectedIntervalSec: modePolicy.intervalSec
+    };
+  }
+
+  if (modePolicy.mode === "maintenance") {
+    return {
+      approved: false,
+      reason: "maintenance_mode",
+      mode: modePolicy.mode,
+      expectedIntervalSec: modePolicy.intervalSec
+    };
+  }
+
+  if (modePolicy.mode !== "low_power") {
+    return {
+      approved: false,
+      reason: "mode_not_low_power",
+      mode: modePolicy.mode,
+      expectedIntervalSec: modePolicy.intervalSec
+    };
+  }
+
+  if (!reportedLowPower.enabled) {
+    return {
+      approved: false,
+      reason: "device_low_power_disabled",
+      mode: modePolicy.mode,
+      expectedIntervalSec: modePolicy.intervalSec
+    };
+  }
+
+  if (Number(reportedLowPower.intervalSec || 300) !== Number(modePolicy.intervalSec || 300)) {
+    return {
+      approved: false,
+      reason: "interval_mismatch",
+      mode: modePolicy.mode,
+      expectedIntervalSec: modePolicy.intervalSec
+    };
+  }
+
+  return {
+    approved: true,
+    reason: "approved",
+    mode: modePolicy.mode,
+    expectedIntervalSec: modePolicy.intervalSec
+  };
+}
+
+function publishDeviceAck(deviceId, publishId, payload = null) {
+  const normalizedDeviceId = canonicalizeDeviceId(deviceId || "");
+  const normalizedPublishId = sanitizeFirmwareText(publishId || "", 64);
+  if (!DEVICE_ALIAS_BY_ID[normalizedDeviceId] || !normalizedPublishId) {
+    return null;
+  }
+
+  const activeConfigJob = getActiveDeviceConfigJobForDevice(normalizedDeviceId);
+  const sleepApproval = deriveSleepApproval(normalizedDeviceId, payload, activeConfigJob);
+  const ackPayload = {
+    type: "device-publish-ack",
+    deviceId: normalizedDeviceId,
+    publishId: normalizedPublishId,
+    ackAt: new Date().toISOString(),
+    serverMode: sleepApproval.mode,
+    sleepApproved: sleepApproval.approved,
+    sleepReason: sleepApproval.reason,
+    expectedIntervalSec: sleepApproval.expectedIntervalSec,
+    hasConfigJob: Boolean(activeConfigJob),
+    configJob: buildConfigJobTransport(activeConfigJob)
+  };
+
+  aedes.publish({
+    topic: getDeviceAckTopic(normalizedDeviceId),
+    payload: Buffer.from(JSON.stringify(ackPayload), "utf8"),
+    qos: 1,
+    retain: false
+  });
+  return ackPayload;
 }
 
 function updateOtaJobStatus(payload) {
@@ -1632,6 +2109,9 @@ function rememberDevice(deviceName, info) {
     lowPowerEnabled: typeof info.lowPowerEnabled === "boolean"
       ? info.lowPowerEnabled
       : (presenceConfig?.lowPowerEnabled ?? existing.lowPowerEnabled ?? false),
+    maintenanceModeEnabled: typeof info.maintenanceModeEnabled === "boolean"
+      ? info.maintenanceModeEnabled
+      : (presenceConfig?.maintenanceModeEnabled ?? existing.maintenanceModeEnabled ?? false),
     reportIntervalSec: Number.isFinite(Number(info.reportIntervalSec))
       ? Number(info.reportIntervalSec)
       : (presenceConfig?.reportIntervalSec ?? existing.reportIntervalSec ?? null)
@@ -1642,6 +2122,10 @@ function rememberDevice(deviceName, info) {
 }
 
 function getDeviceOnlineWindowMs(device) {
+  const policyMode = device?.device ? getDeviceModePolicy(device.device).mode : null;
+  if (device?.maintenanceModeEnabled || policyMode === "maintenance") {
+    return DEVICE_ONLINE_WINDOW_MS;
+  }
   const reportIntervalSec = Number(device?.reportIntervalSec);
   if (device?.lowPowerEnabled && Number.isFinite(reportIntervalSec) && reportIntervalSec >= 10) {
     return Math.max(
@@ -1668,6 +2152,7 @@ function buildCatalogDeviceStatusDefaults() {
       sensors: [],
       fwVersion: null,
       lowPowerEnabled: presenceConfig?.lowPowerEnabled ?? false,
+      maintenanceModeEnabled: presenceConfig?.maintenanceModeEnabled ?? false,
       reportIntervalSec: presenceConfig?.reportIntervalSec ?? null
     };
   });
@@ -1692,6 +2177,7 @@ function getDevicesStatus() {
       sensors: [],
       fwVersion: null,
       lowPowerEnabled: false,
+      maintenanceModeEnabled: false,
       reportIntervalSec: null
     };
 
@@ -1716,9 +2202,14 @@ function getDevicesStatus() {
       return String(a.alias || a.device || "").localeCompare(String(b.alias || b.device || ""), "zh-CN");
     })
     .map((device) => {
+      const modePolicy = getDeviceModePolicy(device.device);
+      const maintenanceModeEnabled = modePolicy.mode === "maintenance";
       const onlineWindowMs = getDeviceOnlineWindowMs(device);
       return {
         ...device,
+        serverMode: modePolicy.mode,
+        modeIntervalSec: modePolicy.intervalSec,
+        maintenanceModeEnabled,
         onlineWindowMs,
         online: Boolean(device.lastSeenAt) && now - new Date(device.lastSeenAt).getTime() <= onlineWindowMs,
         lastSeenAgoSeconds: device.lastSeenAt
@@ -2507,11 +2998,15 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
 
   const source = resolveIncomingDeviceId(payload.device, topicDevice, clientId, topic);
   const fwVersion = sanitizeFirmwareText(payload.fwVersion || "", 32);
+  let reportedRuntimeConfig = null;
   if ((payload.config && typeof payload.config === "object") || (payload.lowPower && typeof payload.lowPower === "object")) {
-    saveDeviceRuntimeConfig(source, {
+    reportedRuntimeConfig = saveDeviceRuntimeConfig(source, {
       ...(payload.config || {}),
       lowPower: payload.lowPower || {}
     }, "device-report", fwVersion);
+    applyForcedLowPowerResumeFromPublish(source, payload, reportedRuntimeConfig);
+    applyDeviceModeRequestFromPublish(source, payload, reportedRuntimeConfig);
+    reconcilePendingConfigJobFromRuntime(source, reportedRuntimeConfig, fwVersion);
   }
   const payloadSensors = payload.sensors && typeof payload.sensors === "object" ? payload.sensors : {};
   const sensorEntries = Object.entries(payloadSensors)
@@ -2530,8 +3025,10 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
       source: "sensor-mqtt:config",
       fwVersion,
       lowPowerEnabled: payload.lowPower?.enabled,
-      reportIntervalSec: payload.lowPower?.intervalSec
+      reportIntervalSec: payload.lowPower?.intervalSec,
+      maintenanceModeEnabled: payload.lowPower?.maintenanceMode
     });
+    publishDeviceAck(source, payload.publishId, payload);
     return;
   }
 
@@ -2545,7 +3042,8 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
     sensorKeys: sensorEntries.map(({ sensorKey }) => sensorKey),
     fwVersion,
     lowPowerEnabled: payload.lowPower?.enabled,
-    reportIntervalSec: payload.lowPower?.intervalSec
+    reportIntervalSec: payload.lowPower?.intervalSec,
+    maintenanceModeEnabled: payload.lowPower?.maintenanceMode
   });
 
   sensorEntries.forEach(({ sensorKey, sensorType }) => {
@@ -2564,13 +3062,15 @@ function handleMqttPacket(topic, payloadBuffer, clientId) {
       source: `sensor-mqtt:${sensorType}`,
       fwVersion,
       lowPowerEnabled: payload.lowPower?.enabled,
-      reportIntervalSec: payload.lowPower?.intervalSec
+      reportIntervalSec: payload.lowPower?.intervalSec,
+      maintenanceModeEnabled: payload.lowPower?.maintenanceMode
     });
   });
 
   mqttStatus.lastMessageAt = new Date().toISOString();
   mqttStatus.lastTopic = topic;
   mqttStatus.lastClientId = clientId || source;
+  publishDeviceAck(source, payload.publishId, payload);
 }
 
 purgeObsoleteData();
@@ -2748,15 +3248,7 @@ const server = http.createServer((req, res) => {
     sendJson(res, 200, {
       deviceId,
       hasUpdate: Boolean(activeJob),
-      job: activeJob
-        ? {
-            id: activeJob.id,
-            config: activeJob.config,
-            lowPower: activeJob.lowPower,
-            message: activeJob.message,
-            createdAt: activeJob.createdAt
-          }
-        : null
+      job: buildConfigJobTransport(activeJob)
     });
     return;
   }
@@ -2902,7 +3394,7 @@ const server = http.createServer((req, res) => {
         sendJson(res, 200, {
           message: "config job created",
           job,
-          currentConfig: getDeviceRuntimeConfig(job.deviceId)
+          currentConfig: getCurrentDeviceRuntimeConfig(job.deviceId)
         });
       })
       .catch((error) => {
