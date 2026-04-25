@@ -9,9 +9,16 @@
 #include "app_config.h"
 #include "device_profile.h"
 
+#define STATUS_LED_FAST_BLINK_ON_MS 100
+#define STATUS_LED_FAST_BLINK_OFF_MS 100
+#define STATUS_LED_SLOW_BLINK_ON_MS 600
+#define STATUS_LED_SLOW_BLINK_OFF_MS 600
+#define STATUS_LED_STEADY_REFRESH_MS 150
+
 static bool s_initialized = false;
 static bool s_enabled = false;
-static bool s_provisioning_mode = false;
+static volatile bool s_provisioning_mode = false;
+static volatile status_led_mode_t s_mode = STATUS_LED_MODE_NORMAL;
 static TaskHandle_t s_led_task_handle = NULL;
 
 static int inactive_level(void)
@@ -19,20 +26,50 @@ static int inactive_level(void)
     return APP_STATUS_LED_ACTIVE_LEVEL ? 0 : 1;
 }
 
+static void set_led_active(bool enabled)
+{
+    if (!s_initialized || !s_enabled) {
+        return;
+    }
+
+    (void)gpio_set_level(APP_STATUS_LED_GPIO, enabled ? APP_STATUS_LED_ACTIVE_LEVEL : inactive_level());
+}
+
 static void status_led_task(void *arg)
 {
     (void)arg;
 
     while (true) {
-        if (!s_initialized || !s_enabled || !s_provisioning_mode) {
-            vTaskDelay(pdMS_TO_TICKS(80));
+        if (!s_initialized || !s_enabled) {
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_STEADY_REFRESH_MS));
             continue;
         }
 
-        (void)gpio_set_level(APP_STATUS_LED_GPIO, APP_STATUS_LED_ACTIVE_LEVEL);
-        vTaskDelay(pdMS_TO_TICKS(120));
-        (void)gpio_set_level(APP_STATUS_LED_GPIO, inactive_level());
-        vTaskDelay(pdMS_TO_TICKS(120));
+        if (s_provisioning_mode) {
+            set_led_active(true);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_FAST_BLINK_ON_MS));
+            set_led_active(false);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_FAST_BLINK_OFF_MS));
+            continue;
+        }
+
+        switch (s_mode) {
+        case STATUS_LED_MODE_LOW_POWER:
+            set_led_active(false);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_STEADY_REFRESH_MS));
+            break;
+        case STATUS_LED_MODE_MAINTENANCE:
+            set_led_active(true);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_SLOW_BLINK_ON_MS));
+            set_led_active(false);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_SLOW_BLINK_OFF_MS));
+            break;
+        case STATUS_LED_MODE_NORMAL:
+        default:
+            set_led_active(true);
+            vTaskDelay(pdMS_TO_TICKS(STATUS_LED_STEADY_REFRESH_MS));
+            break;
+        }
     }
 }
 
@@ -58,7 +95,11 @@ esp_err_t status_led_init(void)
         return ret;
     }
 
-    ret = gpio_set_level(APP_STATUS_LED_GPIO, inactive_level());
+    s_mode = device_profile_low_power_enabled() ? STATUS_LED_MODE_LOW_POWER : STATUS_LED_MODE_NORMAL;
+    ret = gpio_set_level(
+        APP_STATUS_LED_GPIO,
+        s_mode == STATUS_LED_MODE_LOW_POWER ? inactive_level() : APP_STATUS_LED_ACTIVE_LEVEL
+    );
     if (ret != ESP_OK) {
         return ret;
     }
@@ -74,15 +115,25 @@ esp_err_t status_led_init(void)
 
 void status_led_blink_publish(void)
 {
-    if (!s_initialized || !s_enabled || s_provisioning_mode) {
+    /* The status LED now indicates the long-lived mode, so publish pulses stay disabled. */
+}
+
+void status_led_set_mode(status_led_mode_t mode)
+{
+    if (!s_initialized || !s_enabled) {
         return;
     }
 
-    if (gpio_set_level(APP_STATUS_LED_GPIO, APP_STATUS_LED_ACTIVE_LEVEL) != ESP_OK) {
-        return;
+    switch (mode) {
+    case STATUS_LED_MODE_LOW_POWER:
+    case STATUS_LED_MODE_MAINTENANCE:
+    case STATUS_LED_MODE_NORMAL:
+        s_mode = mode;
+        break;
+    default:
+        s_mode = STATUS_LED_MODE_NORMAL;
+        break;
     }
-    vTaskDelay(pdMS_TO_TICKS(APP_STATUS_LED_BLINK_MS));
-    (void)gpio_set_level(APP_STATUS_LED_GPIO, inactive_level());
 }
 
 void status_led_set_provisioning(bool enabled)
@@ -92,7 +143,4 @@ void status_led_set_provisioning(bool enabled)
     }
 
     s_provisioning_mode = enabled;
-    if (!enabled) {
-        (void)gpio_set_level(APP_STATUS_LED_GPIO, inactive_level());
-    }
 }

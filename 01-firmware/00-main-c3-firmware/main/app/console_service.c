@@ -1,5 +1,7 @@
 #include "console_service.h"
 
+#include <fcntl.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +14,8 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_vfs_dev.h"
+#include "esp_vfs_usb_serial_jtag.h"
 
 #include "app_config.h"
 #include "bmp180_sensor.h"
@@ -182,8 +186,9 @@ static void console_task(void *arg)
     size_t ota_raw_received_size = 0;
 
     while (1) {
-        int read_len = usb_serial_jtag_read_bytes(buffer, sizeof(buffer), pdMS_TO_TICKS(20));
+        int read_len = read(fileno(stdin), buffer, sizeof(buffer));
         if (read_len <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
@@ -358,7 +363,7 @@ static void console_task(void *arg)
                 if (ret == ESP_OK) {
                     snprintf(response, sizeof(response), "APP_OK:{\"message\":\"%s\"}\n", message);
                     usb_write_text(response);
-                    network_service_set_power_save(device_profile_low_power_enabled());
+                    network_service_set_power_save(device_profile_should_enable_wifi_power_save());
                     emit_json_line("APP_LOW_POWER", device_profile_build_low_power_json);
                     emit_json_line("APP_CONFIG", device_profile_build_config_json);
                     emit_json_line("APP_STATUS", device_profile_build_status_json);
@@ -387,7 +392,7 @@ static void console_task(void *arg)
                     usb_write_text(response);
                 }
             } else if (strcmp(line, "HELP") == 0) {
-                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {...}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\",\"OTA_STATUS\",\"OTA_BEGIN {...}\",\"OTA_WRITE_RAW <size> + raw-bytes\",\"OTA_WRITE <hex>\",\"OTA_FINISH\",\"OTA_ABORT\"]}\n");
+                usb_write_text("APP_OK:{\"commands\":[\"GET_STATUS\",\"GET_CONFIG\",\"GET_OPTIONS\",\"SET_CONFIG {...}\",\"GET_WIFI_LIST\",\"SET_WIFI_LIST [{...}]\",\"GET_LOW_POWER\",\"SET_LOW_POWER {\\\"enabled\\\":true,\\\"intervalSec\\\":300,\\\"maintenanceMode\\\":false}\",\"SCAN_WIFI\",\"SCAN_I2C\",\"DUMP_BMP180\",\"OTA_STATUS\",\"OTA_BEGIN {...}\",\"OTA_WRITE_RAW <size> + raw-bytes\",\"OTA_WRITE <hex>\",\"OTA_FINISH\",\"OTA_ABORT\"]}\n");
             } else if (line[0] != '\0') {
                 usb_write_text("APP_ERROR:{\"message\":\"unknown command\"}\n");
             }
@@ -431,10 +436,37 @@ esp_err_t console_service_start(void)
         .tx_buffer_size = 8192,
         .rx_buffer_size = 16384,
     };
+    int stdout_fd = -1;
+    int stdin_fd = -1;
+
     s_usb_lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(s_usb_lock != NULL, ESP_ERR_NO_MEM, TAG, "usb lock create failed");
+
     ESP_RETURN_ON_ERROR(usb_serial_jtag_driver_install(&usb_cfg), TAG, "usb serial install failed");
-    BaseType_t ok = xTaskCreate(console_task, "console_task", 12288, NULL, 5, NULL);
+    esp_vfs_usb_serial_jtag_use_driver();
+
+    esp_vfs_dev_usb_serial_jtag_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
+    esp_vfs_dev_usb_serial_jtag_set_tx_line_endings(ESP_LINE_ENDINGS_CRLF);
+    setvbuf(stdin, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
+
+    stdout_fd = fileno(stdout);
+    if (stdout_fd >= 0) {
+        int flags = fcntl(stdout_fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(stdout_fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
+
+    stdin_fd = fileno(stdin);
+    if (stdin_fd >= 0) {
+        int flags = fcntl(stdin_fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(stdin_fd, F_SETFL, flags & ~O_NONBLOCK);
+        }
+    }
+
+    BaseType_t ok = xTaskCreate(console_task, "console_task", 20480, NULL, 5, NULL);
     ESP_RETURN_ON_FALSE(ok == pdPASS, ESP_FAIL, TAG, "console task create failed");
     ok = xTaskCreate(console_snapshot_task, "console_snapshot_task", 6144, NULL, 4, NULL);
     return ok == pdPASS ? ESP_OK : ESP_FAIL;

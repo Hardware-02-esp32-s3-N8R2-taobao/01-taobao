@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "mqtt_client.h"
@@ -20,6 +21,7 @@
 #include "console_service.h"
 #include "device_profile.h"
 #include "provisioning_service.h"
+#include "remote_config_service.h"
 
 #define TAG "network_service"
 #define WIFI_CONNECTED_BIT BIT0
@@ -27,6 +29,7 @@
 #define MQTT_PUBLISHED_BIT BIT2
 #define WIFI_MAX_ENTRIES   8
 #define WIFI_SCAN_MAX_APS  20
+#define WIFI_COLD_BOOT_CONNECT_DELAY_MS 5000
 
 typedef struct {
     char ssid[33];
@@ -55,6 +58,79 @@ static int                   s_last_publish_msg_id = -1;
 static int64_t               s_connect_attempt_started_ms = 0;
 static int64_t               s_last_connect_kick_ms = 0;
 static bool                  s_sta_compat_mode = false;
+static int64_t               s_connect_ready_after_ms = 0;
+static bool                  s_connect_delay_logged = false;
+static char                  s_mqtt_rx_topic[128] = {0};
+static char                  s_mqtt_rx_payload[1024] = {0};
+static int                   s_mqtt_rx_expected_len = 0;
+static int                   s_mqtt_rx_received_len = 0;
+static bool                  s_mqtt_rx_active = false;
+
+static void screen_connect_task(void *arg);
+
+static void reset_mqtt_rx_buffer(void)
+{
+    memset(s_mqtt_rx_topic, 0, sizeof(s_mqtt_rx_topic));
+    memset(s_mqtt_rx_payload, 0, sizeof(s_mqtt_rx_payload));
+    s_mqtt_rx_expected_len = 0;
+    s_mqtt_rx_received_len = 0;
+    s_mqtt_rx_active = false;
+}
+
+static void handle_mqtt_data_event(const esp_mqtt_event_handle_t event)
+{
+    if (
+        event == NULL ||
+        event->topic == NULL ||
+        event->data == NULL ||
+        event->topic_len <= 0 ||
+        event->topic_len >= (int)sizeof(s_mqtt_rx_topic) ||
+        event->total_data_len <= 0 ||
+        event->total_data_len >= (int)sizeof(s_mqtt_rx_payload)
+    ) {
+        reset_mqtt_rx_buffer();
+        return;
+    }
+
+    if (event->current_data_offset == 0) {
+        reset_mqtt_rx_buffer();
+        memcpy(s_mqtt_rx_topic, event->topic, (size_t)event->topic_len);
+        s_mqtt_rx_topic[event->topic_len] = '\0';
+        s_mqtt_rx_expected_len = event->total_data_len;
+        s_mqtt_rx_active = true;
+    }
+
+    if (
+        !s_mqtt_rx_active ||
+        s_mqtt_rx_expected_len != event->total_data_len ||
+        s_mqtt_rx_received_len != event->current_data_offset
+    ) {
+        reset_mqtt_rx_buffer();
+        return;
+    }
+
+    if ((s_mqtt_rx_received_len + event->data_len) >= (int)sizeof(s_mqtt_rx_payload)) {
+        reset_mqtt_rx_buffer();
+        return;
+    }
+
+    memcpy(
+        s_mqtt_rx_payload + s_mqtt_rx_received_len,
+        event->data,
+        (size_t)event->data_len
+    );
+    s_mqtt_rx_received_len += event->data_len;
+
+    if (s_mqtt_rx_received_len >= s_mqtt_rx_expected_len) {
+        s_mqtt_rx_payload[s_mqtt_rx_expected_len] = '\0';
+        remote_config_service_handle_mqtt_message(
+            s_mqtt_rx_topic,
+            s_mqtt_rx_payload,
+            s_mqtt_rx_expected_len
+        );
+        reset_mqtt_rx_buffer();
+    }
+}
 
 static const char *wifi_disconnect_reason_text(uint8_t reason)
 {
@@ -107,6 +183,49 @@ static bool wifi_disconnect_reason_needs_sta_compat(uint8_t reason)
     }
 }
 
+static bool wifi_disconnect_reason_should_enable_scan(uint8_t reason)
+{
+    switch (reason) {
+    case WIFI_REASON_AUTH_EXPIRE:
+    case WIFI_REASON_AUTH_LEAVE:
+    case WIFI_REASON_ASSOC_EXPIRE:
+    case WIFI_REASON_ASSOC_TOOMANY:
+    case WIFI_REASON_NOT_AUTHED:
+    case WIFI_REASON_NOT_ASSOCED:
+    case WIFI_REASON_ASSOC_NOT_AUTHED:
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_NO_AP_FOUND:
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_CONNECTION_FAIL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool default_scan_before_connect(void)
+{
+    return device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN;
+}
+
+static void ensure_scan_connect_task(void)
+{
+    if (s_screen_connect_task == NULL) {
+        xTaskCreate(screen_connect_task, "screen_wifi_connect", 4096, NULL, 5, &s_screen_connect_task);
+    }
+}
+
+static void restore_default_wifi_strategy(void)
+{
+    s_scan_before_connect = default_scan_before_connect();
+    s_selected_bssid_valid = false;
+    memset(s_selected_bssid, 0, sizeof(s_selected_bssid));
+    s_selected_channel = 0;
+    s_selected_authmode = WIFI_AUTH_OPEN;
+    s_sta_compat_mode = false;
+}
+
 /* ── WiFi list helpers ─────────────────────────────────────────────── */
 
 static void load_wifi_list(void)
@@ -139,7 +258,7 @@ static void apply_wifi_config(int index)
     cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
     cfg.sta.failure_retry_cnt = 2;
     cfg.sta.bssid_set = false;
-    cfg.sta.channel = 0;
+    cfg.sta.channel = (s_scan_before_connect && s_selected_channel > 0) ? s_selected_channel : 0;
     if (s_sta_compat_mode) {
         cfg.sta.pmf_cfg.capable = false;
         cfg.sta.pmf_cfg.required = false;
@@ -217,7 +336,21 @@ static bool select_visible_wifi_entry(void)
 
 static void connect_using_current_strategy(void)
 {
-    s_last_connect_kick_ms = esp_timer_get_time() / 1000;
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    if (s_connect_ready_after_ms > 0 && now_ms < s_connect_ready_after_ms) {
+        if (!s_connect_delay_logged) {
+            ESP_LOGI(
+                TAG,
+                "delaying initial WiFi connect for %lld ms after cold boot",
+                (long long)(s_connect_ready_after_ms - now_ms)
+            );
+            s_connect_delay_logged = true;
+        }
+        return;
+    }
+
+    s_connect_ready_after_ms = 0;
+    s_last_connect_kick_ms = now_ms;
     if (s_scan_before_connect) {
         if (s_screen_connect_task != NULL) {
             xTaskNotifyGive(s_screen_connect_task);
@@ -313,6 +446,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_CONNECTED:
         xEventGroupSetBits(s_event_group, MQTT_CONNECTED_BIT);
         device_profile_update_mqtt(true);
+        reset_mqtt_rx_buffer();
         snprintf(
             event_json,
             sizeof(event_json),
@@ -321,10 +455,18 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             device_profile_mqtt_topic()
         );
         console_service_emit_event("mqtt", event_json);
+        if (s_mqtt_client != NULL) {
+            char ack_topic[64];
+            snprintf(ack_topic, sizeof(ack_topic), "%s/+/ack", APP_MQTT_TOPIC_PREFIX);
+            if (esp_mqtt_client_subscribe(s_mqtt_client, ack_topic, 1) < 0) {
+                ESP_LOGW(TAG, "subscribe ack topic failed: %s", ack_topic);
+            }
+        }
         break;
     case MQTT_EVENT_DISCONNECTED:
         xEventGroupClearBits(s_event_group, MQTT_CONNECTED_BIT | MQTT_PUBLISHED_BIT);
         device_profile_update_mqtt(false);
+        reset_mqtt_rx_buffer();
         snprintf(
             event_json,
             sizeof(event_json),
@@ -341,6 +483,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         }
         break;
     }
+    case MQTT_EVENT_DATA:
+        handle_mqtt_data_event((const esp_mqtt_event_handle_t)event_data);
+        break;
     default:
         break;
     }
@@ -394,6 +539,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         const wifi_event_sta_disconnected_t *event = (const wifi_event_sta_disconnected_t *)event_data;
         char event_json[256];
         const uint8_t reason = event ? event->reason : 0;
+        bool strategy_changed = false;
         xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
         device_profile_update_wifi(false, NULL, NULL, event ? event->reason : -1);
         device_profile_update_mqtt(false);
@@ -410,11 +556,26 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
             esp_mqtt_client_disconnect(s_mqtt_client);
         }
 
+        if (!s_scan_before_connect && wifi_disconnect_reason_should_enable_scan(reason)) {
+            s_scan_before_connect = true;
+            s_selected_channel = 0;
+            s_selected_authmode = WIFI_AUTH_OPEN;
+            ensure_scan_connect_task();
+            strategy_changed = true;
+            ESP_LOGW(TAG, "switching reconnect strategy to scan-before-connect");
+        }
+
         if (wifi_disconnect_reason_needs_sta_compat(reason) && !s_sta_compat_mode) {
             s_sta_compat_mode = true;
             s_selected_bssid_valid = false;
             s_selected_channel = 0;
+            memset(s_selected_bssid, 0, sizeof(s_selected_bssid));
+            s_selected_authmode = WIFI_AUTH_OPEN;
+            strategy_changed = true;
             ESP_LOGW(TAG, "switching STA reconnect strategy to compatibility mode");
+        }
+
+        if (strategy_changed) {
             apply_wifi_config(s_wifi_index);
         }
 
@@ -447,7 +608,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         );
         console_service_emit_event("wifi", event_json);
         mqtt_start();
-        s_sta_compat_mode = false;
+        restore_default_wifi_strategy();
         s_connect_attempt_started_ms = 0;
     }
 }
@@ -475,9 +636,24 @@ esp_err_t network_service_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
 
     load_wifi_list();
-    s_scan_before_connect = true;
-    if (s_scan_before_connect && s_screen_connect_task == NULL) {
-        xTaskCreate(screen_connect_task, "screen_wifi_connect", 4096, NULL, 5, &s_screen_connect_task);
+    restore_default_wifi_strategy();
+    if (s_scan_before_connect) {
+        ensure_scan_connect_task();
+    }
+    s_connect_ready_after_ms = 0;
+    s_connect_delay_logged = false;
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    if (
+        device_profile_hardware_variant() == DEVICE_HW_VARIANT_SUPERMINI &&
+        (reset_reason == ESP_RST_POWERON || reset_reason == ESP_RST_BROWNOUT)
+    ) {
+        s_connect_ready_after_ms = (esp_timer_get_time() / 1000) + WIFI_COLD_BOOT_CONNECT_DELAY_MS;
+        ESP_LOGI(
+            TAG,
+            "cold boot detected (reset reason=%d), postpone first WiFi connect by %d ms",
+            (int)reset_reason,
+            WIFI_COLD_BOOT_CONNECT_DELAY_MS
+        );
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -488,7 +664,7 @@ esp_err_t network_service_start(void)
     if (device_profile_hardware_variant() == DEVICE_HW_VARIANT_OLED_SCREEN) {
         ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(34));
     }
-    network_service_set_power_save(device_profile_low_power_enabled());
+    network_service_set_power_save(device_profile_should_enable_wifi_power_save());
     s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
     s_last_connect_kick_ms = 0;
     if (s_network_monitor_task == NULL) {
@@ -503,12 +679,14 @@ void network_service_reload_wifi_list(void)
     load_wifi_list();
     s_wifi_index = 0;
     s_reloading = true;
-    s_selected_bssid_valid = false;
-    s_selected_channel = 0;
-    s_selected_authmode = WIFI_AUTH_OPEN;
-    s_sta_compat_mode = false;
+    restore_default_wifi_strategy();
+    if (s_scan_before_connect) {
+        ensure_scan_connect_task();
+    }
     s_connect_attempt_started_ms = esp_timer_get_time() / 1000;
     s_last_connect_kick_ms = 0;
+    s_connect_ready_after_ms = 0;
+    s_connect_delay_logged = false;
     xEventGroupClearBits(s_event_group, WIFI_CONNECTED_BIT | MQTT_CONNECTED_BIT);
     device_profile_update_wifi(false, NULL, NULL, 0);
     device_profile_update_mqtt(false);
@@ -561,19 +739,43 @@ void network_service_get_scan_json(char *buffer, size_t buffer_size)
 
     buffer[0] = '\0';
 
+    if (provisioning_service_is_active()) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"message\":\"provisioning active\"}");
+        return;
+    }
+
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
         .channel = 0,
         .show_hidden = true,
     };
+    const bool was_connected = network_service_is_wifi_ready();
+    wifi_ps_type_t previous_ps = WIFI_PS_NONE;
+    bool restore_ps = false;
 
-    esp_wifi_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(250));
+    if (esp_wifi_get_ps(&previous_ps) == ESP_OK) {
+        restore_ps = true;
+        if (previous_ps != WIFI_PS_NONE) {
+            esp_err_t ps_ret = esp_wifi_set_ps(WIFI_PS_NONE);
+            if (ps_ret != ESP_OK) {
+                ESP_LOGW(TAG, "disable wifi ps before scan failed: %s", esp_err_to_name(ps_ret));
+            }
+        }
+    }
 
     esp_err_t scan_ret = esp_wifi_scan_start(&scan_cfg, true);
-    apply_wifi_config(s_wifi_index);
-    esp_wifi_connect();
+
+    if (restore_ps && previous_ps != WIFI_PS_NONE) {
+        esp_err_t ps_ret = esp_wifi_set_ps(previous_ps);
+        if (ps_ret != ESP_OK) {
+            ESP_LOGW(TAG, "restore wifi ps after scan failed: %s", esp_err_to_name(ps_ret));
+        }
+    }
+
+    if (!was_connected && !provisioning_service_is_active()) {
+        connect_using_current_strategy();
+    }
 
     if (scan_ret != ESP_OK) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"message\":\"scan start failed\",\"code\":%d}", (int)scan_ret);
@@ -674,6 +876,7 @@ void network_service_prepare_for_sleep(void)
     device_profile_update_wifi(false, NULL, NULL, 0);
     device_profile_update_mqtt(false);
     s_last_publish_msg_id = -1;
+    reset_mqtt_rx_buffer();
 
     if (s_mqtt_client != NULL) {
         mqtt_stop();

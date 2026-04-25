@@ -50,6 +50,8 @@ esp_err_t device_profile_replace_wifi_credential(const char *ssid, const char *p
 
 bool device_profile_low_power_enabled(void);
 uint32_t device_profile_low_power_interval_sec(void);
+bool device_profile_maintenance_mode_enabled(void);
+bool device_profile_should_enable_wifi_power_save(void);
 void device_profile_set_low_power_state(bool enabled, uint32_t interval_sec);
 void device_profile_build_low_power_json(char *buffer, size_t buffer_size);
 esp_err_t device_profile_set_low_power_json(const char *json_text, char *message, size_t message_size);

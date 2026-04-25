@@ -71,6 +71,7 @@ typedef struct {
     char hardware_variant_name[24];
     bool low_power_enabled;
     uint32_t low_power_interval_sec;
+    bool maintenance_mode_enabled;
 } device_profile_state_t;
 
 static device_profile_state_t s_state;
@@ -172,19 +173,43 @@ static void save_nvs_strings(void)
     nvs_set_str(handle, "sensors_csv", s_state.sensors_csv);
     nvs_set_u8(handle, "lp_enabled", s_state.low_power_enabled ? 1 : 0);
     nvs_set_u32(handle, "lp_interval", s_state.low_power_interval_sec);
+    nvs_set_u8(handle, "maint_mode", s_state.maintenance_mode_enabled ? 1 : 0);
     nvs_commit(handle);
     nvs_close(handle);
 }
 
-static void apply_low_power_state(bool enabled, uint32_t interval_sec, bool persist)
+static void canonicalize_power_mode_state(bool *low_power_enabled, bool *maintenance_mode_enabled)
 {
+    if (low_power_enabled == NULL || maintenance_mode_enabled == NULL) {
+        return;
+    }
+
+    (void)low_power_enabled;
+    *maintenance_mode_enabled = false;
+}
+
+static void apply_power_mode_state(bool low_power_enabled, uint32_t interval_sec, bool maintenance_mode_enabled, bool persist)
+{
+    canonicalize_power_mode_state(&low_power_enabled, &maintenance_mode_enabled);
     profile_lock();
-    s_state.low_power_enabled = enabled;
+    s_state.low_power_enabled = low_power_enabled;
     s_state.low_power_interval_sec = interval_sec >= 10U ? interval_sec : 300U;
+    s_state.maintenance_mode_enabled = maintenance_mode_enabled;
     if (persist) {
         save_nvs_strings();
     }
     profile_unlock();
+}
+
+static void apply_low_power_state(bool enabled, uint32_t interval_sec, bool persist)
+{
+    bool maintenance_mode_enabled = false;
+
+    profile_lock();
+    maintenance_mode_enabled = s_state.maintenance_mode_enabled;
+    profile_unlock();
+
+    apply_power_mode_state(enabled, interval_sec, maintenance_mode_enabled, persist);
 }
 
 static const char *chip_model_to_text(esp_chip_model_t model)
@@ -362,6 +387,7 @@ static void build_low_power_object(cJSON *root)
     cJSON *low_power = cJSON_AddObjectToObject(root, "lowPower");
     cJSON_AddBoolToObject(low_power, "enabled", s_state.low_power_enabled);
     cJSON_AddNumberToObject(low_power, "intervalSec", (double)s_state.low_power_interval_sec);
+    cJSON_AddBoolToObject(low_power, "maintenanceMode", false);
 }
 
 static esp_err_t persist_wifi_entries_to_nvs(const wifi_entry_t *entries, int count)
@@ -461,6 +487,7 @@ esp_err_t device_profile_init(void)
     populate_hardware_info();
     s_state.low_power_enabled = false;
     s_state.low_power_interval_sec = 300;
+    s_state.maintenance_mode_enabled = false;
 
     /* Initialize NVS here so subsequent callers (network_service) can use it */
     esp_err_t nvs_err = nvs_flash_init();
@@ -472,15 +499,30 @@ esp_err_t device_profile_init(void)
     }
 
     nvs_handle_t handle;
+    bool should_persist_power_mode = false;
     if (nvs_open(DEVICE_PROFILE_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
         load_nvs_string(handle, "device_name", s_state.device_name, sizeof(s_state.device_name));
         load_nvs_string(handle, "sensors_csv", s_state.sensors_csv, sizeof(s_state.sensors_csv));
         uint8_t low_power_enabled = 0;
         uint32_t low_power_interval = 300;
+        uint8_t maintenance_mode_enabled = 0;
         nvs_get_u8(handle, "lp_enabled", &low_power_enabled);
         nvs_get_u32(handle, "lp_interval", &low_power_interval);
+        nvs_get_u8(handle, "maint_mode", &maintenance_mode_enabled);
         s_state.low_power_enabled = (low_power_enabled != 0);
         s_state.low_power_interval_sec = (low_power_interval >= 10U) ? low_power_interval : 300U;
+        s_state.maintenance_mode_enabled = (maintenance_mode_enabled != 0);
+        bool normalized_low_power_enabled = s_state.low_power_enabled;
+        bool normalized_maintenance_mode_enabled = s_state.maintenance_mode_enabled;
+        canonicalize_power_mode_state(&normalized_low_power_enabled, &normalized_maintenance_mode_enabled);
+        if (
+            normalized_low_power_enabled != s_state.low_power_enabled ||
+            normalized_maintenance_mode_enabled != s_state.maintenance_mode_enabled
+        ) {
+            s_state.low_power_enabled = normalized_low_power_enabled;
+            s_state.maintenance_mode_enabled = normalized_maintenance_mode_enabled;
+            should_persist_power_mode = true;
+        }
         if (csv_contains_sensor(s_state.sensors_csv, "bmp180") && strstr(s_state.sensors_csv, "bmp180") == NULL) {
             char migrated[96] = {0};
             char local_copy[96] = {0};
@@ -501,10 +543,13 @@ esp_err_t device_profile_init(void)
             if (migrated[0] != '\0') {
                 snprintf(s_state.sensors_csv, sizeof(s_state.sensors_csv), "%s", migrated);
             }
-            save_nvs_strings();
+            should_persist_power_mode = true;
         }
         load_wifi_list_from_nvs(handle);
         nvs_close(handle);
+        if (should_persist_power_mode) {
+            save_nvs_strings();
+        }
     } else {
         /* NVS open failed, use compile-time defaults */
         strlcpy(s_wifi_entries[0].ssid, APP_WIFI_SSID, sizeof(s_wifi_entries[0].ssid));
@@ -512,9 +557,14 @@ esp_err_t device_profile_init(void)
         s_wifi_count = 1;
     }
 
-    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
-        apply_low_power_state(false, s_state.low_power_interval_sec, true);
-    }
+    ESP_LOGI(
+        TAG,
+        "power mode restored: low_power=%s interval=%" PRIu32 "s maintenance=%s wakeup=%d",
+        s_state.low_power_enabled ? "on" : "off",
+        s_state.low_power_interval_sec,
+        s_state.maintenance_mode_enabled ? "on" : "off",
+        (int)esp_sleep_get_wakeup_cause()
+    );
 
     return ESP_OK;
 }
@@ -712,6 +762,7 @@ void device_profile_build_options_json(char *buffer, size_t buffer_size)
     }
     cJSON_AddNumberToObject(low_power, "minIntervalSec", 10);
     cJSON_AddNumberToObject(low_power, "maxIntervalSec", 86400);
+    cJSON_AddBoolToObject(low_power, "supportsMaintenanceMode", true);
 
     char *printed = cJSON_PrintUnformatted(root);
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
@@ -898,6 +949,24 @@ uint32_t device_profile_low_power_interval_sec(void)
     return interval;
 }
 
+bool device_profile_maintenance_mode_enabled(void)
+{
+    bool enabled = false;
+    profile_lock();
+    enabled = s_state.maintenance_mode_enabled;
+    profile_unlock();
+    return enabled;
+}
+
+bool device_profile_should_enable_wifi_power_save(void)
+{
+    bool enabled = false;
+    profile_lock();
+    enabled = s_state.low_power_enabled && !s_state.maintenance_mode_enabled;
+    profile_unlock();
+    return enabled;
+}
+
 void device_profile_set_low_power_state(bool enabled, uint32_t interval_sec)
 {
     apply_low_power_state(enabled, interval_sec, true);
@@ -909,6 +978,7 @@ void device_profile_build_low_power_json(char *buffer, size_t buffer_size)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "enabled", s_state.low_power_enabled);
     cJSON_AddNumberToObject(root, "intervalSec", (double)s_state.low_power_interval_sec);
+    cJSON_AddBoolToObject(root, "maintenanceMode", false);
     char *printed = cJSON_PrintUnformatted(root);
     snprintf(buffer, buffer_size, "%s", printed != NULL ? printed : "{}");
     cJSON_free(printed);
@@ -926,37 +996,50 @@ esp_err_t device_profile_set_low_power_json(const char *json_text, char *message
 
     cJSON *enabled = cJSON_GetObjectItemCaseSensitive(root, "enabled");
     cJSON *interval_sec = cJSON_GetObjectItemCaseSensitive(root, "intervalSec");
+    cJSON *maintenance_mode = cJSON_GetObjectItemCaseSensitive(root, "maintenanceMode");
 
-    if (!cJSON_IsBool(enabled) && !cJSON_IsNumber(enabled)) {
+    if (
+        !cJSON_IsBool(enabled) &&
+        !cJSON_IsNumber(enabled) &&
+        !cJSON_IsNumber(interval_sec) &&
+        !cJSON_IsBool(maintenance_mode) &&
+        !cJSON_IsNumber(maintenance_mode)
+    ) {
         cJSON_Delete(root);
-        snprintf(message, message_size, "enabled is required");
+        snprintf(message, message_size, "at least one low power field is required");
         return ESP_ERR_INVALID_ARG;
     }
 
+    bool next_enabled = false;
+    bool next_maintenance_mode = false;
     uint32_t interval = 300U;
+    profile_lock();
+    next_enabled = s_state.low_power_enabled;
+    interval = s_state.low_power_interval_sec;
+    next_maintenance_mode = s_state.maintenance_mode_enabled;
+    profile_unlock();
+
+    if (cJSON_IsBool(enabled) || cJSON_IsNumber(enabled)) {
+        next_enabled = cJSON_IsTrue(enabled) || (cJSON_IsNumber(enabled) && enabled->valuedouble != 0);
+    }
     if (cJSON_IsNumber(interval_sec)) {
         interval = (uint32_t)interval_sec->valuedouble;
-    } else {
-        profile_lock();
-        interval = s_state.low_power_interval_sec;
-        profile_unlock();
     }
+    (void)maintenance_mode;
+    next_maintenance_mode = false;
+
     if (interval < 10U) {
         cJSON_Delete(root);
         snprintf(message, message_size, "intervalSec must be >= 10");
         return ESP_ERR_INVALID_ARG;
     }
 
-    apply_low_power_state(
-        cJSON_IsTrue(enabled) || (cJSON_IsNumber(enabled) && enabled->valuedouble != 0),
-        interval,
-        true
-    );
+    apply_power_mode_state(next_enabled, interval, next_maintenance_mode, true);
 
     snprintf(
         message,
         message_size,
-        "low power %s, interval=%" PRIu32 "s",
+        "low power %s, interval=%" PRIu32 "s, maintenance=server-side",
         s_state.low_power_enabled ? "enabled" : "disabled",
         s_state.low_power_interval_sec
     );

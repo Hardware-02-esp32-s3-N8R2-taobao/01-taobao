@@ -110,7 +110,7 @@ static void provisioning_event_handler(void *arg, esp_event_base_t event_base, i
         status_led_set_provisioning(false);
         ESP_LOGI(TAG, "softap provisioning ended");
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_mode(WIFI_MODE_STA));
-        network_service_set_power_save(device_profile_low_power_enabled());
+        network_service_set_power_save(device_profile_should_enable_wifi_power_save());
         if (s_has_new_credentials) {
             s_has_new_credentials = false;
             network_service_reload_wifi_list();
