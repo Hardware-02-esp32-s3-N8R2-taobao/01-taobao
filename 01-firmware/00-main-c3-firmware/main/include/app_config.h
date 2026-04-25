@@ -12,8 +12,8 @@
 #define APP_DEVICE_ALIAS         "探索者 1 号"
 #define APP_FIRMWARE_VERSION_MAJOR 1
 #define APP_FIRMWARE_VERSION_MINOR 2
-#define APP_FIRMWARE_VERSION     "1.1.29"
-#define APP_FIRMWARE_RELEASE_NOTES "修复部分 C3 板子重启后 WiFi 认证过期问题并增强开机重连；WiFi 未连接时不自动休眠；手机配网成功后会持久化保存 WiFi 列表"
+#define APP_FIRMWARE_VERSION     "1.1.54"
+#define APP_FIRMWARE_RELEASE_NOTES "取消20秒启动窗口；改为复位后持续等待联网，如果联网前检测到3秒长按，就在联网成功后直接切入维修站，否则首次联网后按低功耗策略回睡"
 #define APP_SERIAL_PUSH_EVENTS   0
 
 #define APP_OTA_SERVER_BASE_URL  "http://117.72.55.63"

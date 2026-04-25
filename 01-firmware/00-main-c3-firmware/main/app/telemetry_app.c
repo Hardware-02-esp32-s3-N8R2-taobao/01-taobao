@@ -37,9 +37,10 @@
 #define LOW_POWER_NETWORK_WAIT_MS 20000
 #define LOW_POWER_SLEEP_SETTLE_MS 500
 #define LOW_POWER_STATUS_FLUSH_MS 900
+#define REMOTE_CONFIG_ACK_WAIT_MS 5000
+#define OLED_BUTTON_POLL_MS 40
 #define OLED_PAGE_BUTTON_DEBOUNCE_MS 180
-#define OLED_PAGE_BUTTON_LONG_PRESS_MS 1500
-#define OLED_IDLE_AUTO_SLEEP_MS 60000
+#define OLED_PAGE_BUTTON_LONG_PRESS_MS 3000
 #define OLED_HEADER_Y 0
 #define OLED_BIG_LINE_Y1 14
 #define OLED_BIG_LINE_Y2 34
@@ -50,7 +51,169 @@
 #define OLED_COMPACT_WIDTH 64
 #define OLED_COMPACT_HEIGHT 32
 
+RTC_DATA_ATTR static uint32_t s_rtc_force_low_power_claim = 0;
+
 static TaskHandle_t s_telemetry_task_handle = NULL;
+static bool s_server_maintenance_mode = false;
+static char s_pending_server_mode_request[24] = {0};
+static volatile uint32_t s_oled_mode_toggle_requests = 0;
+static volatile bool s_button_maintenance_request_latched = false;
+static bool s_oled_initialized = false;
+static uint32_t s_oled_page_index = 0;
+static bool s_oled_button_initialized = false;
+static bool s_oled_button_page_step_enabled = false;
+static volatile uint32_t s_oled_page_step_requests = 0;
+static volatile TickType_t s_oled_button_press_tick = 0;
+static volatile TickType_t s_oled_last_activity_tick = 0;
+static volatile bool s_oled_button_long_press_handled = false;
+static TaskHandle_t s_oled_button_task_handle = NULL;
+static int s_oled_button_last_level = 1;
+static TickType_t s_oled_button_last_edge_tick = 0;
+static bool s_oled_button_pressed = false;
+static TickType_t s_boot_normal_mode_until_tick = 0;
+static bool s_boot_low_power_entry_pending = false;
+static bool s_skip_cycle_delay = false;
+
+static void notify_telemetry_task(void)
+{
+    if (s_telemetry_task_handle != NULL) {
+        xTaskNotifyGive(s_telemetry_task_handle);
+    }
+}
+
+static bool boot_low_power_entry_pending(bool low_power_enabled)
+{
+    return low_power_enabled && s_boot_low_power_entry_pending;
+}
+
+static bool boot_normal_mode_window_active(bool low_power_enabled)
+{
+    return boot_low_power_entry_pending(low_power_enabled);
+}
+
+static bool boot_normal_mode_window_expired(bool low_power_enabled)
+{
+    (void)low_power_enabled;
+    return false;
+}
+
+static status_led_mode_t resolve_status_led_mode(bool low_power_enabled)
+{
+    if (boot_normal_mode_window_active(low_power_enabled)) {
+        return STATUS_LED_MODE_NORMAL;
+    }
+    if (s_server_maintenance_mode) {
+        return STATUS_LED_MODE_MAINTENANCE;
+    }
+    return low_power_enabled ? STATUS_LED_MODE_LOW_POWER : STATUS_LED_MODE_NORMAL;
+}
+
+static void refresh_status_led_mode(bool low_power_enabled)
+{
+    status_led_set_mode(resolve_status_led_mode(low_power_enabled));
+}
+
+static const char *current_server_mode_text(bool low_power_enabled)
+{
+    if (boot_normal_mode_window_active(low_power_enabled)) {
+        return "normal";
+    }
+    if (s_server_maintenance_mode) {
+        return "maintenance";
+    }
+    return low_power_enabled ? "low_power" : "normal";
+}
+
+static const char *button_long_press_target_mode(bool low_power_enabled)
+{
+    if (!boot_low_power_entry_pending(low_power_enabled) || s_server_maintenance_mode) {
+        return NULL;
+    }
+    return "maintenance";
+}
+
+static void latch_button_mode_request(const char *target_mode)
+{
+    if (target_mode == NULL || target_mode[0] == '\0') {
+        return;
+    }
+
+    if (strcmp(target_mode, "maintenance") == 0) {
+        s_button_maintenance_request_latched = true;
+        s_rtc_force_low_power_claim = 0;
+    }
+    notify_telemetry_task();
+}
+
+static void consume_button_mode_toggle_requests(bool low_power_enabled)
+{
+    uint32_t requests = __atomic_exchange_n(&s_oled_mode_toggle_requests, 0, __ATOMIC_RELAXED);
+    bool latched_request = __atomic_exchange_n(&s_button_maintenance_request_latched, false, __ATOMIC_RELAXED);
+    if (requests == 0 && !latched_request) {
+        return;
+    }
+
+    char event_json[192];
+    const char *target_mode = button_long_press_target_mode(low_power_enabled);
+    if (target_mode == NULL) {
+        snprintf(
+            event_json,
+            sizeof(event_json),
+            "{\"source\":\"button_long_press\",\"queued\":false,\"currentMode\":\"%s\",\"reason\":\"pre_sleep_boot_required\"}",
+            current_server_mode_text(low_power_enabled)
+        );
+        console_service_emit_event("mode_request", event_json);
+        return;
+    }
+
+    if (strcmp(s_pending_server_mode_request, target_mode) == 0) {
+        snprintf(
+            event_json,
+            sizeof(event_json),
+            "{\"source\":\"button_long_press\",\"queued\":false,\"currentMode\":\"%s\",\"targetMode\":\"%s\",\"reason\":\"already_queued\"}",
+            current_server_mode_text(low_power_enabled),
+            target_mode
+        );
+        console_service_emit_event("mode_request", event_json);
+        return;
+    }
+
+    snprintf(s_pending_server_mode_request, sizeof(s_pending_server_mode_request), "%s", target_mode);
+    snprintf(
+        event_json,
+        sizeof(event_json),
+        "{\"source\":\"button_long_press\",\"queued\":true,\"currentMode\":\"%s\",\"targetMode\":\"%s\"}",
+        current_server_mode_text(low_power_enabled),
+        s_pending_server_mode_request
+    );
+    console_service_emit_event("mode_request", event_json);
+}
+
+static void clear_pending_mode_request_if_applied(const remote_config_ack_t *ack)
+{
+    if (
+        ack == NULL ||
+        s_pending_server_mode_request[0] == '\0' ||
+        ack->server_mode[0] == '\0' ||
+        strcmp(ack->server_mode, s_pending_server_mode_request) != 0
+    ) {
+        return;
+    }
+
+    char event_json[192];
+    snprintf(
+        event_json,
+        sizeof(event_json),
+        "{\"source\":\"button_long_press\",\"queued\":false,\"targetMode\":\"%s\",\"applied\":true}",
+        s_pending_server_mode_request
+    );
+    if (strcmp(s_pending_server_mode_request, "maintenance") == 0) {
+        s_boot_low_power_entry_pending = false;
+        s_button_maintenance_request_latched = false;
+    }
+    s_pending_server_mode_request[0] = '\0';
+    console_service_emit_event("mode_request", event_json);
+}
 
 typedef struct {
     bool ready;
@@ -104,16 +267,6 @@ typedef struct {
     float power_mw;
     uint8_t address;
 } oled_ina226_state_t;
-
-static bool s_oled_initialized = false;
-static uint32_t s_oled_page_index = 0;
-static bool s_oled_button_initialized = false;
-static bool s_oled_button_page_step_enabled = false;
-static volatile uint32_t s_oled_page_step_requests = 0;
-static volatile TickType_t s_oled_button_last_tick = 0;
-static volatile TickType_t s_oled_button_press_tick = 0;
-static volatile TickType_t s_oled_last_activity_tick = 0;
-static volatile bool s_oled_low_power_request = false;
 
 typedef enum {
     OLED_PAGE_TEMP = 0,
@@ -181,67 +334,73 @@ static void oled_note_activity(TickType_t now)
     s_oled_last_activity_tick = now;
 }
 
-static bool idle_auto_sleep_due(bool low_power_enabled)
+static void sample_oled_button_state(void)
 {
-    TickType_t last_activity = s_oled_last_activity_tick;
+    if (!s_oled_button_initialized) {
+        return;
+    }
+
     TickType_t now = xTaskGetTickCount();
-
-    if (!low_power_button_supported() || low_power_enabled || ota_service_should_skip_sleep()) {
-        return false;
+    int level = gpio_get_level(APP_SCREEN_PAGE_BUTTON_GPIO);
+    if (level != s_oled_button_last_level) {
+        s_oled_button_last_level = level;
+        s_oled_button_last_edge_tick = now;
+        return;
     }
 
-    if (!network_service_is_wifi_ready()) {
-        return false;
+    if ((now - s_oled_button_last_edge_tick) < pdMS_TO_TICKS(OLED_PAGE_BUTTON_DEBOUNCE_MS)) {
+        return;
     }
 
-    if (last_activity == 0) {
-        s_oled_last_activity_tick = now;
-        return false;
+    bool active = level == APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL;
+    if (active != s_oled_button_pressed) {
+        s_oled_button_pressed = active;
+        oled_note_activity(now);
+        if (active) {
+            s_oled_button_press_tick = now;
+            s_oled_button_long_press_handled = false;
+            return;
+        }
+
+        TickType_t pressed_at = s_oled_button_press_tick;
+        bool long_press_already_handled = s_oled_button_long_press_handled;
+        bool long_press_triggered =
+            long_press_already_handled ||
+            (pressed_at != 0 && (now - pressed_at) >= pdMS_TO_TICKS(OLED_PAGE_BUTTON_LONG_PRESS_MS));
+        s_oled_button_press_tick = 0;
+        s_oled_button_long_press_handled = false;
+        if (long_press_triggered) {
+            if (!long_press_already_handled) {
+                s_oled_mode_toggle_requests++;
+                latch_button_mode_request("maintenance");
+            }
+            notify_telemetry_task();
+        } else if (s_oled_button_page_step_enabled) {
+            s_oled_page_step_requests++;
+            notify_telemetry_task();
+        }
+        return;
     }
 
-    return (now - last_activity) >= pdMS_TO_TICKS(OLED_IDLE_AUTO_SLEEP_MS);
+    if (
+        s_oled_button_pressed &&
+        s_oled_button_press_tick != 0 &&
+        !s_oled_button_long_press_handled &&
+        (now - s_oled_button_press_tick) >= pdMS_TO_TICKS(OLED_PAGE_BUTTON_LONG_PRESS_MS)
+    ) {
+        s_oled_button_long_press_handled = true;
+        s_oled_mode_toggle_requests++;
+        latch_button_mode_request("maintenance");
+        notify_telemetry_task();
+    }
 }
 
-static void IRAM_ATTR oled_page_button_isr_handler(void *arg)
+static void oled_button_task(void *arg)
 {
     (void)arg;
-    TickType_t now = xTaskGetTickCountFromISR();
-    if ((now - s_oled_button_last_tick) < pdMS_TO_TICKS(OLED_PAGE_BUTTON_DEBOUNCE_MS)) {
-        return;
-    }
-
-    s_oled_button_last_tick = now;
-    oled_note_activity(now);
-    int level = gpio_get_level(APP_SCREEN_PAGE_BUTTON_GPIO);
-    if (level == APP_SCREEN_PAGE_BUTTON_ACTIVE_LEVEL) {
-        s_oled_button_press_tick = now;
-        return;
-    }
-
-    TickType_t pressed_at = s_oled_button_press_tick;
-    s_oled_button_press_tick = 0;
-    if (pressed_at == 0) {
-        return;
-    }
-    bool should_notify = false;
-    if ((now - pressed_at) >= pdMS_TO_TICKS(OLED_PAGE_BUTTON_LONG_PRESS_MS)) {
-        s_oled_low_power_request = true;
-        should_notify = true;
-    } else if (s_oled_button_page_step_enabled) {
-        s_oled_page_step_requests++;
-        should_notify = true;
-    }
-
-    if (!should_notify) {
-        return;
-    }
-
-    BaseType_t higher_priority_task_woken = pdFALSE;
-    if (s_telemetry_task_handle != NULL) {
-        vTaskNotifyGiveFromISR(s_telemetry_task_handle, &higher_priority_task_woken);
-    }
-    if (higher_priority_task_woken == pdTRUE) {
-        portYIELD_FROM_ISR();
+    while (1) {
+        sample_oled_button_state();
+        vTaskDelay(pdMS_TO_TICKS(OLED_BUTTON_POLL_MS));
     }
 }
 
@@ -423,25 +582,23 @@ static void oled_page_button_try_init(void)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_ANYEDGE,
+        .intr_type = GPIO_INTR_DISABLE,
     };
 
     if (gpio_config(&io_conf) != ESP_OK) {
         return;
     }
 
-    esp_err_t isr_ret = gpio_install_isr_service(0);
-    if (isr_ret != ESP_OK && isr_ret != ESP_ERR_INVALID_STATE) {
-        return;
-    }
-
-    gpio_isr_handler_remove(APP_SCREEN_PAGE_BUTTON_GPIO);
-    if (gpio_isr_handler_add(APP_SCREEN_PAGE_BUTTON_GPIO, oled_page_button_isr_handler, NULL) != ESP_OK) {
-        return;
-    }
-
     oled_note_activity(xTaskGetTickCount());
     s_oled_button_page_step_enabled = low_power_button_should_step_pages();
+    s_oled_button_last_level = gpio_get_level(APP_SCREEN_PAGE_BUTTON_GPIO);
+    s_oled_button_last_edge_tick = xTaskGetTickCount();
+    s_oled_button_pressed = false;
+    s_oled_button_press_tick = 0;
+    s_oled_button_long_press_handled = false;
+    if (s_oled_button_task_handle == NULL) {
+        xTaskCreate(oled_button_task, "oled_btn_poll", 2048, NULL, 4, &s_oled_button_task_handle);
+    }
     s_oled_button_initialized = true;
 }
 
@@ -452,11 +609,6 @@ static void oled_consume_page_requests(size_t page_count)
         return;
     }
     s_oled_page_index = (s_oled_page_index + (steps % page_count)) % page_count;
-}
-
-static bool oled_consume_low_power_request(void)
-{
-    return __atomic_exchange_n(&s_oled_low_power_request, false, __ATOMIC_RELAXED);
 }
 
 static void oled_render_temp_page(const oled_dashboard_state_t *state, size_t page_index, size_t page_count)
@@ -694,6 +846,9 @@ static void enter_low_power_sleep(void)
 {
     uint64_t interval_us = (uint64_t)device_profile_low_power_interval_sec() * 1000000ULL;
     char event_json[160];
+
+    s_boot_low_power_entry_pending = false;
+    s_button_maintenance_request_latched = false;
 
     snprintf(
         event_json,
@@ -1124,6 +1279,7 @@ void telemetry_app_run(void)
     char payload[2304];
     char event_json[2560];
     const char *topic = NULL;
+    esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
 
     dht11_sensor_init(APP_DHT11_GPIO);
     ds18b20_sensor_init(APP_DS18B20_GPIO);
@@ -1132,18 +1288,40 @@ void telemetry_app_run(void)
     oled_try_init();
     s_telemetry_task_handle = xTaskGetCurrentTaskHandle();
     oled_page_button_try_init();
+    sample_oled_button_state();
     oled_note_activity(xTaskGetTickCount());
+    s_boot_low_power_entry_pending = false;
+    s_button_maintenance_request_latched = false;
+    if (device_profile_low_power_enabled() && wakeup_cause == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        s_boot_low_power_entry_pending = true;
+        s_rtc_force_low_power_claim = 1;
+        refresh_status_led_mode(true);
+        console_service_emit_event(
+            "low_power",
+            "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"boot_wait_for_network_or_maintenance\"}"
+        );
+    }
     oled_render_boot_screen();
     ESP_LOGI(TAG, "firmware meta: %s", s_firmware_release_meta);
 
     while (1) {
         bool low_power_enabled = device_profile_low_power_enabled();
-        bool low_power_requested = oled_consume_low_power_request();
+        if (!low_power_enabled) {
+            s_boot_low_power_entry_pending = false;
+            s_button_maintenance_request_latched = false;
+        }
         bool publish_succeeded = false;
+        bool server_ack_received = false;
+        bool sleep_approved = false;
+        bool config_job_completed = true;
         int total_count = 0;
         int ready_count = 0;
         float primary_temp = 0.0f;
         float primary_humidity = 0.0f;
+        char publish_id[48] = {0};
+        char remote_config_message[160] = {0};
+        char sleep_reason[80] = {0};
+        remote_config_ack_t remote_ack = {0};
         oled_env_state_t oled_env = {0};
         oled_bh1750_state_t oled_bh1750 = {0};
         oled_bmpx80_state_t oled_bmpx80 = {0};
@@ -1161,9 +1339,11 @@ void telemetry_app_run(void)
         wifi_ready = network_service_is_wifi_ready();
         if (wifi_ready) {
             ota_service_process();
-            remote_config_service_process();
         }
+        sample_oled_button_state();
         low_power_enabled = device_profile_low_power_enabled();
+        consume_button_mode_toggle_requests(low_power_enabled);
+        refresh_status_led_mode(low_power_enabled);
         topic = device_profile_mqtt_topic();
 
         char enabled_sensors_csv[96] = {0};
@@ -1233,21 +1413,44 @@ void telemetry_app_run(void)
         if (network_ready) {
             char config_json[512];
             char low_power_json[160];
+            char mode_request_json[128] = {0};
+            char force_low_power_json[160] = {0};
 
             device_profile_build_config_json(config_json, sizeof(config_json));
             device_profile_build_low_power_json(low_power_json, sizeof(low_power_json));
+            if (s_pending_server_mode_request[0] != '\0') {
+                snprintf(
+                    mode_request_json,
+                    sizeof(mode_request_json),
+                    ",\"modeRequest\":{\"source\":\"button_long_press\",\"targetMode\":\"%s\"}",
+                    s_pending_server_mode_request
+                );
+            }
+            if (s_rtc_force_low_power_claim != 0) {
+                snprintf(
+                    force_low_power_json,
+                    sizeof(force_low_power_json),
+                    ",\"lowPowerResume\":{\"force\":true,\"source\":\"boot_normal_window_timeout\",\"intervalSec\":%" PRIu32 "}",
+                    device_profile_low_power_interval_sec()
+                );
+            }
+            snprintf(publish_id, sizeof(publish_id), "%lld", (long long)esp_timer_get_time());
+            remote_config_service_prepare_for_publish(publish_id);
             snprintf(
                 payload,
                 sizeof(payload),
-                "{\"device\":\"%s\",\"alias\":\"%s\",\"ts\":%" PRId64 ",\"fwVersion\":\"%s\",\"rssi\":%d,\"config\":%s,\"lowPower\":%s,\"sensors\":%s}",
+                "{\"device\":\"%s\",\"alias\":\"%s\",\"publishId\":\"%s\",\"ts\":%" PRId64 ",\"fwVersion\":\"%s\",\"rssi\":%d,\"config\":%s,\"lowPower\":%s,\"sensors\":%s%s%s}",
                 device_profile_device_id(),
                 device_profile_device_alias(),
+                publish_id,
                 esp_timer_get_time() / 1000,
                 device_profile_firmware_version(),
                 network_service_get_rssi(),
                 config_json,
                 low_power_json,
-                sensor_json != NULL ? sensor_json : "{}"
+                sensor_json != NULL ? sensor_json : "{}",
+                mode_request_json,
+                force_low_power_json
             );
 
             if (network_service_publish_json(topic, payload) == ESP_OK) {
@@ -1257,11 +1460,81 @@ void telemetry_app_run(void)
                 snprintf(
                     event_json,
                     sizeof(event_json),
-                    "{\"ready\":true,\"topic\":\"%s\",\"payload\":%s}",
+                    "{\"ready\":true,\"topic\":\"%s\",\"publishId\":\"%s\",\"payload\":%s}",
                     topic,
+                    publish_id,
                     payload
                 );
                 console_service_emit_event("publish", event_json);
+                if (remote_config_service_wait_for_ack(REMOTE_CONFIG_ACK_WAIT_MS, &remote_ack)) {
+                    server_ack_received = true;
+                    sleep_approved = remote_ack.sleep_approved;
+                    s_server_maintenance_mode = strcmp(remote_ack.server_mode, "maintenance") == 0;
+                    if (s_rtc_force_low_power_claim != 0 && strcmp(remote_ack.server_mode, "low_power") == 0) {
+                        s_rtc_force_low_power_claim = 0;
+                    }
+                    clear_pending_mode_request_if_applied(&remote_ack);
+                    snprintf(
+                        sleep_reason,
+                        sizeof(sleep_reason),
+                        "%s",
+                        remote_ack.sleep_reason[0] != '\0' ? remote_ack.sleep_reason : "server_ack"
+                    );
+                    refresh_status_led_mode(low_power_enabled);
+                    if (remote_ack.has_job) {
+                        config_job_completed = false;
+                        esp_err_t config_err = remote_config_service_apply_ack_job(
+                            &remote_ack,
+                            remote_config_message,
+                            sizeof(remote_config_message)
+                        );
+                        if (config_err == ESP_OK) {
+                            config_job_completed = true;
+                            low_power_enabled = device_profile_low_power_enabled();
+                            refresh_status_led_mode(low_power_enabled);
+                            topic = device_profile_mqtt_topic();
+                            snprintf(
+                                event_json,
+                                sizeof(event_json),
+                                "{\"publishId\":\"%s\",\"jobId\":\"%s\",\"ack\":true,\"sleepApproved\":%s,\"sleepReason\":\"%s\",\"applied\":true,\"message\":\"%s\"}",
+                                publish_id,
+                                remote_ack.job_id,
+                                sleep_approved ? "true" : "false",
+                                sleep_reason,
+                                remote_config_message
+                            );
+                        } else {
+                            snprintf(
+                                event_json,
+                                sizeof(event_json),
+                                "{\"publishId\":\"%s\",\"jobId\":\"%s\",\"ack\":true,\"sleepApproved\":%s,\"sleepReason\":\"%s\",\"applied\":false,\"message\":\"%s\"}",
+                                publish_id,
+                                remote_ack.job_id,
+                                sleep_approved ? "true" : "false",
+                                sleep_reason,
+                                remote_config_message
+                            );
+                        }
+                    } else {
+                        snprintf(
+                            event_json,
+                            sizeof(event_json),
+                            "{\"publishId\":\"%s\",\"ack\":true,\"sleepApproved\":%s,\"sleepReason\":\"%s\",\"applied\":false,\"message\":\"no pending config job\"}",
+                            publish_id,
+                            sleep_approved ? "true" : "false",
+                            sleep_reason
+                        );
+                    }
+                    console_service_emit_event("remote_cfg", event_json);
+                } else {
+                    snprintf(
+                        event_json,
+                        sizeof(event_json),
+                        "{\"publishId\":\"%s\",\"ack\":false,\"message\":\"server ack timeout\"}",
+                        publish_id
+                    );
+                    console_service_emit_event("remote_cfg", event_json);
+                }
             } else {
                 device_profile_update_publish(false, network_service_get_rssi(), payload);
                 snprintf(
@@ -1282,7 +1555,8 @@ void telemetry_app_run(void)
 
         oled_try_init();
         oled_page_button_try_init();
-        if (low_power_enabled) {
+        bool boot_normal_active = boot_normal_mode_window_active(low_power_enabled);
+        if (low_power_enabled && sleep_approved && !boot_normal_active) {
             if (oled_ssd1306_is_ready()) {
                 (void)oled_ssd1306_set_display_enabled(false);
             }
@@ -1295,36 +1569,52 @@ void telemetry_app_run(void)
 
         cJSON_free(sensor_json);
         cJSON_Delete(sensors_obj);
-        if (low_power_requested && !ota_service_should_skip_sleep()) {
-            device_profile_set_low_power_state(true, device_profile_low_power_interval_sec());
-            publish_low_power_transition(topic);
-            console_service_emit_event(
-                "low_power",
-                "{\"enabled\":true,\"action\":\"button_long_press\",\"reason\":\"manual_request\"}"
-            );
-            enter_low_power_sleep();
-        } else if (idle_auto_sleep_due(low_power_enabled)) {
-            device_profile_set_low_power_state(true, device_profile_low_power_interval_sec());
-            publish_low_power_transition(topic);
-            console_service_emit_event(
-                "low_power",
-                "{\"enabled\":true,\"action\":\"idle_timeout\",\"reason\":\"no_button_for_60s\"}"
-            );
-            enter_low_power_sleep();
-        } else if (low_power_enabled && ota_service_should_skip_sleep()) {
+        if (low_power_enabled && ota_service_should_skip_sleep()) {
             console_service_emit_event(
                 "low_power",
                 "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"ota_busy\"}"
             );
-        } else if (low_power_enabled && publish_succeeded) {
+        } else if (low_power_enabled && boot_normal_active && !network_ready) {
+            snprintf(
+                event_json,
+                sizeof(event_json),
+                "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"boot_wait_for_network\"}"
+            );
+            console_service_emit_event("low_power", event_json);
+        } else if (low_power_enabled && boot_normal_active && s_pending_server_mode_request[0] != '\0') {
+            console_service_emit_event(
+                "low_power",
+                "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"boot_wait_for_maintenance_ack\"}"
+            );
+        } else if (low_power_enabled && publish_succeeded && server_ack_received && config_job_completed && sleep_approved) {
             enter_low_power_sleep();
+        } else if (low_power_enabled && publish_succeeded && !server_ack_received) {
+            console_service_emit_event(
+                "low_power",
+                "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"server_ack_timeout\"}"
+            );
+        } else if (low_power_enabled && publish_succeeded && !config_job_completed) {
+            console_service_emit_event(
+                "low_power",
+                "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"config_job_not_confirmed\"}"
+            );
+        } else if (low_power_enabled && publish_succeeded && server_ack_received && !sleep_approved) {
+            snprintf(
+                event_json,
+                sizeof(event_json),
+                "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"%s\"}",
+                sleep_reason[0] != '\0' ? sleep_reason : "server_denied_sleep"
+            );
+            console_service_emit_event("low_power", event_json);
         } else if (low_power_enabled) {
             console_service_emit_event(
                 "low_power",
                 "{\"enabled\":true,\"action\":\"stay_awake\",\"reason\":\"publish_not_ready\"}"
             );
         }
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(APP_PUBLISH_INTERVAL_MS));
+        TickType_t cycle_wait = s_skip_cycle_delay ? 0 : pdMS_TO_TICKS(APP_PUBLISH_INTERVAL_MS);
+        s_skip_cycle_delay = false;
+        ulTaskNotifyTake(pdTRUE, cycle_wait);
     }
 }
 
